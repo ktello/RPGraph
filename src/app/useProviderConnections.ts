@@ -1,0 +1,1668 @@
+import { useEffect, useRef, useState } from 'react';
+import type { Dispatch, SetStateAction } from 'react';
+import type { ComfyGeneratedImage } from '../comfy/api';
+import type { ComfyWorkflowInspection } from '../comfy/workflowCompatibility';
+import {
+  connectionWithLmStudioCapabilities as connectionWithLmStudioCapabilitiesForModels,
+  connectionWithOllamaCapabilities as connectionWithOllamaCapabilitiesForModels,
+  connectionWithOpenRouterCapabilities as connectionWithOpenRouterCapabilitiesForModels,
+  createProviderConnectionId,
+  lmStudioCapabilitiesForConnection,
+  lmStudioLlmModels,
+  ollamaCapabilitiesForConnection,
+  providerCheckedAt,
+  openRouterCapabilitiesForConnection,
+  providerCheckConnectionStatus,
+  providerErrorMessage,
+  providerModelCountDetail,
+} from './providerCapabilities';
+import {
+  inferredProviderKind,
+  isLmStudioConnection,
+  isLocalProviderConnection,
+  isOllamaConnection,
+  isOpenRouterConnection,
+  llmProviderKind,
+} from '../llm/providerKind';
+import {
+  characterComfyLoraSlots,
+  defaultComfyBaseUrl,
+  defaultComfyCheckpointName,
+  defaultComfyDiffusionModelName,
+  defaultComfyHeight,
+  defaultComfyLoraSlots,
+  defaultComfyPrompt,
+  defaultComfyTextEncoderName,
+  defaultComfyVaeName,
+  defaultComfyWidth,
+  defaultComfyWorkflowPath,
+  defaultConnection,
+  defaultConnectionSampling,
+  runtimeComfyLoraSlots,
+  validComfyDimension,
+  validComfyLoraSlots,
+  validConnectionReasoningEffort,
+} from '../settings';
+import type {
+  ConnectionPreset,
+  LmStudioModelInfo,
+  OllamaModelInfo,
+  OpenRouterModelInfo,
+  ProviderConnectionCapabilities,
+  ProviderConnectionHealth,
+  WorkflowNode,
+  WorkflowNodeData,
+} from '../types';
+
+type AvailableComfyModels = {
+  checkpoints: string[];
+  loras: string[];
+  vae: string[];
+  text_encoders: string[];
+  diffusion_models: string[];
+};
+
+type UseProviderConnectionsOptions = {
+  connections: ConnectionPreset[];
+  setConnections: Dispatch<SetStateAction<ConnectionPreset[]>>;
+  defaultConnectionId: string;
+  setDefaultConnectionId: (connectionId: string) => void;
+  settingsLoadComplete: boolean;
+  nodesRef: { current: WorkflowNode[] };
+  setNodes: Dispatch<SetStateAction<WorkflowNode[]>>;
+  notifySystem: (level: 'info' | 'warning' | 'error', text: string) => void;
+};
+
+export function useProviderConnections({
+  connections,
+  setConnections,
+  defaultConnectionId,
+  setDefaultConnectionId,
+  settingsLoadComplete,
+  nodesRef,
+  setNodes,
+  notifySystem,
+}: UseProviderConnectionsOptions) {
+  const [showConnections, setShowConnections] = useState(false);
+  const [comfyPreview, setComfyPreview] = useState<{
+    promptId: string;
+    images: ComfyGeneratedImage[];
+  } | null>(null);
+  const [editingConnection, setEditingConnection] = useState<ConnectionPreset>(defaultConnection);
+  const [connectionDraftPending, setConnectionDraftPending] = useState(false);
+  const [availableConnectionModels, setAvailableConnectionModels] = useState<string[]>([]);
+  const [availableComfyModels, setAvailableComfyModels] = useState<AvailableComfyModels>({
+    checkpoints: [],
+    loras: [],
+    vae: [],
+    text_encoders: [],
+    diffusion_models: [],
+  });
+  const [comfyWorkflowInspection, setComfyWorkflowInspection] = useState<ComfyWorkflowInspection | null>(null);
+  const [pendingComfyWorkflowRepair, setPendingComfyWorkflowRepair] = useState<{
+    workflowPath: string;
+    workflowJson: string;
+    inspection: ComfyWorkflowInspection;
+  } | null>(null);
+  const [comfyWorkflowRepairStatus, setComfyWorkflowRepairStatus] = useState('');
+  const [connectionStatus, setConnectionStatus] = useState('');
+  const [providerHealthById, setProviderHealthById] = useState<Record<string, ProviderConnectionHealth>>({});
+  const providerHealthByIdRef = useRef<Record<string, ProviderConnectionHealth>>({});
+  const [lmStudioModelsByConnectionId, setLmStudioModelsByConnectionId] = useState<Record<string, LmStudioModelInfo[]>>({});
+  const lmStudioModelsByConnectionIdRef = useRef<Record<string, LmStudioModelInfo[]>>({});
+  const [openRouterModelsByConnectionId, setOpenRouterModelsByConnectionId] = useState<Record<string, OpenRouterModelInfo[]>>({});
+  const openRouterModelsByConnectionIdRef = useRef<Record<string, OpenRouterModelInfo[]>>({});
+  const [ollamaModelsByConnectionId, setOllamaModelsByConnectionId] = useState<Record<string, OllamaModelInfo[]>>({});
+  const ollamaModelsByConnectionIdRef = useRef<Record<string, OllamaModelInfo[]>>({});
+  const startupProviderCheckCompleteRef = useRef(false);
+  const localProviderPollActiveRef = useRef(false);
+  const characterComfyLoraCacheRef = useRef<Record<string, string[] | Promise<string[]>>>({});
+  const [lmStudioModelActionActive, setLmStudioModelActionActive] = useState<'load' | 'unload' | null>(null);
+  const [ollamaModelActionActive, setOllamaModelActionActive] = useState<'load' | 'unload' | null>(null);
+  const [comfyProviderActionActive, setComfyProviderActionActive] = useState<'models' | 'generate' | 'unload' | 'repair' | 'apply-repair' | null>(null);
+
+  function isLlmConnection(connection: ConnectionPreset) {
+    return connection.kind !== 'comfyui';
+  }
+
+  function firstLlmConnection(connectionsToSearch = connections) {
+    return connectionsToSearch.find(isLlmConnection) ?? defaultConnection;
+  }
+
+  useEffect(() => {
+    providerHealthByIdRef.current = providerHealthById;
+  }, [providerHealthById]);
+  useEffect(() => {
+    lmStudioModelsByConnectionIdRef.current = lmStudioModelsByConnectionId;
+  }, [lmStudioModelsByConnectionId]);
+  useEffect(() => {
+    openRouterModelsByConnectionIdRef.current = openRouterModelsByConnectionId;
+  }, [openRouterModelsByConnectionId]);
+  useEffect(() => {
+    ollamaModelsByConnectionIdRef.current = ollamaModelsByConnectionId;
+  }, [ollamaModelsByConnectionId]);
+
+  function openConnectionManager() {
+    const selected =
+      connections.find((connection) => connection.id === defaultConnectionId && isLlmConnection(connection)) ??
+      firstLlmConnection();
+    setEditingConnection({ ...selected });
+    setAvailableConnectionModels([]);
+    setAvailableComfyModels({
+      checkpoints: [],
+      loras: [],
+      vae: [],
+      text_encoders: [],
+      diffusion_models: [],
+    });
+    setComfyWorkflowInspection(null);
+    setPendingComfyWorkflowRepair(null);
+    setComfyWorkflowRepairStatus('');
+    setConnectionStatus('');
+    setShowConnections(true);
+    void checkProviderConnections(connections, { showStatus: true });
+  }
+
+  function closeConnectionManager() {
+    const connection = connectionFromEditingConnection();
+    setConnections((current) =>
+      current.map((entry) => (entry.id === connection.id ? connection : entry)),
+    );
+    setEditingConnection(connection);
+    setConnectionDraftPending(false);
+    setShowConnections(false);
+    void unloadComfyConnectionForClose(connection);
+  }
+
+  function newConnection() {
+    setConnectionDraftPending(true);
+    setAvailableConnectionModels([]);
+    setAvailableComfyModels({
+      checkpoints: [],
+      loras: [],
+      vae: [],
+      text_encoders: [],
+      diffusion_models: [],
+    });
+    setComfyWorkflowInspection(null);
+    setPendingComfyWorkflowRepair(null);
+    setComfyWorkflowRepairStatus('');
+    setConnectionStatus('');
+  }
+
+  function applyProviderPreset(
+    preset: Pick<ConnectionPreset, 'kind' | 'providerKind' | 'label' | 'baseUrl' | 'apiKey' | 'model' | 'comfyWorkflowPath' | 'comfyWidth' | 'comfyHeight' | 'comfyPrompt' | 'comfyCheckpointName' | 'comfyDiffusionModelName' | 'comfyVaeName' | 'comfyTextEncoderName' | 'comfyLoraSlots' | 'reasoningEffort'>,
+  ) {
+    const currentKind = editingConnection.kind === 'comfyui' ? 'comfyui' : 'llm';
+    const presetKind = preset.kind === 'comfyui' ? 'comfyui' : 'llm';
+    const nextConnection: ConnectionPreset = connectionDraftPending
+      ? {
+          id: createProviderConnectionId(),
+          ...(presetKind === 'comfyui' ? {} : defaultConnectionSampling),
+          ...preset,
+          providerKind: presetKind === 'comfyui' ? undefined : preset.providerKind,
+          vision: false,
+        }
+      : {
+          ...editingConnection,
+          ...preset,
+          providerKind: presetKind === 'comfyui' ? undefined : preset.providerKind,
+          vision: presetKind === 'comfyui' ? false : editingConnection.vision ?? false,
+        };
+    if (
+      !connectionDraftPending &&
+      currentKind !== presetKind &&
+      editingConnection.id === defaultConnectionId &&
+      presetKind === 'comfyui'
+    ) {
+      const nextDefault = connections.find((connection) =>
+        connection.id !== editingConnection.id && isLlmConnection(connection)
+      );
+      if (nextDefault) {
+        setDefaultConnectionId(nextDefault.id);
+      }
+    }
+    setConnections((current) => {
+      const exists = current.some((entry) => entry.id === nextConnection.id);
+      return exists
+        ? current.map((entry) => (entry.id === nextConnection.id ? nextConnection : entry))
+        : [...current, nextConnection];
+    });
+    setEditingConnection(nextConnection);
+    setConnectionDraftPending(false);
+    setAvailableConnectionModels([]);
+    setAvailableComfyModels({
+      checkpoints: [],
+      loras: [],
+      vae: [],
+      text_encoders: [],
+      diffusion_models: [],
+    });
+    setComfyWorkflowInspection(null);
+    setPendingComfyWorkflowRepair(null);
+    setComfyWorkflowRepairStatus('');
+    setConnectionStatus(
+      connectionDraftPending
+        ? preset.kind === 'comfyui'
+          ? 'ComfyUI preset created. Check the Base URL. Changes are saved automatically.'
+          : `${preset.label} preset created. Changes are saved automatically.`
+        : preset.kind === 'comfyui'
+          ? 'ComfyUI type applied. Check the Base URL. Changes are saved automatically.'
+          : `${preset.label} type applied. Add your API key if needed.`,
+    );
+    void checkProviderConnection(nextConnection, { showStatus: true });
+    if (nextConnection.kind === 'comfyui') {
+      void inspectComfyWorkflow(nextConnection, { showStatus: false });
+      void loadComfyModelLists(nextConnection);
+    }
+  }
+
+  function connectionFromEditingConnection(): ConnectionPreset {
+    const kind: NonNullable<ConnectionPreset['kind']> =
+      editingConnection.kind === 'comfyui' ? 'comfyui' : 'llm';
+    return {
+      ...editingConnection,
+      kind,
+      providerKind: kind === 'comfyui'
+        ? undefined
+        : editingConnection.providerKind ?? inferredProviderKind(editingConnection),
+      label: editingConnection.label.trim() || (kind === 'comfyui' ? 'ComfyUI Default' : 'Provider'),
+      baseUrl: editingConnection.baseUrl.trim() || (kind === 'comfyui' ? defaultComfyBaseUrl : defaultConnection.baseUrl),
+      model: kind === 'comfyui' ? '' : editingConnection.model.trim(),
+      apiKey: kind === 'comfyui' ? '' : editingConnection.apiKey.trim(),
+      comfyWorkflowPath: kind === 'comfyui'
+        ? editingConnection.comfyWorkflowPath?.trim() || defaultComfyWorkflowPath
+        : undefined,
+      comfyWidth: kind === 'comfyui'
+        ? validComfyDimension(editingConnection.comfyWidth, defaultComfyWidth)
+        : undefined,
+      comfyHeight: kind === 'comfyui'
+        ? validComfyDimension(editingConnection.comfyHeight, defaultComfyHeight)
+        : undefined,
+      comfyPrompt: kind === 'comfyui'
+        ? editingConnection.comfyPrompt?.trim() || defaultComfyPrompt
+        : undefined,
+      comfyCheckpointName: kind === 'comfyui'
+        ? editingConnection.comfyCheckpointName ?? defaultComfyCheckpointName
+        : undefined,
+      comfyDiffusionModelName: kind === 'comfyui'
+        ? editingConnection.comfyDiffusionModelName ?? defaultComfyDiffusionModelName
+        : undefined,
+      comfyVaeName: kind === 'comfyui'
+        ? editingConnection.comfyVaeName ?? defaultComfyVaeName
+        : undefined,
+      comfyTextEncoderName: kind === 'comfyui'
+        ? editingConnection.comfyTextEncoderName ?? defaultComfyTextEncoderName
+        : undefined,
+      comfyLoraSlots: kind === 'comfyui'
+        ? validComfyLoraSlots(editingConnection.comfyLoraSlots ?? defaultComfyLoraSlots)
+        : undefined,
+      reasoningEffort: kind === 'comfyui'
+        ? defaultConnection.reasoningEffort
+        : validConnectionReasoningEffort(editingConnection.reasoningEffort),
+      vision: kind === 'comfyui' ? false : editingConnection.vision ?? false,
+      temperature: kind === 'comfyui'
+        ? undefined
+        : editingConnection.temperature ?? defaultConnectionSampling.temperature,
+      topP: kind === 'comfyui'
+        ? undefined
+        : editingConnection.topP ?? defaultConnectionSampling.topP,
+      presencePenalty: kind === 'comfyui'
+        ? undefined
+        : editingConnection.presencePenalty ?? defaultConnectionSampling.presencePenalty,
+      frequencyPenalty: kind === 'comfyui'
+        ? undefined
+        : editingConnection.frequencyPenalty ?? defaultConnectionSampling.frequencyPenalty,
+    };
+  }
+
+  function applyConnectionToAllNodes() {
+    const connection = connectionFromEditingConnection();
+    if (!isLlmConnection(connection)) {
+      setConnectionStatus('ComfyUI cannot be applied to LLM nodes.');
+      return;
+    }
+    const affectedCount = nodesRef.current.filter((node) =>
+      Object.prototype.hasOwnProperty.call(node.data, 'connectionId') &&
+      node.data.connectionId !== connection.id,
+    ).length;
+
+    setConnections((current) => {
+      const exists = current.some((entry) => entry.id === connection.id);
+      return exists
+        ? current.map((entry) => (entry.id === connection.id ? connection : entry))
+        : [...current, connection];
+    });
+    setDefaultConnectionId(connection.id);
+    setEditingConnection(connection);
+    setNodes((currentNodes) =>
+      currentNodes.map((node) =>
+        Object.prototype.hasOwnProperty.call(node.data, 'connectionId')
+          ? {
+              ...node,
+              data: {
+                ...node.data,
+                connectionId: connection.id,
+              } as WorkflowNodeData,
+            }
+          : node,
+      ),
+    );
+    setConnectionStatus(
+      affectedCount === 1
+        ? 'Preset saved and applied to 1 node.'
+        : `Preset saved and applied to ${affectedCount} nodes.`,
+    );
+  }
+
+  function updateProviderHealth(connectionId: string, health: ProviderConnectionHealth) {
+    providerHealthByIdRef.current = {
+      ...providerHealthByIdRef.current,
+      [connectionId]: health,
+    };
+    setProviderHealthById(providerHealthByIdRef.current);
+  }
+
+  function updateLmStudioModelCache(connectionId: string, models: LmStudioModelInfo[]) {
+    lmStudioModelsByConnectionIdRef.current = {
+      ...lmStudioModelsByConnectionIdRef.current,
+      [connectionId]: models,
+    };
+    setLmStudioModelsByConnectionId(lmStudioModelsByConnectionIdRef.current);
+  }
+
+  function updateOpenRouterModelCache(connectionId: string, models: OpenRouterModelInfo[]) {
+    openRouterModelsByConnectionIdRef.current = {
+      ...openRouterModelsByConnectionIdRef.current,
+      [connectionId]: models,
+    };
+    setOpenRouterModelsByConnectionId(openRouterModelsByConnectionIdRef.current);
+  }
+
+  function updateOllamaModelCache(connectionId: string, models: OllamaModelInfo[]) {
+    ollamaModelsByConnectionIdRef.current = {
+      ...ollamaModelsByConnectionIdRef.current,
+      [connectionId]: models,
+    };
+    setOllamaModelsByConnectionId(ollamaModelsByConnectionIdRef.current);
+  }
+
+  function connectionWithLmStudioCapabilities(
+    connection: ConnectionPreset,
+    models = lmStudioModelsByConnectionIdRef.current[connection.id] ?? [],
+  ): ConnectionPreset {
+    return connectionWithLmStudioCapabilitiesForModels(connection, models);
+  }
+
+  function connectionWithOpenRouterCapabilities(
+    connection: ConnectionPreset,
+    models = openRouterModelsByConnectionIdRef.current[connection.id] ?? [],
+  ): ConnectionPreset {
+    return connectionWithOpenRouterCapabilitiesForModels(connection, models);
+  }
+
+  function connectionWithOllamaCapabilities(
+    connection: ConnectionPreset,
+    models = ollamaModelsByConnectionIdRef.current[connection.id] ?? [],
+  ): ConnectionPreset {
+    return connectionWithOllamaCapabilitiesForModels(connection, models);
+  }
+
+  function applyDetectedConnectionCapabilities(
+    connection: ConnectionPreset,
+    capabilities: ProviderConnectionCapabilities,
+  ) {
+    if (
+      !isLmStudioConnection(connection) &&
+      !isOllamaConnection(connection) &&
+      !isOpenRouterConnection(connection)
+    ) {
+      return;
+    }
+    const vision = capabilities.vision === true;
+    setEditingConnection((current) =>
+      current.id === connection.id
+        ? isLmStudioConnection(current)
+          ? connectionWithLmStudioCapabilities(current)
+          : isOllamaConnection(current)
+            ? connectionWithOllamaCapabilities(current)
+            : connectionWithOpenRouterCapabilities(current)
+        : current,
+    );
+    setConnections((current) =>
+      current.map((entry) =>
+        entry.id === connection.id && entry.vision !== vision
+          ? { ...entry, vision }
+          : entry,
+      ),
+    );
+  }
+
+  async function checkProviderConnection(
+    connection: ConnectionPreset,
+    options: { showStatus?: boolean; selectFallbackModel?: boolean; markChecking?: boolean } = {},
+  ): Promise<ProviderConnectionHealth> {
+    if (options.markChecking !== false) {
+      updateProviderHealth(connection.id, { status: 'checking', detail: 'Checking ...' });
+    }
+    if (options.showStatus) {
+      setConnectionStatus(`${connection.label}: Checking ...`);
+    }
+    try {
+      let health: ProviderConnectionHealth;
+      if (connection.kind === 'comfyui') {
+        const result = await window.rpgraph.checkComfyConnection({ baseUrl: connection.baseUrl });
+        if (!result.ok) {
+          health = {
+            status: 'offline',
+            detail: result.error ?? 'ComfyUI is not reachable.',
+            capabilities: { image: true },
+            checkedAt: providerCheckedAt(),
+          };
+          updateProviderHealth(connection.id, health);
+          if (options.showStatus) {
+            setConnectionStatus(providerCheckConnectionStatus(connection, health));
+          }
+          return health;
+        }
+        const devices = Array.isArray(result.devices) ? result.devices.length : 0;
+        health = {
+          status: 'online',
+          detail: devices > 0
+            ? `Connected to ComfyUI. ${devices} device${devices === 1 ? '' : 's'} reported.`
+            : 'Connected to ComfyUI.',
+          capabilities: { image: true },
+          checkedAt: providerCheckedAt(),
+        };
+      } else if (
+        connectionRequiresApiKeyForModelList(connection) &&
+        connection.apiKey.trim().length === 0
+      ) {
+        health = {
+          status: 'offline',
+          detail: 'Missing API key.',
+          checkedAt: providerCheckedAt(),
+        };
+      } else if (isLmStudioConnection(connection)) {
+        const modelDetails = lmStudioLlmModels(await window.rpgraph.listLmStudioModels(connection));
+        updateLmStudioModelCache(connection.id, modelDetails);
+        const models = modelDetails.map((model) => model.id);
+        const fallbackModel = models.includes(connection.model)
+          ? connection.model
+          : options.selectFallbackModel
+            ? models[0] ?? connection.model
+            : connection.model;
+        const detectedConnection = connectionWithLmStudioCapabilities(
+          { ...connection, model: fallbackModel },
+          modelDetails,
+        );
+        if (options.selectFallbackModel && detectedConnection.model !== connection.model) {
+          setEditingConnection(detectedConnection);
+          setConnections((current) =>
+            current.map((entry) => (entry.id === detectedConnection.id ? detectedConnection : entry)),
+          );
+        } else {
+          applyDetectedConnectionCapabilities(
+            detectedConnection,
+            lmStudioCapabilitiesForConnection(detectedConnection, modelDetails),
+          );
+        }
+        if (editingConnection.id === connection.id) {
+          setAvailableConnectionModels(models);
+        }
+        const capabilities = lmStudioCapabilitiesForConnection(detectedConnection, modelDetails);
+        health = {
+          status: models.length > 0 ? 'online' : 'offline',
+          detail: models.length > 0
+            ? providerModelCountDetail(models.length)
+            : 'Connection succeeded, but no LLM models were returned.',
+          capabilities,
+          checkedAt: providerCheckedAt(),
+        };
+      } else if (isOllamaConnection(connection)) {
+        const modelDetails = await window.rpgraph.listOllamaModels(connection);
+        updateOllamaModelCache(connection.id, modelDetails);
+        const models = modelDetails.map((model) => model.id);
+        const fallbackModel = models.includes(connection.model)
+          ? connection.model
+          : options.selectFallbackModel
+            ? models[0] ?? connection.model
+            : connection.model;
+        const detectedConnection = connectionWithOllamaCapabilities(
+          { ...connection, model: fallbackModel },
+          modelDetails,
+        );
+        if (options.selectFallbackModel && detectedConnection.model !== connection.model) {
+          setEditingConnection(detectedConnection);
+          setConnections((current) =>
+            current.map((entry) => (entry.id === detectedConnection.id ? detectedConnection : entry)),
+          );
+        } else {
+          applyDetectedConnectionCapabilities(
+            detectedConnection,
+            ollamaCapabilitiesForConnection(detectedConnection, modelDetails),
+          );
+        }
+        if (editingConnection.id === connection.id) {
+          setAvailableConnectionModels(models);
+        }
+        const capabilities = ollamaCapabilitiesForConnection(detectedConnection, modelDetails);
+        health = {
+          status: models.length > 0 ? 'online' : 'offline',
+          detail: models.length > 0
+            ? providerModelCountDetail(models.length)
+            : 'Connection succeeded, but no LLM models were returned.',
+          capabilities,
+          checkedAt: providerCheckedAt(),
+        };
+      } else if (isOpenRouterConnection(connection)) {
+        const modelDetails = await window.rpgraph.listOpenRouterModels(connection);
+        updateOpenRouterModelCache(connection.id, modelDetails);
+        const models = modelDetails.map((model) => model.id);
+        const fallbackModel = models.includes(connection.model)
+          ? connection.model
+          : options.selectFallbackModel
+            ? models[0] ?? connection.model
+            : connection.model;
+        const detectedConnection = connectionWithOpenRouterCapabilities(
+          { ...connection, model: fallbackModel },
+          modelDetails,
+        );
+        if (options.selectFallbackModel && detectedConnection.model !== connection.model) {
+          setEditingConnection(detectedConnection);
+          setConnections((current) =>
+            current.map((entry) => (entry.id === detectedConnection.id ? detectedConnection : entry)),
+          );
+        } else {
+          applyDetectedConnectionCapabilities(
+            detectedConnection,
+            openRouterCapabilitiesForConnection(detectedConnection, modelDetails),
+          );
+        }
+        if (editingConnection.id === connection.id) {
+          setAvailableConnectionModels(models);
+        }
+        const capabilities = openRouterCapabilitiesForConnection(detectedConnection, modelDetails);
+        health = {
+          status: models.length > 0 ? 'online' : 'offline',
+          detail: models.length > 0
+            ? providerModelCountDetail(models.length)
+            : 'Connection succeeded, but no models were returned.',
+          capabilities,
+          checkedAt: providerCheckedAt(),
+        };
+      } else {
+        const models = await window.rpgraph.listModels(connection);
+        const fallbackModel = models.includes(connection.model)
+          ? connection.model
+          : options.selectFallbackModel
+            ? models[0] ?? connection.model
+            : connection.model;
+        if (options.selectFallbackModel && fallbackModel !== connection.model) {
+          const updatedConnection = { ...connection, model: fallbackModel };
+          setEditingConnection(updatedConnection);
+          setConnections((current) =>
+            current.map((entry) => (entry.id === updatedConnection.id ? updatedConnection : entry)),
+          );
+        }
+        if (editingConnection.id === connection.id) {
+          setAvailableConnectionModels(models);
+        }
+        health = {
+          status: models.length > 0 ? 'online' : 'offline',
+          detail: models.length > 0
+            ? providerModelCountDetail(models.length)
+            : 'Connection succeeded, but no models were returned.',
+          capabilities: { text: models.length > 0 },
+          checkedAt: providerCheckedAt(),
+        };
+      }
+      updateProviderHealth(connection.id, health);
+      if (options.showStatus) {
+        setConnectionStatus(providerCheckConnectionStatus(connection, health));
+      }
+      return health;
+    } catch (error) {
+      const fallbackModels = connection.kind !== 'comfyui'
+        ? fallbackModelsForConnection(connection, error)
+        : null;
+      const health: ProviderConnectionHealth = fallbackModels
+        ? {
+            status: 'online',
+            detail: 'Using bundled model list.',
+            checkedAt: providerCheckedAt(),
+          }
+        : {
+            status: 'offline',
+            detail: providerErrorMessage(error),
+            checkedAt: providerCheckedAt(),
+          };
+      if (fallbackModels && editingConnection.id === connection.id) {
+        setAvailableConnectionModels(fallbackModels);
+      }
+      updateProviderHealth(connection.id, health);
+      if (options.showStatus) {
+        setConnectionStatus(providerCheckConnectionStatus(connection, health));
+      }
+      return health;
+    }
+  }
+
+  async function checkProviderConnectionById(connectionId: string, showStatus = false) {
+    const connection = connections.find((entry) => entry.id === connectionId);
+    if (!connection) {
+      updateProviderHealth(connectionId, {
+        status: 'offline',
+        detail: 'Provider is no longer saved.',
+        checkedAt: providerCheckedAt(),
+      });
+      return;
+    }
+    await checkProviderConnection(connection, { showStatus });
+  }
+
+  async function checkProviderConnections(
+    connectionsToCheck: ConnectionPreset[],
+    options: { showStatus?: boolean; markChecking?: boolean } = {},
+  ) {
+    if (!connectionsToCheck.length) {
+      return providerHealthByIdRef.current;
+    }
+    const results = await Promise.all(
+      connectionsToCheck.map(async (connection) => [
+        connection.id,
+        await checkProviderConnection(connection, options),
+      ] as const),
+    );
+    return {
+      ...providerHealthByIdRef.current,
+      ...Object.fromEntries(results),
+    };
+  }
+  const checkProviderConnectionByIdRef = useRef(checkProviderConnectionById);
+  const checkProviderConnectionsRef = useRef(checkProviderConnections);
+  const inspectComfyWorkflowRef = useRef(inspectComfyWorkflow);
+  const editingConnectionRef = useRef(editingConnection);
+  useEffect(() => {
+    checkProviderConnectionByIdRef.current = checkProviderConnectionById;
+    checkProviderConnectionsRef.current = checkProviderConnections;
+    inspectComfyWorkflowRef.current = inspectComfyWorkflow;
+    editingConnectionRef.current = editingConnection;
+  });
+
+  useEffect(() => {
+    if (!settingsLoadComplete || startupProviderCheckCompleteRef.current || connections.length === 0) {
+      return;
+    }
+    startupProviderCheckCompleteRef.current = true;
+    void checkProviderConnectionsRef.current(connections);
+  }, [connections, settingsLoadComplete]);
+
+  useEffect(() => {
+    if (!settingsLoadComplete) {
+      return;
+    }
+    const checkLocalProviders = async () => {
+      if (localProviderPollActiveRef.current) {
+        return;
+      }
+      const localConnections = connections.filter(isLocalProviderConnection);
+      if (!localConnections.length) {
+        return;
+      }
+      localProviderPollActiveRef.current = true;
+      try {
+        await checkProviderConnectionsRef.current(localConnections, { markChecking: false });
+      } finally {
+        localProviderPollActiveRef.current = false;
+      }
+    };
+    const intervalId = window.setInterval(() => {
+      void checkLocalProviders();
+    }, 2000);
+    return () => window.clearInterval(intervalId);
+  }, [connections, settingsLoadComplete]);
+
+  useEffect(() => {
+    if (!showConnections) {
+      return;
+    }
+    if (editingConnection.kind !== 'comfyui') {
+      queueMicrotask(() => setComfyWorkflowInspection(null));
+      return;
+    }
+    void inspectComfyWorkflowRef.current(editingConnectionRef.current, { showStatus: false });
+  }, [editingConnection.kind, editingConnection.comfyWorkflowPath, showConnections]);
+
+  function deleteConnection() {
+    if (connections.length === 1) {
+      setConnectionStatus('At least one preset must remain.');
+      return;
+    }
+    if (
+      isLlmConnection(editingConnection) &&
+      connections.filter((connection) => isLlmConnection(connection) && connection.id !== editingConnection.id).length === 0
+    ) {
+      setConnectionStatus('At least one LLM provider must remain.');
+      return;
+    }
+
+    const remaining = connections.filter(
+      (connection) => connection.id !== editingConnection.id,
+    );
+    const fallbackConnection = firstLlmConnection(remaining);
+    setConnections(remaining);
+    const nextProviderHealth = { ...providerHealthByIdRef.current };
+    delete nextProviderHealth[editingConnection.id];
+    providerHealthByIdRef.current = nextProviderHealth;
+    setProviderHealthById(nextProviderHealth);
+    setDefaultConnectionId(fallbackConnection.id);
+    setEditingConnection({ ...(remaining[0] ?? fallbackConnection) });
+    setConnectionStatus('Preset removed.');
+  }
+
+  async function unloadLocalLlmModelsForComfy(reason: string) {
+    const localLlmConnections = connections.filter((connection) =>
+      isLocalProviderConnection(connection) &&
+      (isLmStudioConnection(connection) || isOllamaConnection(connection)),
+    );
+    if (!localLlmConnections.length) {
+      return;
+    }
+    const failures: string[] = [];
+    await Promise.all(
+      localLlmConnections.map(async (connection) => {
+        try {
+          if (isLmStudioConnection(connection)) {
+            await window.rpgraph.unloadLmStudioModels(connection);
+          } else {
+            await window.rpgraph.unloadOllamaModels(connection);
+          }
+        } catch (error) {
+          failures.push(`${connection.label}: ${error instanceof Error ? error.message : String(error)}`);
+        }
+      }),
+    );
+    if (failures.length) {
+      notifySystem('warning', `${reason}: ${failures.join('; ')}`);
+    }
+  }
+
+  async function unloadComfyConnectionForClose(connection: ConnectionPreset) {
+    if (connection.kind !== 'comfyui') {
+      return;
+    }
+    try {
+      await window.rpgraph.freeComfyMemory({ baseUrl: connection.baseUrl });
+      updateProviderHealth(connection.id, {
+        status: 'online',
+        detail: 'ComfyUI models unloaded.',
+        checkedAt: providerCheckedAt(),
+      });
+    } catch (error) {
+      notifySystem(
+        'warning',
+        `ComfyUI unload on close failed: ${error instanceof Error ? error.message : String(error)}`,
+      );
+    }
+  }
+
+  function connectionRequiresApiKeyForModelList(connection: ConnectionPreset) {
+    const providerKind = llmProviderKind(connection);
+    return providerKind === 'openai' || providerKind === 'gemini';
+  }
+
+  function fallbackModelsForConnection(connection: ConnectionPreset, error: unknown) {
+    const message = error instanceof Error ? error.message : String(error);
+    if (
+      llmProviderKind(connection) === 'gemini' &&
+      (message.includes('404') || message.includes('NOT_FOUND'))
+    ) {
+      return ['gemini-2.5-flash', 'gemini-2.5-pro'];
+    }
+    return null;
+  }
+
+  async function loadConnectionModels(selectFallbackModel: boolean) {
+    if (!isLlmConnection(editingConnection)) {
+      setAvailableConnectionModels([]);
+      setConnectionStatus('ComfyUI model lists load automatically from the ComfyUI provider panel.');
+      return;
+    }
+    if (
+      connectionRequiresApiKeyForModelList(editingConnection) &&
+      editingConnection.apiKey.trim().length === 0
+    ) {
+      setAvailableConnectionModels([]);
+      setConnectionStatus('Add an API key before loading models for this provider.');
+      return;
+    }
+
+    setConnectionStatus('Checking models ...');
+
+    try {
+      const lmStudioModels = isLmStudioConnection(editingConnection)
+        ? lmStudioLlmModels(await window.rpgraph.listLmStudioModels(editingConnection))
+        : null;
+      if (lmStudioModels) {
+        updateLmStudioModelCache(editingConnection.id, lmStudioModels);
+      }
+      const ollamaModels = !lmStudioModels && isOllamaConnection(editingConnection)
+        ? await window.rpgraph.listOllamaModels(editingConnection)
+        : null;
+      if (ollamaModels) {
+        updateOllamaModelCache(editingConnection.id, ollamaModels);
+      }
+      const openRouterModels = !lmStudioModels && !ollamaModels && isOpenRouterConnection(editingConnection)
+        ? await window.rpgraph.listOpenRouterModels(editingConnection)
+        : null;
+      if (openRouterModels) {
+        updateOpenRouterModelCache(editingConnection.id, openRouterModels);
+      }
+      const models = lmStudioModels
+        ? lmStudioModels.map((model) => model.id)
+        : ollamaModels
+          ? ollamaModels.map((model) => model.id)
+        : openRouterModels
+          ? openRouterModels.map((model) => model.id)
+        : await window.rpgraph.listModels(editingConnection);
+      if (models.length === 0) {
+        setAvailableConnectionModels([]);
+        updateProviderHealth(editingConnection.id, {
+          status: 'offline',
+          detail: lmStudioModels || ollamaModels
+            ? 'Connection succeeded, but no LLM models were returned.'
+            : 'Connection succeeded, but no models were returned.',
+          capabilities: lmStudioModels || ollamaModels
+            ? { text: false, vision: false, tools: false }
+            : openRouterModels
+              ? { text: false, vision: false }
+              : undefined,
+          checkedAt: providerCheckedAt(),
+        });
+        setConnectionStatus('Connection successful, but no models were returned.');
+        return;
+      }
+
+      let connection = {
+        ...editingConnection,
+        model: models.includes(editingConnection.model)
+          ? editingConnection.model
+          : selectFallbackModel
+            ? models[0]
+            : editingConnection.model,
+      };
+      if (lmStudioModels) {
+        connection = connectionWithLmStudioCapabilities(connection, lmStudioModels);
+      } else if (ollamaModels) {
+        connection = connectionWithOllamaCapabilities(connection, ollamaModels);
+      } else if (openRouterModels) {
+        connection = connectionWithOpenRouterCapabilities(connection, openRouterModels);
+      }
+      const capabilities = lmStudioModels
+        ? lmStudioCapabilitiesForConnection(connection, lmStudioModels)
+        : ollamaModels
+          ? ollamaCapabilitiesForConnection(connection, ollamaModels)
+        : openRouterModels
+          ? openRouterCapabilitiesForConnection(connection, openRouterModels)
+        : { text: true };
+      setAvailableConnectionModels(models);
+      setEditingConnection(connection);
+      updateProviderHealth(connection.id, {
+        status: 'online',
+        detail: providerModelCountDetail(models.length),
+        capabilities,
+        checkedAt: providerCheckedAt(),
+      });
+      setConnectionStatus(
+        `Connected. ${models.length} ${models.length === 1 ? 'model' : 'models'} found.`,
+      );
+    } catch (error) {
+      const fallbackModels = fallbackModelsForConnection(editingConnection, error);
+      if (fallbackModels) {
+        const connection = {
+          ...editingConnection,
+          model: fallbackModels.includes(editingConnection.model)
+            ? editingConnection.model
+            : selectFallbackModel
+              ? fallbackModels[0]
+              : editingConnection.model,
+        };
+        setAvailableConnectionModels(fallbackModels);
+        setEditingConnection(connection);
+        updateProviderHealth(connection.id, {
+          status: 'online',
+          detail: 'Using bundled model list.',
+          checkedAt: providerCheckedAt(),
+        });
+        setConnectionStatus('Gemini does not expose this model list endpoint. Using bundled Gemini models.');
+        return;
+      }
+
+      setAvailableConnectionModels([]);
+      updateProviderHealth(editingConnection.id, {
+        status: 'offline',
+        detail: providerErrorMessage(error),
+        checkedAt: providerCheckedAt(),
+      });
+      setConnectionStatus(
+        `Connection failed: ${error instanceof Error ? error.message : String(error)}`,
+      );
+    }
+  }
+
+  async function checkConnectionModels() {
+    await loadConnectionModels(true);
+  }
+
+  async function loadComfyModelLists(
+    connectionOverride?: ConnectionPreset,
+    options: { showStatus?: boolean; markActive?: boolean } = {},
+  ) {
+    const connection = connectionOverride ?? connectionFromEditingConnection();
+    if (connection.kind !== 'comfyui') {
+      setConnectionStatus('Choose a ComfyUI provider before loading ComfyUI models.');
+      return;
+    }
+
+    if (comfyProviderActionActive === 'models') {
+      return;
+    }
+
+    if (options.markActive !== false) {
+      setComfyProviderActionActive('models');
+    }
+    if (options.showStatus !== false) {
+      setConnectionStatus('Loading ComfyUI model lists ...');
+    }
+    try {
+      const [
+        checkpoints,
+        loras,
+        vae,
+        textEncoders,
+        diffusionModels,
+      ] = await Promise.all([
+        window.rpgraph.listComfyModels({ baseUrl: connection.baseUrl, category: 'checkpoints' }),
+        window.rpgraph.listComfyModels({ baseUrl: connection.baseUrl, category: 'loras' }),
+        window.rpgraph.listComfyModels({ baseUrl: connection.baseUrl, category: 'vae' }),
+        window.rpgraph.listComfyModels({ baseUrl: connection.baseUrl, category: 'text_encoders' }),
+        window.rpgraph.listComfyModels({ baseUrl: connection.baseUrl, category: 'diffusion_models' }),
+      ]);
+      setAvailableComfyModels({
+        checkpoints,
+        loras,
+        vae,
+        text_encoders: textEncoders,
+        diffusion_models: diffusionModels,
+      });
+      setEditingConnection(connection);
+      const total = checkpoints.length + loras.length + vae.length + textEncoders.length + diffusionModels.length;
+      if (total === 0) {
+        const healthResult = await window.rpgraph.checkComfyConnection({ baseUrl: connection.baseUrl });
+        if (!healthResult.ok) {
+          updateProviderHealth(connection.id, {
+            status: 'offline',
+            detail: healthResult.error ?? 'ComfyUI is not reachable.',
+            checkedAt: providerCheckedAt(),
+          });
+          if (options.showStatus !== false) {
+            setConnectionStatus(healthResult.error ?? 'ComfyUI is not reachable.');
+          }
+          return;
+        }
+      }
+      updateProviderHealth(connection.id, {
+        status: 'online',
+        detail: `Loaded ${total} ComfyUI model entr${total === 1 ? 'y' : 'ies'}.`,
+        checkedAt: providerCheckedAt(),
+      });
+      if (options.showStatus !== false) {
+        setConnectionStatus(`Loaded ${total} ComfyUI model entr${total === 1 ? 'y' : 'ies'}.`);
+      }
+    } catch (error) {
+      setAvailableComfyModels({
+        checkpoints: [],
+        loras: [],
+        vae: [],
+        text_encoders: [],
+        diffusion_models: [],
+      });
+      updateProviderHealth(connection.id, {
+        status: 'offline',
+        detail: providerErrorMessage(error),
+        checkedAt: providerCheckedAt(),
+      });
+      if (options.showStatus !== false) {
+        setConnectionStatus(
+          `ComfyUI model list failed: ${error instanceof Error ? error.message : String(error)}`,
+        );
+      }
+    } finally {
+      if (options.markActive !== false) {
+        setComfyProviderActionActive(null);
+      }
+    }
+  }
+
+  async function inspectComfyWorkflow(
+    connectionOverride?: ConnectionPreset,
+    options: { showStatus?: boolean } = {},
+  ) {
+    const connection = connectionOverride ?? connectionFromEditingConnection();
+    if (connection.kind !== 'comfyui') {
+      setComfyWorkflowInspection(null);
+      return null;
+    }
+
+    const workflowPath = connection.comfyWorkflowPath || defaultComfyWorkflowPath;
+    if (pendingComfyWorkflowRepair?.workflowPath !== workflowPath) {
+      setPendingComfyWorkflowRepair(null);
+      setComfyWorkflowRepairStatus('');
+    }
+    try {
+      const inspection = await window.rpgraph.inspectComfyWorkflow({ workflowPath });
+      setComfyWorkflowInspection(inspection);
+      if (inspection.ok) {
+        setPendingComfyWorkflowRepair(null);
+        setComfyWorkflowRepairStatus('');
+      }
+      if (!inspection.ok && options.showStatus !== false) {
+        setConnectionStatus(`ComfyUI workflow is not compatible: ${inspection.missing.join(', ')}.`);
+      }
+      return inspection;
+    } catch (error) {
+      const inspection: ComfyWorkflowInspection = {
+        ok: false,
+        format: 'unknown',
+        modelSource: 'missing',
+        placeholders: [],
+        missing: [error instanceof Error ? error.message : String(error)],
+        workflowPath,
+        fileName: workflowPath.split(/[\\/]/).pop() ?? workflowPath,
+      };
+      setComfyWorkflowInspection(inspection);
+      if (options.showStatus !== false) {
+        setConnectionStatus(`ComfyUI workflow check failed: ${inspection.missing[0]}.`);
+      }
+      return inspection;
+    }
+  }
+
+  async function repairComfyWorkflow(llmConnectionId: string) {
+    const connection = connectionFromEditingConnection();
+    if (connection.kind !== 'comfyui') {
+      setConnectionStatus('Choose a ComfyUI provider before fixing a workflow.');
+      return;
+    }
+    const llmConnection = connections.find((entry) => entry.id === llmConnectionId && isLlmConnection(entry));
+    if (!llmConnection) {
+      setComfyWorkflowRepairStatus('Choose an LLM provider to fix this workflow.');
+      return;
+    }
+
+    const workflowPath = connection.comfyWorkflowPath || defaultComfyWorkflowPath;
+    setComfyProviderActionActive('repair');
+    setPendingComfyWorkflowRepair(null);
+    setComfyWorkflowRepairStatus(`Fixing workflow with ${llmConnection.label} ...`);
+    try {
+      const result = await window.rpgraph.repairComfyWorkflow({
+        workflowPath,
+        connection: llmConnection,
+      });
+      setPendingComfyWorkflowRepair({
+        workflowPath,
+        workflowJson: result.workflowJson,
+        inspection: result.inspection,
+      });
+      setComfyWorkflowRepairStatus(
+        result.changed
+          ? 'Workflow fixed and checked. Apply the fix to overwrite the workflow JSON.'
+          : 'Workflow already passes the compatibility check.',
+      );
+      setConnectionStatus('ComfyUI workflow fix is ready to apply.');
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      setPendingComfyWorkflowRepair(null);
+      setComfyWorkflowRepairStatus(`Workflow fix failed: ${message}`);
+      setConnectionStatus(`ComfyUI workflow fix failed: ${message}`);
+      notifySystem('error', `ComfyUI workflow fix failed: ${message}`);
+    } finally {
+      setComfyProviderActionActive(null);
+    }
+  }
+
+  async function applyComfyWorkflowRepair() {
+    const connection = connectionFromEditingConnection();
+    const workflowPath = connection.kind === 'comfyui'
+      ? connection.comfyWorkflowPath || defaultComfyWorkflowPath
+      : '';
+    if (!pendingComfyWorkflowRepair || pendingComfyWorkflowRepair.workflowPath !== workflowPath) {
+      setComfyWorkflowRepairStatus('Run Fix Prompt before applying a repair.');
+      return;
+    }
+
+    setComfyProviderActionActive('apply-repair');
+    setComfyWorkflowRepairStatus('Applying fixed workflow ...');
+    try {
+      const result = await window.rpgraph.applyComfyWorkflowRepair({
+        workflowPath,
+        workflowJson: pendingComfyWorkflowRepair.workflowJson,
+      });
+      setPendingComfyWorkflowRepair(null);
+      setComfyWorkflowInspection(result.inspection);
+      setComfyWorkflowRepairStatus('');
+      setConnectionStatus(`ComfyUI workflow fixed and applied: ${result.fileName}.`);
+      notifySystem('info', `ComfyUI workflow fixed and applied: ${result.fileName}.`);
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      setComfyWorkflowRepairStatus(`Apply failed: ${message}`);
+      setConnectionStatus(`ComfyUI workflow apply failed: ${message}`);
+      notifySystem('error', `ComfyUI workflow apply failed: ${message}`);
+    } finally {
+      setComfyProviderActionActive(null);
+    }
+  }
+
+  async function selectComfyWorkflow() {
+    const connection = connectionFromEditingConnection();
+    if (connection.kind !== 'comfyui') {
+      setConnectionStatus('Choose a ComfyUI provider before selecting a workflow.');
+      return;
+    }
+
+    try {
+      const result = await window.rpgraph.selectComfyWorkflow();
+      if (result.canceled || !result.filePath) {
+        return;
+      }
+      setEditingConnection({
+        ...connection,
+        comfyWorkflowPath: result.filePath,
+      });
+      setConnectionStatus(`ComfyUI workflow selected: ${result.fileName ?? result.filePath}`);
+      void inspectComfyWorkflow({ ...connection, comfyWorkflowPath: result.filePath });
+    } catch (error) {
+      setConnectionStatus(
+        `ComfyUI workflow selection failed: ${error instanceof Error ? error.message : String(error)}`,
+      );
+    }
+  }
+
+  async function generateComfyTestImage() {
+    const connection = connectionFromEditingConnection();
+    if (connection.kind !== 'comfyui') {
+      setConnectionStatus('Choose a ComfyUI provider before generating an image.');
+      return;
+    }
+    const workflowPath = connection.comfyWorkflowPath || defaultComfyWorkflowPath;
+    const inspection = comfyWorkflowInspection?.workflowPath === workflowPath
+      ? comfyWorkflowInspection
+      : await inspectComfyWorkflow(connection);
+    if (inspection && !inspection.ok) {
+      setConnectionStatus(`ComfyUI workflow is not compatible: ${inspection.missing.join(', ')}.`);
+      notifySystem('error', `ComfyUI workflow is not compatible: ${inspection.missing.join(', ')}.`);
+      return;
+    }
+
+    setComfyProviderActionActive('generate');
+    setConnectionStatus('Unloading local LLM models before ComfyUI generation ...');
+    try {
+      await unloadLocalLlmModelsForComfy('Local LLM unload before ComfyUI generation failed');
+      setConnectionStatus('Generating image with ComfyUI ...');
+      const result = await window.rpgraph.runComfyWorkflowPath({
+        baseUrl: connection.baseUrl,
+        workflowPath,
+        width: connection.comfyWidth ?? defaultComfyWidth,
+        height: connection.comfyHeight ?? defaultComfyHeight,
+        prompt: connection.comfyPrompt || defaultComfyPrompt,
+        checkpointName: connection.comfyCheckpointName ?? defaultComfyCheckpointName,
+        diffusionModelName: connection.comfyDiffusionModelName ?? defaultComfyDiffusionModelName,
+        vaeName: connection.comfyVaeName ?? defaultComfyVaeName,
+        textEncoderName: connection.comfyTextEncoderName ?? defaultComfyTextEncoderName,
+        loraSlots: runtimeComfyLoraSlots(connection.comfyLoraSlots ?? defaultComfyLoraSlots),
+        timeoutMs: 180000,
+      });
+      setEditingConnection(connection);
+      setComfyPreview(result);
+      updateProviderHealth(connection.id, {
+        status: 'online',
+        detail: `Generated ${result.images.length} image${result.images.length === 1 ? '' : 's'}.`,
+        checkedAt: providerCheckedAt(),
+      });
+      setConnectionStatus(`ComfyUI generated ${result.images.length} image${result.images.length === 1 ? '' : 's'}.`);
+      notifySystem('info', `ComfyUI generated ${result.images.length} image${result.images.length === 1 ? '' : 's'}.`);
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      updateProviderHealth(connection.id, {
+        status: 'offline',
+        detail: message,
+        checkedAt: providerCheckedAt(),
+      });
+      setConnectionStatus(`ComfyUI generation failed: ${message}`);
+      notifySystem('error', `ComfyUI generation failed: ${message}`);
+    } finally {
+      setComfyProviderActionActive(null);
+    }
+  }
+
+  async function loadCharacterComfyLoras(providerId: string) {
+    const connection = connections.find((entry) => entry.id === providerId && entry.kind === 'comfyui');
+    if (!connection) {
+      throw new Error('Choose a ComfyUI provider first.');
+    }
+    const cacheKey = `${connection.id}|${connection.baseUrl}`;
+    const cachedLoras = characterComfyLoraCacheRef.current[cacheKey];
+    if (cachedLoras) {
+      return cachedLoras;
+    }
+    const loraRequest = window.rpgraph.listComfyModels({ baseUrl: connection.baseUrl, category: 'loras' });
+    characterComfyLoraCacheRef.current = {
+      ...characterComfyLoraCacheRef.current,
+      [cacheKey]: loraRequest,
+    };
+    let loras: string[];
+    try {
+      loras = await loraRequest;
+    } catch (error) {
+      const nextCache = { ...characterComfyLoraCacheRef.current };
+      delete nextCache[cacheKey];
+      characterComfyLoraCacheRef.current = nextCache;
+      throw error;
+    }
+    characterComfyLoraCacheRef.current = {
+      ...characterComfyLoraCacheRef.current,
+      [cacheKey]: loras,
+    };
+    updateProviderHealth(connection.id, {
+      status: 'online',
+      detail: `Loaded ${loras.length} ComfyUI LoRA${loras.length === 1 ? '' : 's'}.`,
+      checkedAt: providerCheckedAt(),
+    });
+    if (editingConnection.id === connection.id) {
+      setAvailableComfyModels((current) => ({
+        ...current,
+        loras,
+      }));
+    }
+    return loras;
+  }
+
+  async function generateCharacterComfyPreview(request: {
+    providerId: string;
+    characterName: string;
+    characterContext: string;
+    loraName: string;
+    appearance: string;
+    scenarioPrompt: string;
+  }) {
+    const connection = connections.find((entry) => entry.id === request.providerId && entry.kind === 'comfyui');
+    if (!connection) {
+      throw new Error('Choose a ComfyUI provider first.');
+    }
+    const appearance = request.appearance.trim();
+    const scenarioPrompt = request.scenarioPrompt.trim();
+    const prompt = appearance
+      ? `character reference image of ${request.characterName}, ${appearance}${scenarioPrompt ? `, ${scenarioPrompt}` : ''}`
+      : `character reference image of ${request.characterName}, ${request.characterContext}${scenarioPrompt ? `, ${scenarioPrompt}` : ''}`;
+    await unloadLocalLlmModelsForComfy('Local LLM unload before character preview failed');
+    const result = await window.rpgraph.runComfyWorkflowPath({
+      baseUrl: connection.baseUrl,
+      workflowPath: connection.comfyWorkflowPath || defaultComfyWorkflowPath,
+      width: connection.comfyWidth ?? defaultComfyWidth,
+      height: connection.comfyHeight ?? defaultComfyHeight,
+      prompt,
+      checkpointName: connection.comfyCheckpointName ?? defaultComfyCheckpointName,
+      diffusionModelName: connection.comfyDiffusionModelName ?? defaultComfyDiffusionModelName,
+      vaeName: connection.comfyVaeName ?? defaultComfyVaeName,
+      textEncoderName: connection.comfyTextEncoderName ?? defaultComfyTextEncoderName,
+      loraSlots: characterComfyLoraSlots(connection.comfyLoraSlots ?? defaultComfyLoraSlots, request.loraName),
+      timeoutMs: 180000,
+    });
+    updateProviderHealth(connection.id, {
+      status: 'online',
+      detail: `Generated ${result.images.length} character preview image${result.images.length === 1 ? '' : 's'}.`,
+      checkedAt: providerCheckedAt(),
+    });
+    return result.images.map((image) => ({
+      dataUrl: image.dataUrl,
+      filename: image.filename,
+    }));
+  }
+
+  async function unloadCharacterComfyModels(providerId: string) {
+    const connection = connections.find((entry) => entry.id === providerId && entry.kind === 'comfyui');
+    if (!connection) {
+      throw new Error('Choose a ComfyUI provider first.');
+    }
+    await window.rpgraph.freeComfyMemory({ baseUrl: connection.baseUrl });
+    updateProviderHealth(connection.id, {
+      status: 'online',
+      detail: 'ComfyUI models unloaded.',
+      checkedAt: providerCheckedAt(),
+    });
+  }
+
+  async function unloadComfyModels() {
+    const connection = connectionFromEditingConnection();
+    if (connection.kind !== 'comfyui') {
+      setConnectionStatus('Choose a ComfyUI provider before unloading models.');
+      return;
+    }
+
+    setComfyProviderActionActive('unload');
+    setConnectionStatus('Requesting ComfyUI model unload ...');
+    try {
+      await window.rpgraph.freeComfyMemory({ baseUrl: connection.baseUrl });
+      setEditingConnection(connection);
+      setConnectionStatus('ComfyUI unload requested.');
+      notifySystem('info', 'ComfyUI unload requested.');
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      setConnectionStatus(`ComfyUI unload failed: ${message}`);
+      notifySystem('error', `ComfyUI unload failed: ${message}`);
+    } finally {
+      setComfyProviderActionActive(null);
+    }
+  }
+
+  async function loadLmStudioModel() {
+    const connection = connectionFromEditingConnection();
+    if (!isLmStudioConnection(connection)) {
+      setConnectionStatus('LM Studio tools are only available for LM Studio providers.');
+      return;
+    }
+    if (!connection.model.trim()) {
+      setConnectionStatus('Choose a model ID before loading an LM Studio model.');
+      return;
+    }
+
+    setLmStudioModelActionActive('load');
+    setConnectionStatus(`Loading LM Studio model "${connection.model}" ...`);
+    try {
+      const result = await window.rpgraph.loadLmStudioModel(connection);
+      setEditingConnection(connection);
+      setConnectionStatus(
+        result.method === 'cli'
+          ? `LM Studio load command sent for "${connection.model}".`
+          : `LM Studio loaded "${connection.model}".`,
+      );
+    } catch (error) {
+      setConnectionStatus(
+        `LM Studio load failed: ${error instanceof Error ? error.message : String(error)}`,
+      );
+    } finally {
+      setLmStudioModelActionActive(null);
+    }
+  }
+
+  async function unloadLmStudioModels() {
+    const connection = connectionFromEditingConnection();
+    if (!isLmStudioConnection(connection)) {
+      setConnectionStatus('LM Studio tools are only available for LM Studio providers.');
+      return;
+    }
+
+    setLmStudioModelActionActive('unload');
+    setConnectionStatus('Unloading LM Studio models ...');
+    try {
+      const result = await window.rpgraph.unloadLmStudioModels(connection);
+      setEditingConnection(connection);
+      setConnectionStatus(
+        result.method === 'cli'
+          ? 'LM Studio unload all command sent.'
+          : result.unloadedCount === 0
+          ? 'LM Studio did not report any loaded models.'
+          : `LM Studio unloaded ${result.unloadedCount} ${result.unloadedCount === 1 ? 'model' : 'models'}.`,
+      );
+    } catch (error) {
+      setConnectionStatus(
+        `LM Studio unload failed: ${error instanceof Error ? error.message : String(error)}`,
+      );
+    } finally {
+      setLmStudioModelActionActive(null);
+    }
+  }
+
+  async function loadOllamaModel() {
+    const connection = connectionFromEditingConnection();
+    if (!isOllamaConnection(connection)) {
+      setConnectionStatus('Ollama tools are only available for Ollama providers.');
+      return;
+    }
+    if (!connection.model.trim()) {
+      setConnectionStatus('Choose a model ID before loading an Ollama model.');
+      return;
+    }
+
+    setOllamaModelActionActive('load');
+    setConnectionStatus(`Loading Ollama model "${connection.model}" ...`);
+    try {
+      await window.rpgraph.loadOllamaModel(connection);
+      setEditingConnection(connection);
+      setConnectionStatus(`Ollama loaded "${connection.model}".`);
+    } catch (error) {
+      setConnectionStatus(
+        `Ollama load failed: ${error instanceof Error ? error.message : String(error)}`,
+      );
+    } finally {
+      setOllamaModelActionActive(null);
+    }
+  }
+
+  async function unloadOllamaModels() {
+    const connection = connectionFromEditingConnection();
+    if (!isOllamaConnection(connection)) {
+      setConnectionStatus('Ollama tools are only available for Ollama providers.');
+      return;
+    }
+
+    setOllamaModelActionActive('unload');
+    setConnectionStatus('Unloading Ollama running models ...');
+    try {
+      const result = await window.rpgraph.unloadOllamaModels(connection);
+      setEditingConnection(connection);
+      setConnectionStatus(
+        result.unloadedCount === 0
+          ? 'Ollama did not report any running models.'
+          : `Ollama unloaded ${result.unloadedCount} ${result.unloadedCount === 1 ? 'model' : 'models'}.`,
+      );
+    } catch (error) {
+      setConnectionStatus(
+        `Ollama unload failed: ${error instanceof Error ? error.message : String(error)}`,
+      );
+    } finally {
+      setOllamaModelActionActive(null);
+    }
+  }
+
+  async function resolveConnection(
+    connectionId?: string,
+    purpose = 'an LLM node',
+    signal?: AbortSignal,
+  ): Promise<ConnectionPreset> {
+    const connection = connections.find(
+      (entry) => entry.id === (connectionId ?? defaultConnectionId),
+    );
+    if (!connection) {
+      throw new Error(`Select an LLM connection for ${purpose} first.`);
+    }
+    if (!isLlmConnection(connection)) {
+      throw new Error(`Select an LLM connection for ${purpose}; "${connection.label}" is a ComfyUI image provider.`);
+    }
+
+    if (connection.model.trim()) {
+      return connection;
+    }
+
+    let cleanupAbort: (() => void) | undefined;
+    let models: string[];
+    try {
+      models = await window.rpgraph.listModels(connection, (cancel) => {
+        if (signal) {
+          if (signal.aborted) {
+            cancel();
+            return;
+          }
+          signal.addEventListener('abort', cancel, { once: true });
+          cleanupAbort = () => signal.removeEventListener('abort', cancel);
+        }
+      });
+    } finally {
+      cleanupAbort?.();
+    }
+    if (!models[0]) {
+      throw new Error('No model is configured for this provider.');
+    }
+
+    const updated = { ...connection, model: models[0] };
+    setConnections((current) =>
+      current.map((entry) => (entry.id === updated.id ? updated : entry)),
+    );
+    return updated;
+  }
+
+  function selectConnection(connection: ConnectionPreset) {
+    setConnectionDraftPending(false);
+    setEditingConnection({ ...connection });
+    setAvailableConnectionModels([]);
+    setAvailableComfyModels({
+      checkpoints: [],
+      loras: [],
+      vae: [],
+      text_encoders: [],
+      diffusion_models: [],
+    });
+    setComfyWorkflowInspection(null);
+    setPendingComfyWorkflowRepair(null);
+    setComfyWorkflowRepairStatus('');
+    setConnectionStatus('');
+    void checkProviderConnection(connection, { showStatus: true });
+    if (connection.kind === 'comfyui') {
+      void inspectComfyWorkflow(connection, { showStatus: false });
+      void loadComfyModelLists(connection);
+    }
+  }
+
+  function editConnection(field: keyof ConnectionPreset, value: ConnectionPreset[keyof ConnectionPreset]) {
+    let nextConnection = { ...editingConnection, [field]: value };
+    if (field === 'model' && isLmStudioConnection(nextConnection)) {
+      const modelDetails = lmStudioModelsByConnectionIdRef.current[nextConnection.id] ?? [];
+      nextConnection = connectionWithLmStudioCapabilities(nextConnection, modelDetails);
+      updateProviderHealth(nextConnection.id, {
+        ...(providerHealthByIdRef.current[nextConnection.id] ?? { status: 'unknown' as const }),
+        capabilities: lmStudioCapabilitiesForConnection(nextConnection, modelDetails),
+      });
+    } else if (field === 'model' && isOllamaConnection(nextConnection)) {
+      const modelDetails = ollamaModelsByConnectionIdRef.current[nextConnection.id] ?? [];
+      nextConnection = connectionWithOllamaCapabilities(nextConnection, modelDetails);
+      updateProviderHealth(nextConnection.id, {
+        ...(providerHealthByIdRef.current[nextConnection.id] ?? { status: 'unknown' as const }),
+        capabilities: ollamaCapabilitiesForConnection(nextConnection, modelDetails),
+      });
+    } else if (field === 'model' && isOpenRouterConnection(nextConnection)) {
+      const modelDetails = openRouterModelsByConnectionIdRef.current[nextConnection.id] ?? [];
+      nextConnection = connectionWithOpenRouterCapabilities(nextConnection, modelDetails);
+      updateProviderHealth(nextConnection.id, {
+        ...(providerHealthByIdRef.current[nextConnection.id] ?? { status: 'unknown' as const }),
+        capabilities: openRouterCapabilitiesForConnection(nextConnection, modelDetails),
+      });
+    }
+    setEditingConnection(nextConnection);
+    setConnections((current) =>
+      current.map((entry) => (entry.id === nextConnection.id ? nextConnection : entry)),
+    );
+    if (field === 'baseUrl' || field === 'apiKey') {
+      updateProviderHealth(editingConnection.id, {
+        status: 'unknown',
+        detail: 'Provider settings changed.',
+      });
+      setAvailableConnectionModels([]);
+      setAvailableComfyModels({
+        checkpoints: [],
+        loras: [],
+        vae: [],
+        text_encoders: [],
+        diffusion_models: [],
+      });
+      setComfyWorkflowInspection(null);
+      setPendingComfyWorkflowRepair(null);
+      setComfyWorkflowRepairStatus('');
+    }
+  }
+
+  const editingConnectionCapabilities = isLmStudioConnection(editingConnection)
+    ? lmStudioCapabilitiesForConnection(editingConnection, lmStudioModelsByConnectionId[editingConnection.id] ?? [])
+    : isOllamaConnection(editingConnection)
+      ? ollamaCapabilitiesForConnection(editingConnection, ollamaModelsByConnectionId[editingConnection.id] ?? [])
+      : isOpenRouterConnection(editingConnection)
+        ? openRouterCapabilitiesForConnection(editingConnection, openRouterModelsByConnectionId[editingConnection.id] ?? [])
+        : providerHealthById[editingConnection.id]?.capabilities;
+  const editingComfyWorkflowPath = editingConnection.comfyWorkflowPath || defaultComfyWorkflowPath;
+  const comfyWorkflowRepairReady = !!pendingComfyWorkflowRepair && pendingComfyWorkflowRepair.workflowPath === editingComfyWorkflowPath;
+  const comfyWorkflowRepairInspection = pendingComfyWorkflowRepair?.workflowPath === editingComfyWorkflowPath
+    ? pendingComfyWorkflowRepair.inspection
+    : null;
+  const modelCapabilitiesSourceLabel = isLmStudioConnection(editingConnection)
+    ? 'LM Studio'
+    : isOllamaConnection(editingConnection)
+      ? 'Ollama'
+      : isOpenRouterConnection(editingConnection)
+        ? 'OpenRouter'
+        : undefined;
+
+  return {
+    showConnections,
+    setShowConnections,
+    comfyPreview,
+    setComfyPreview,
+    editingConnection,
+    setEditingConnection,
+    connectionDraftPending,
+    setConnectionDraftPending,
+    availableConnectionModels,
+    availableComfyModels,
+    comfyWorkflowInspection,
+    connectionStatus,
+    providerHealthById,
+    lmStudioModelsByConnectionId,
+    openRouterModelsByConnectionId,
+    ollamaModelsByConnectionId,
+    comfyProviderActionActive,
+    lmStudioModelActionActive,
+    ollamaModelActionActive,
+    editingConnectionCapabilities,
+    comfyWorkflowRepairStatus,
+    comfyWorkflowRepairReady,
+    comfyWorkflowRepairInspection,
+    modelCapabilitiesSourceLabel,
+    openConnectionManager,
+    closeConnectionManager,
+    selectConnection,
+    newConnection,
+    applyProviderPreset,
+    editConnection,
+    loadConnectionModels,
+    deleteConnection,
+    checkConnectionModels,
+    loadComfyModelLists,
+    connectionFromEditingConnection,
+    selectComfyWorkflow,
+    repairComfyWorkflow,
+    applyComfyWorkflowRepair,
+    generateComfyTestImage,
+    unloadComfyModels,
+    loadLmStudioModel,
+    unloadLmStudioModels,
+    loadOllamaModel,
+    unloadOllamaModels,
+    applyConnectionToAllNodes,
+    checkProviderConnection,
+    checkProviderConnectionById,
+    checkProviderConnections,
+    loadCharacterComfyLoras,
+    generateCharacterComfyPreview,
+    unloadCharacterComfyModels,
+    resolveConnection,
+  };
+}

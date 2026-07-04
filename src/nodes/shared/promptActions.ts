@@ -1,0 +1,1403 @@
+import type { ChatImageAttachment, ProviderConnectionHealth, WorkflowNode } from '../../types';
+import type { ExecuteContext } from '../types';
+import { createComfyImageForCharacter } from '../runScratch';
+import { storybookImageListsFromNodes, type StorybookCreateImageCharacter } from '../../storybook/runtime';
+
+export type PromptActionId = 'getImageId' | 'updatePhoneImageCaption' | 'describeInputImage' | 'createImage';
+
+export type PromptActionConfig = {
+  title: string;
+  actionId: PromptActionId;
+  maxReturnedImages: number;
+  sendImagesToLlm: boolean;
+  hideImageTextWhenSendingToLlm: boolean;
+  manageModelMemoryForComfy: boolean;
+  runAfterReply: boolean;
+  comfyProviderId?: string;
+  instructionTemplate: string;
+  afterReplyTemplate: string;
+  resultTemplate: string;
+};
+
+export type PromptActionRuntimeConfig = Pick<
+  PromptActionConfig,
+  'maxReturnedImages' | 'sendImagesToLlm' | 'hideImageTextWhenSendingToLlm' | 'manageModelMemoryForComfy' | 'comfyProviderId'
+>;
+
+export type PromptActionRuntimeSettings = Partial<Record<PromptActionId, Partial<PromptActionRuntimeConfig>>>;
+
+export type PromptActionStoredConfig = Partial<PromptActionConfig> & {
+  title: string;
+  actionId: PromptActionId | 'getImages' | 'update_phone_image_caption' | 'describe_input_image' | 'create_image';
+  preset?: 'default';
+};
+
+export type PromptActionToken = {
+  raw: string;
+  title: string;
+  index: number;
+  hasTitle: boolean;
+};
+
+export type ParsedPromptActionCall = {
+  action: PromptActionId;
+  characters?: string;
+  character?: string;
+  tags?: string;
+  prompt?: string;
+  imageId?: string;
+  imageAction?: 'create' | 'update' | 'no_change';
+  caption?: string;
+};
+
+type ActionImageResult = {
+  imageId: string;
+  caption: string;
+  characterName: string;
+  score: number;
+  attachment: ChatImageAttachment;
+};
+
+export const promptActionIds: PromptActionId[] = ['getImageId', 'updatePhoneImageCaption', 'describeInputImage', 'createImage'];
+export const defaultPromptActionTitle = 'Get character phone image list';
+export const updatePhoneImageCaptionActionTitle = 'Update phone image caption';
+export const describeInputImageActionTitle = 'Describe input image';
+export const createImageActionTitle = 'Create image';
+
+export function promptActionTitle(actionId: PromptActionId) {
+  switch (actionId) {
+    case 'updatePhoneImageCaption':
+      return updatePhoneImageCaptionActionTitle;
+    case 'describeInputImage':
+      return describeInputImageActionTitle;
+    case 'createImage':
+      return createImageActionTitle;
+    default:
+      return defaultPromptActionTitle;
+  }
+}
+
+export const afterReplyPromptActionSuffix = ' (After Reply Action)';
+
+export function promptActionPromptTitle(actionId: PromptActionId) {
+  const title = promptActionTitle(actionId);
+  return defaultPromptActionRunAfterReply(actionId)
+    ? `${title}${afterReplyPromptActionSuffix}`
+    : title;
+}
+
+const legacyPromptActionTitleKeys = new Map<string, string>([
+  ['get character image list', 'get character phone image list'],
+  ['update incoming image caption', 'update phone image caption'],
+]);
+
+export type PromptActionCondition = {
+  id: 'vision' | 'imageInput' | 'comfyProvider' | 'createImageCharacters';
+  label: string;
+};
+
+export function promptActionConditions(actionId: PromptActionId): PromptActionCondition[] {
+  switch (actionId) {
+    case 'updatePhoneImageCaption':
+    case 'describeInputImage':
+      return [
+        { id: 'vision', label: 'LLM vision capability enabled' },
+        { id: 'imageInput', label: 'Image input attached to this run' },
+      ];
+    case 'createImage':
+      return [
+        { id: 'comfyProvider', label: 'ComfyUI provider connected and online' },
+        { id: 'createImageCharacters', label: 'Storybook character with appearance or LoRA' },
+      ];
+    default:
+      return [];
+  }
+}
+
+export const getImagesLlmInstruction = [
+  'Available action: get character phone image list',
+  '',
+  'Call this action when image list information is needed. Do not write a normal message together with this action.',
+  '',
+  'To call it, output exactly one JSON object and nothing else:',
+  '',
+  '{',
+  '"action": "get_image_id",',
+  '"characters": "Character Name, Other Name",',
+  '"tags": "name, location, pose, clothing, selfie, mirror"',
+  '}',
+  '',
+  'Search with at least 6 tags.',
+  '',
+  'Use the image ID action proactively when the phone situation is about appearance, outfit, clothes, getting ready, selfies, mirrors, parties, bedrooms, current look, a character asking what someone is wearing, or sending/receiving photos. Do not wait for the sender to explicitly say "send a picture" if a fitting stored image would naturally support the reply.',
+].join('\n');
+
+export const updatePhoneImageCaptionInstruction = [
+  'Available action: update phone image caption',
+  '',
+  'Use this action once, before the final visible phone reply, when the latest phone input includes an attached incoming image.',
+  'Caption only the latest incoming phone input image. When image labels are present, this is normally Attached input image Nr1. Do not caption older attached/reference images such as Attached input image Nr2, Nr3, or images sent by the other character earlier.',
+  '',
+  'This action records the internal caption/create/update/no-change decision for that incoming image.',
+  '',
+  'To call it, output exactly one JSON object and nothing else:',
+  '',
+  '{',
+  '"action": "update_phone_image_caption",',
+  '"imageId": "new_image",',
+  '"imageAction": "create",',
+  '"caption": "complete contextual caption"',
+  '}',
+  '',
+  'Use imageAction "create" only when the incoming image has no imageId and no caption yet; set imageId to "new_image". If the image label already shows an imageId and caption, never use "create".',
+  'If the image label shows an imageId but no caption yet, always use imageAction "update" with that exact imageId and write its first caption.',
+  'Use imageAction "update" with the exact existing imageId only when the latest messages establish story-relevant new information that changes the meaning of the existing caption: a confirmed event, changed situation, identity, relationship, location, or intent. Do not update just to reword the caption or add minor visible details the caption already implies.',
+  'Use imageAction "no_change" with the exact existing imageId in every other case. When in doubt, choose "no_change". Restating what is already captioned, small wording differences, or context that merely matches the image are not reasons to update.',
+  '',
+  'For create/update, write one concise 20 to 30 word caption. Combine visible image details with reliable recent phone/chat/story context. Describe pose, expression, clothing, action, setting, mood, and confirmed situation. Avoid metadata, filenames, image-generation wording, and uncertainty about identity.',
+  '',
+  'After this action is accepted, do not write this caption action again in the final reply. Continue with the normal phone message or the next available action.',
+].join('\n');
+
+export const describeInputImageInstruction = [
+  'Available action: describe input image',
+  '',
+  'The latest input includes an attached image. Call this action once, before writing the final visible RP story.',
+  'Caption only the latest attached input image. When image labels are present, this is normally Attached input image Nr1. Do not caption older attached/reference images.',
+  '',
+  'To call it, output exactly one JSON object and nothing else:',
+  '',
+  '{',
+  '"action": "describe_input_image",',
+  '"caption": "20 to 30 word RP scene snapshot"',
+  '}',
+  '',
+  'The caption is hidden scene metadata for the chat history, not a phone image, not a gallery entry, and not an outgoing attachment.',
+  'Describe who is likely shown, pose, expression, clothing, setting, action, mood, and why the moment matters in the scene. Combine visible image details with recent scene and relationship context.',
+  'If nudity, exposed genitals, breasts, nipples, ass, sexual body parts, revealing or tight clothing, partial or complete undress, or erotic atmosphere is visible, name it directly and neutrally.',
+  '',
+  'After this action is accepted, do not write it again. Continue with the normal RP story and react to the attached image content in the visible prose.',
+].join('\n');
+
+export const describeInputImageAfterReplyInstruction = [
+  'Internal caption task: describe input image',
+  '',
+  'The chat context above is the story so far, ending with the latest input that includes an attached image. The visible RP reply has already been written and sent:',
+  '',
+  'RP reply:',
+  '{{reply}}',
+  '',
+  'Now record the hidden scene caption for the attached input image. Output exactly one JSON object and nothing else:',
+  '',
+  '{',
+  '"action": "describe_input_image",',
+  '"caption": "20 to 30 word RP scene snapshot"',
+  '}',
+  '',
+  'Caption only the latest attached input image. When image labels are present, this is normally Attached input image Nr1. Do not caption older attached/reference images.',
+  'Describe who is likely shown, pose, expression, clothing, setting, action, mood, and why the moment matters in the scene. Combine visible image details with the chat history and the RP reply.',
+  'If nudity, exposed genitals, breasts, nipples, ass, sexual body parts, revealing or tight clothing, partial or complete undress, or erotic atmosphere is visible, name it directly and neutrally.',
+  'The caption is hidden scene metadata for the chat history, not a phone image, not a gallery entry, and not an outgoing attachment. Do not write story text, explanations, or any other JSON.',
+].join('\n');
+
+export const updatePhoneImageCaptionAfterReplyInstruction = [
+  'Internal caption task: update phone image caption',
+  '',
+  'The phone context above ends with the latest phone input that includes an attached incoming image. The visible phone reply has already been written and sent:',
+  '',
+  'Phone reply:',
+  '{{reply}}',
+  '',
+  'Now record the internal caption/create/update/no-change decision for that incoming image. Output exactly one JSON object and nothing else:',
+  '',
+  '{',
+  '"action": "update_phone_image_caption",',
+  '"imageId": "new_image",',
+  '"imageAction": "create",',
+  '"caption": "complete contextual caption"',
+  '}',
+  '',
+  'Caption only the latest incoming phone input image. When image labels are present, this is normally Attached input image Nr1. Do not caption older attached/reference images such as Attached input image Nr2, Nr3, or images sent by the other character earlier.',
+  'Use imageAction "create" only when the incoming image has no imageId and no caption yet; set imageId to "new_image". If the image label already shows an imageId and caption, never use "create".',
+  'If the image label shows an imageId but no caption yet, always use imageAction "update" with that exact imageId and write its first caption.',
+  'Use imageAction "update" with the exact existing imageId only when the latest messages or the visible phone reply establish story-relevant new information that changes the meaning of the existing caption: a confirmed event, changed situation, identity, relationship, location, or intent. Do not update just to reword the caption or add minor visible details the caption already implies.',
+  'Use imageAction "no_change" with the exact existing imageId in every other case. When in doubt, choose "no_change".',
+  'For create/update, write one concise 20 to 30 word caption. Combine visible image details with reliable recent phone/chat/story context and the visible phone reply. Avoid metadata, filenames, image-generation wording, and uncertainty about identity.',
+].join('\n');
+
+export const createImageInstruction = [
+  'Available action: create image',
+  '',
+  'Use this internal action when no stored image fits and a new outgoing phone/RP image should be generated for a character.',
+  'Call it once before the final visible reply. Do not write a normal message together with this action.',
+  '',
+  'Available characters:',
+  '{{availableCharacters}}',
+  '',
+  'To call it, output exactly one JSON object and nothing else:',
+  '',
+  '{',
+  '"action": "create_image",',
+  '"character": "Character Name",',
+  '"prompt": "complete image generation prompt"',
+  '}',
+  '',
+  'The character must be the sender/owner of the outgoing generated image.',
+  'The character value must match one of the available character names exactly.',
+  'The prompt should describe the current RP image moment for ComfyUI: pose, expression, clothing for this scene, setting, lighting, mood, camera/framing, and relevant RP context.',
+  'Do not try to redefine the character identity or permanent base appearance. RPGraph automatically prepends the character appearance saved in Storybook and applies that character LoRA when configured.',
+  'Do not include instructions to send a message. This action only creates and stores the image.',
+].join('\n');
+
+const updatePhoneImageCaptionMissingCaptionRule =
+  'If the image label shows an imageId but no caption yet, always use imageAction "update" with that exact imageId and write its first caption.';
+
+const previousUpdatePhoneImageCaptionInstructions = new Set([
+  updatePhoneImageCaptionInstruction.replace(`\n${updatePhoneImageCaptionMissingCaptionRule}`, ''),
+]);
+
+const previousUpdatePhoneImageCaptionAfterReplyInstructions = new Set([
+  updatePhoneImageCaptionAfterReplyInstruction.replace(`\n${updatePhoneImageCaptionMissingCaptionRule}`, ''),
+]);
+
+const previousGetImagesLlmInstructions = new Set([
+  [
+    'Available action: get image ID list',
+    '',
+    'Call this action when image list information is needed. Do not write a normal message together with this action.',
+    '',
+    'To call it, output exactly one JSON object and nothing else:',
+    '',
+    '{',
+    '"action": "get_image_id",',
+    '"characters": "Character Name, Other Name",',
+    '"tags": "name, location, pose, clothing, selfie, mirror"',
+    '}',
+    '',
+    'Search with at least 6 tags.',
+    '',
+    'Use the image ID action proactively when the phone situation is about appearance, outfit, clothes, getting ready, selfies, mirrors, parties, bedrooms, current look, a character asking what someone is wearing, or sending/receiving photos. Do not wait for the sender to explicitly say "send a picture" if a fitting stored image would naturally support the reply.',
+  ].join('\n'),
+  [
+    'Available action: getImages',
+    '',
+    'Only call this action when image information is needed. Do not write a normal message together with this action.',
+    '',
+    'To call it, output exactly one JSON object and nothing else:',
+    '',
+    '{',
+    '"action": "getImages",',
+    '"characters": "Character Name,Other Character Name",',
+    '"tags": "tag1,tag2"',
+    '}',
+    '',
+    '`tags` is a comma-separated list of short search tags. Search with at least 6 tags.',
+  ].join('\n'),
+  [
+    'Available action: getImages',
+    '',
+    'Use this action if you need a list of stored images for one or more characters before writing the final reply.',
+    '',
+    'To call it, output exactly one JSON object and nothing else:',
+    '',
+    '{',
+    '"action": "getImages",',
+    '"characters": "Character Name,Other Character Name",',
+    '"tags": "tag1,tag2"',
+    '}',
+    '',
+    '`characters` is a comma-separated list of full character names.',
+    '`tags` is a comma-separated list of short search tags such as selfie, mirror, bedroom, outfit, smiling, angry, phone_photo.',
+    '',
+    'Only call this action when image information is needed. Do not write a normal message together with this action.',
+  ].join('\n'),
+]);
+
+const defaultGetImagesResultLineTemplate = '* {{imageReference}}: {{imageId}} : {{imageText}}';
+
+export const defaultGetImagesResultTemplate = [
+  'Found Images: {{tags}}',
+  defaultGetImagesResultLineTemplate,
+  '',
+  'Use a returned imageId as sendImageId only if that image fits the replying/sending character and would feel natural in-character as an outgoing stored phone attachment.',
+  'Prefer images that belong to the sender, or image IDs established in recent phone/photo history. Only use another character\'s image ID if recent context clearly makes it available, such as forwarded, shared, saved, or plausibly obtained.',
+  'Do not invent image IDs. If no returned image clearly fits, omit sendImageId.',
+].join('\n');
+
+export const defaultUpdatePhoneImageCaptionResultTemplate = [
+  'Incoming image caption action recorded:',
+  '',
+  '{{imageActionJson}}',
+  '',
+  'Do not repeat this caption action in the final reply.',
+].join('\n');
+
+export const defaultDescribeInputImageResultTemplate = [
+  'Attached input image caption recorded:',
+  '',
+  '{{caption}}',
+  '',
+  'The caption is saved automatically as hidden scene metadata for the chat history. Do not repeat this caption action and do not add image metadata JSON to the final reply. React to the attached image content in the visible RP story.',
+].join('\n');
+
+export const defaultCreateImageResultTemplate = [
+  'Generated image for {{character}}:',
+  '',
+  '* imageId: {{imageId}}',
+  '* description: {{description}}',
+  '',
+  'This image was generated for the current RP moment and saved to the character image library. Use this image in the final phone/RP reply. For phone output, set sendImageId to "{{imageId}}".',
+].join('\n');
+
+const previousGetImagesResultTemplates = new Set([
+  [
+    'Action result: {{actionId}}',
+    '',
+    'Found images:',
+    '',
+    '{{images}}',
+  ].join('\n'),
+]);
+
+function currentOrCustomTemplate(value: unknown, currentTemplate: string, previousTemplates: Set<string>) {
+  if (typeof value !== 'string' || !value.trim()) {
+    return currentTemplate;
+  }
+  return previousTemplates.has(value.trim()) ? currentTemplate : value;
+}
+
+export function defaultPromptActionRunAfterReply(actionId: PromptActionId) {
+  return actionId === 'describeInputImage' || actionId === 'updatePhoneImageCaption';
+}
+
+export function defaultPromptActionInstructionTemplate(actionId: PromptActionId) {
+  switch (actionId) {
+    case 'updatePhoneImageCaption':
+      return updatePhoneImageCaptionInstruction;
+    case 'describeInputImage':
+      return describeInputImageInstruction;
+    case 'createImage':
+      return createImageInstruction;
+    default:
+      return getImagesLlmInstruction;
+  }
+}
+
+function defaultResultTemplate(actionId: PromptActionId) {
+  switch (actionId) {
+    case 'updatePhoneImageCaption':
+      return defaultUpdatePhoneImageCaptionResultTemplate;
+    case 'describeInputImage':
+      return defaultDescribeInputImageResultTemplate;
+    case 'createImage':
+      return defaultCreateImageResultTemplate;
+    default:
+      return defaultGetImagesResultTemplate;
+  }
+}
+
+export function defaultPromptActionAfterReplyTemplate(actionId: PromptActionId) {
+  switch (actionId) {
+    case 'updatePhoneImageCaption':
+      return updatePhoneImageCaptionAfterReplyInstruction;
+    case 'describeInputImage':
+      return describeInputImageAfterReplyInstruction;
+    default:
+      return defaultPromptActionInstructionTemplate(actionId);
+  }
+}
+
+export function defaultPromptActionConfig(
+  title = defaultPromptActionTitle,
+  actionId: PromptActionId = 'getImageId',
+): PromptActionConfig {
+  const canonicalTitle = promptActionTitle(actionId);
+  const sendsImagesByDefault = actionId === 'getImageId';
+  return {
+    title: canonicalTitle || title,
+    actionId,
+    maxReturnedImages: actionId === 'getImageId' ? 3 : 5,
+    sendImagesToLlm: sendsImagesByDefault,
+    hideImageTextWhenSendingToLlm: sendsImagesByDefault,
+    manageModelMemoryForComfy: true,
+    runAfterReply: defaultPromptActionRunAfterReply(actionId),
+    comfyProviderId: '',
+    instructionTemplate: defaultPromptActionInstructionTemplate(actionId),
+    afterReplyTemplate: defaultPromptActionAfterReplyTemplate(actionId),
+    resultTemplate: defaultResultTemplate(actionId),
+  };
+}
+
+function normalizedPromptActionRuntimeConfig(
+  actionId: PromptActionId,
+  value: Partial<PromptActionRuntimeConfig> | undefined,
+): PromptActionRuntimeConfig {
+  const maxReturnedImages = Number(value?.maxReturnedImages);
+  const sendImagesToLlm = typeof value?.sendImagesToLlm === 'boolean'
+    ? value.sendImagesToLlm
+    : actionId === 'getImageId';
+  return {
+    maxReturnedImages: Number.isFinite(maxReturnedImages)
+      ? Math.min(20, Math.max(1, Math.trunc(maxReturnedImages)))
+      : actionId === 'getImageId' ? 3 : 5,
+    sendImagesToLlm,
+    hideImageTextWhenSendingToLlm: sendImagesToLlm && (
+      typeof value?.hideImageTextWhenSendingToLlm === 'boolean'
+        ? value.hideImageTextWhenSendingToLlm
+        : actionId === 'getImageId'
+    ),
+    manageModelMemoryForComfy: actionId === 'createImage' && typeof value?.manageModelMemoryForComfy === 'boolean'
+      ? value.manageModelMemoryForComfy
+      : true,
+    comfyProviderId: typeof value?.comfyProviderId === 'string'
+      ? value.comfyProviderId.trim()
+      : '',
+  };
+}
+
+export function promptActionRuntimeConfigFromConfig(config: PromptActionConfig): PromptActionRuntimeConfig {
+  return normalizedPromptActionRuntimeConfig(config.actionId, config);
+}
+
+export function promptActionRuntimeSettings(value: unknown): PromptActionRuntimeSettings {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) {
+    return {};
+  }
+  const record = value as Record<string, unknown>;
+  return Object.fromEntries(
+    promptActionIds.flatMap((actionId) => {
+      const settings = record[actionId];
+      if (!settings || typeof settings !== 'object' || Array.isArray(settings)) {
+        return [];
+      }
+      return [[actionId, normalizedPromptActionRuntimeConfig(
+        actionId,
+        settings as Partial<PromptActionRuntimeConfig>,
+      )]];
+    }),
+  );
+}
+
+export function withPromptActionRuntimeSettings(
+  config: PromptActionConfig,
+  settings: PromptActionRuntimeSettings,
+): PromptActionConfig {
+  return {
+    ...config,
+    ...normalizedPromptActionRuntimeConfig(config.actionId, {
+      ...config,
+      ...settings[config.actionId],
+    }),
+  };
+}
+
+export function withPromptActionRuntimeSettingsList(
+  configs: PromptActionConfig[],
+  settings: PromptActionRuntimeSettings,
+): PromptActionConfig[] {
+  return configs.map((config) => withPromptActionRuntimeSettings(config, settings));
+}
+
+export function promptActionTemplateConfig(config: PromptActionConfig): PromptActionConfig {
+  return {
+    ...config,
+    ...normalizedPromptActionRuntimeConfig(config.actionId, undefined),
+  };
+}
+
+function promptActionComparable(config: PromptActionConfig) {
+  const templateConfig = promptActionTemplateConfig(config);
+  return {
+    actionId: templateConfig.actionId,
+    title: templateConfig.title.trim(),
+    runAfterReply: defaultPromptActionRunAfterReply(templateConfig.actionId) && templateConfig.runAfterReply,
+    instructionTemplate: templateConfig.instructionTemplate.trim(),
+    afterReplyTemplate: templateConfig.afterReplyTemplate.trim(),
+    resultTemplate: templateConfig.resultTemplate.trim(),
+  };
+}
+
+export function promptActionConfigsEqual(first: PromptActionConfig, second: PromptActionConfig) {
+  return JSON.stringify(promptActionComparable(first)) === JSON.stringify(promptActionComparable(second));
+}
+
+export function isDefaultPromptActionConfig(config: PromptActionConfig) {
+  return promptActionConfigsEqual(
+    config,
+    defaultPromptActionConfig(config.title, config.actionId),
+  );
+}
+
+export function normalizePromptActionConfig(
+  value: unknown,
+): PromptActionConfig | undefined {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) {
+    return undefined;
+  }
+  const record = value as Record<string, unknown>;
+  const actionId =
+    record.actionId === 'getImageId' || record.actionId === 'getImages'
+      ? 'getImageId'
+      : record.actionId === 'updatePhoneImageCaption' || record.actionId === 'update_phone_image_caption'
+        ? 'updatePhoneImageCaption'
+        : record.actionId === 'describeInputImage' || record.actionId === 'describe_input_image'
+          ? 'describeInputImage'
+        : record.actionId === 'createImage' || record.actionId === 'create_image'
+          ? 'createImage'
+        : undefined;
+  if (!actionId) {
+    return undefined;
+  }
+  const title = promptActionTitle(actionId);
+  const maxReturnedImages = Number(record.maxReturnedImages);
+  const runAfterReply = defaultPromptActionRunAfterReply(actionId);
+  const sendImagesToLlm = typeof record.sendImagesToLlm === 'boolean'
+    ? record.sendImagesToLlm
+    : actionId === 'getImageId';
+  return {
+    title,
+    actionId,
+    maxReturnedImages: Number.isFinite(maxReturnedImages)
+      ? Math.min(20, Math.max(1, Math.trunc(maxReturnedImages)))
+      : actionId === 'getImageId' ? 3 : 5,
+    sendImagesToLlm,
+    hideImageTextWhenSendingToLlm: sendImagesToLlm && (
+      typeof record.hideImageTextWhenSendingToLlm === 'boolean'
+        ? record.hideImageTextWhenSendingToLlm
+        : actionId === 'getImageId'
+    ),
+    manageModelMemoryForComfy: typeof record.manageModelMemoryForComfy === 'boolean'
+      ? record.manageModelMemoryForComfy
+      : true,
+    runAfterReply,
+    comfyProviderId: typeof record.comfyProviderId === 'string'
+      ? record.comfyProviderId.trim()
+      : '',
+    instructionTemplate: actionId === 'getImageId'
+      ? currentOrCustomTemplate(
+          record.instructionTemplate,
+          getImagesLlmInstruction,
+          previousGetImagesLlmInstructions,
+        )
+      : actionId === 'updatePhoneImageCaption'
+        ? currentOrCustomTemplate(
+            record.instructionTemplate,
+            updatePhoneImageCaptionInstruction,
+            previousUpdatePhoneImageCaptionInstructions,
+          )
+      : (typeof record.instructionTemplate === 'string' && record.instructionTemplate.trim()
+        ? record.instructionTemplate
+        : defaultPromptActionInstructionTemplate(actionId)),
+    afterReplyTemplate: actionId === 'updatePhoneImageCaption'
+      ? currentOrCustomTemplate(
+          record.afterReplyTemplate,
+          updatePhoneImageCaptionAfterReplyInstruction,
+          previousUpdatePhoneImageCaptionAfterReplyInstructions,
+        )
+      : typeof record.afterReplyTemplate === 'string' && record.afterReplyTemplate.trim()
+        ? record.afterReplyTemplate
+        : defaultPromptActionAfterReplyTemplate(actionId),
+    resultTemplate: actionId === 'getImageId'
+      ? currentOrCustomTemplate(
+          record.resultTemplate,
+          defaultGetImagesResultTemplate,
+          previousGetImagesResultTemplates,
+        )
+      : (typeof record.resultTemplate === 'string' && record.resultTemplate.trim()
+        ? record.resultTemplate
+        : defaultResultTemplate(actionId)),
+  };
+}
+
+export function promptActionConfigs(value: unknown): PromptActionConfig[] {
+  const configs = Array.isArray(value)
+    ? value.flatMap((entry) => {
+      const normalized = normalizePromptActionConfig(entry);
+      return normalized ? [normalized] : [];
+    })
+    : [];
+  return uniquePromptActionConfigs(configs);
+}
+
+export function promptActionSaveConfigs(value: unknown): PromptActionStoredConfig[] {
+  return promptActionConfigs(value).map((config) => {
+    const templateConfig = promptActionTemplateConfig(config);
+    const storedConfig = {
+      title: templateConfig.title,
+      actionId: templateConfig.actionId,
+      runAfterReply: templateConfig.runAfterReply,
+      instructionTemplate: templateConfig.instructionTemplate,
+      afterReplyTemplate: templateConfig.afterReplyTemplate,
+      resultTemplate: templateConfig.resultTemplate,
+    };
+    if (isDefaultPromptActionConfig(templateConfig)) {
+      return {
+        title: storedConfig.title,
+        actionId: storedConfig.actionId,
+        preset: 'default',
+      };
+    }
+    return storedConfig;
+  });
+}
+
+function uniquePromptActionConfigs<T extends PromptActionConfig>(configs: T[]): T[] {
+  return Array.from(
+    configs
+      .reduce((byTitle, config) =>
+        byTitle.set(promptActionKey(config.title), config),
+      new Map<string, T>())
+      .values(),
+  );
+}
+
+export function promptActionKey(title: string) {
+  const key = title.trim().replace(/\s*\(after reply action\)\s*$/i, '').toLocaleLowerCase();
+  return legacyPromptActionTitleKeys.get(key) ?? key;
+}
+
+const promptActionPattern = /@action(?::([^\n\r]+))?/g;
+
+export function parsePromptActionTokens(text: string): PromptActionToken[] {
+  const tokens: PromptActionToken[] = [];
+  text.replace(promptActionPattern, (raw, title: string | undefined, index: number) => {
+    const trimmedTitle = title?.trim() || defaultPromptActionTitle;
+    tokens.push({ raw, title: trimmedTitle, index, hasTitle: !!title?.trim() });
+    return raw;
+  });
+  return tokens;
+}
+
+export function countPromptActionUses(values: string[], title: string) {
+  const normalizedTitle = promptActionKey(title);
+  return values.reduce(
+    (count, value) => count + parsePromptActionTokens(value).filter(
+      (token) => promptActionKey(token.title) === normalizedTitle,
+    ).length,
+    0,
+  );
+}
+
+function escapeRegExp(value: string) {
+  return value.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+}
+
+export function replacePromptActionTitle(
+  value: string,
+  previousTitle: string,
+  nextTitle: string,
+  previousHasTitle: boolean,
+) {
+  if (!previousHasTitle) {
+    return value.replace(/@action[^\n\r]*(?=\r?\n|$)/g, `@action:${nextTitle}`);
+  }
+  return value.replace(
+    new RegExp(`@action:\\s*${escapeRegExp(previousTitle)}(?=\\r?\\n|$)`, 'g'),
+    `@action:${nextTitle}`,
+  );
+}
+
+export function replacePromptActionAtIndex(
+  value: string,
+  index: number,
+  nextTitle: string,
+) {
+  let replaced = false;
+  return value.replace(promptActionPattern, (raw, _title: string | undefined, offset: number) => {
+    if (replaced || offset !== index) {
+      return raw;
+    }
+    replaced = true;
+    return `@action:${nextTitle}`;
+  });
+}
+
+export function configForPromptActionToken(
+  actions: PromptActionConfig[],
+  title: string,
+) {
+  const normalizedTitle = promptActionKey(title);
+  return actions.find(
+    (action) => promptActionKey(action.title) === normalizedTitle,
+  ) ?? defaultPromptActionConfig(
+    title,
+    normalizedTitle === promptActionKey(updatePhoneImageCaptionActionTitle)
+      ? 'updatePhoneImageCaption'
+      : normalizedTitle === promptActionKey(describeInputImageActionTitle)
+        ? 'describeInputImage'
+      : normalizedTitle === promptActionKey(createImageActionTitle)
+        ? 'createImage'
+      : 'getImageId',
+  );
+}
+
+export type PromptActionAvailabilityOptions = {
+  visionEnabled?: boolean;
+  hasImageInput?: boolean;
+  comfyProviderIds?: string[];
+  providerHealthById?: Record<string, ProviderConnectionHealth>;
+  createImageCharacters?: StorybookCreateImageCharacter[];
+};
+
+export type PromptActionStatus = {
+  available: boolean;
+  tone: 'warning' | 'error';
+  label: string;
+};
+
+function createImageProviderStatus(
+  action: Pick<PromptActionConfig, 'actionId' | 'comfyProviderId'>,
+  options: PromptActionAvailabilityOptions,
+): PromptActionStatus | undefined {
+  if (action.actionId !== 'createImage' || options.comfyProviderIds === undefined) {
+    return undefined;
+  }
+  if (options.comfyProviderIds.length === 0) {
+    return { available: false, tone: 'error', label: 'No ComfyUI provider' };
+  }
+  const providerId = action.comfyProviderId?.trim();
+  const providerIds = providerId ? [providerId] : options.comfyProviderIds;
+  if (!providerIds.every((id) => options.comfyProviderIds?.includes(id))) {
+    return { available: false, tone: 'error', label: 'Provider unavailable' };
+  }
+  if (!options.providerHealthById) {
+    return undefined;
+  }
+  const healthValues = providerIds.map((id) => options.providerHealthById?.[id]);
+  if (healthValues.some((health) => health?.status === 'online')) {
+    return undefined;
+  }
+  if (healthValues.some((health) => health?.status === 'checking')) {
+    return { available: false, tone: 'warning', label: 'Checking provider' };
+  }
+  if (healthValues.some((health) => health?.status === 'offline')) {
+    return { available: false, tone: 'error', label: 'ComfyUI offline' };
+  }
+  return { available: false, tone: 'warning', label: 'Checking provider' };
+}
+
+function createImageCharacterStatus(
+  action: Pick<PromptActionConfig, 'actionId'>,
+  options: PromptActionAvailabilityOptions,
+): PromptActionStatus | undefined {
+  if (action.actionId !== 'createImage' || options.createImageCharacters === undefined) {
+    return undefined;
+  }
+  if (!options.createImageCharacters.some((character) => character.createImage.available)) {
+    return { available: false, tone: 'error', label: 'No configured characters' };
+  }
+  return undefined;
+}
+
+export function promptActionStatus(
+  action: Pick<PromptActionConfig, 'actionId' | 'sendImagesToLlm' | 'comfyProviderId'>,
+  options: PromptActionAvailabilityOptions = {},
+): PromptActionStatus | undefined {
+  const createImageStatus = createImageProviderStatus(action, options);
+  if (createImageStatus) {
+    return createImageStatus;
+  }
+  const createImageCharacterSetupStatus = createImageCharacterStatus(action, options);
+  if (createImageCharacterSetupStatus) {
+    return createImageCharacterSetupStatus;
+  }
+  const isImageCaptionAction =
+    action.actionId === 'updatePhoneImageCaption' || action.actionId === 'describeInputImage';
+  if (options.visionEnabled === false && isImageCaptionAction) {
+    return { available: false, tone: 'warning', label: 'No vision for images' };
+  }
+  if (options.hasImageInput === false && isImageCaptionAction) {
+    return { available: false, tone: 'warning', label: 'No image input' };
+  }
+  if (options.visionEnabled === false && action.actionId === 'getImageId' && action.sendImagesToLlm) {
+    return { available: true, tone: 'warning', label: 'No vision for images' };
+  }
+  return undefined;
+}
+
+export function promptActionAvailable(
+  action: Pick<PromptActionConfig, 'actionId' | 'sendImagesToLlm' | 'comfyProviderId'>,
+  options: PromptActionAvailabilityOptions = {},
+) {
+  return promptActionStatus(action, options)?.available !== false;
+}
+
+export function promptActionTokenText(
+  config: PromptActionConfig,
+  actionResults: Map<string, string>,
+  options: PromptActionAvailabilityOptions,
+) {
+  if (!promptActionAvailable(config, options)) {
+    return '';
+  }
+  const result = actionResults.get(promptActionKey(config.title));
+  if (result !== undefined) {
+    return result;
+  }
+  if (config.runAfterReply) {
+    return '';
+  }
+  return promptActionInstructionText(config, options);
+}
+
+export function replacePromptActionTokensWithInstructions(
+  text: string,
+  actions: PromptActionConfig[],
+  actionResults = new Map<string, string>(),
+  options: PromptActionAvailabilityOptions = {},
+) {
+  return text.replace(promptActionPattern, (_raw, title: string | undefined) => {
+    const trimmedTitle = title?.trim() || defaultPromptActionTitle;
+    const config = configForPromptActionToken(actions, trimmedTitle);
+    return promptActionTokenText(config, actionResults, options);
+  });
+}
+
+function createImageAvailableCharactersText(options: PromptActionAvailabilityOptions) {
+  const availableCharacters = (options.createImageCharacters ?? [])
+    .filter((character) => character.createImage.available);
+  if (availableCharacters.length === 0) {
+    return '* No Storybook characters have Character Appearance or LoRA configured.';
+  }
+  return availableCharacters
+    .map((character) => {
+      const setup = [
+        character.createImage.hasAppearance ? 'Description' : '',
+        character.createImage.hasLora ? 'LoRA' : '',
+      ].filter(Boolean).join(', ');
+      return `* ${character.name} (${setup})`;
+    })
+    .join('\n');
+}
+
+export function promptActionInstructionText(
+  config: PromptActionConfig,
+  options: PromptActionAvailabilityOptions,
+) {
+  const template = config.instructionTemplate;
+  if (config.actionId !== 'createImage') {
+    return template;
+  }
+  const availableCharacters = createImageAvailableCharactersText(options);
+  const rendered = template
+    .split('{{availableCharacters}}').join(availableCharacters)
+    .split('<Available Characters>').join(availableCharacters)
+    .split('<availableCharacters>').join(availableCharacters)
+    .split('<available characters>').join(availableCharacters);
+  return rendered === template
+    ? `${template.trim()}\n\nAvailable characters:\n${availableCharacters}`
+    : rendered;
+}
+
+export function promptActionAfterReplyText(
+  config: PromptActionConfig,
+  reply: string,
+) {
+  return config.afterReplyTemplate
+    .split('{{reply}}').join(reply)
+    .split('{{response}}').join(reply);
+}
+
+function parsePromptActionRecord(parsed: unknown): ParsedPromptActionCall | undefined {
+  if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) {
+    return undefined;
+  }
+  const record = parsed as Record<string, unknown>;
+  if (record.action === 'get_image_id' || record.action === 'getImageId' || record.action === 'getImages') {
+    return {
+      action: 'getImageId',
+      characters: typeof record.characters === 'string' ? record.characters : '',
+      tags: typeof record.tags === 'string' ? record.tags : '',
+    };
+  }
+  if (record.action === 'describe_input_image' || record.action === 'describeInputImage') {
+    const caption = typeof record.caption === 'string'
+      ? record.caption.trim()
+      : typeof record.image === 'string'
+        ? record.image.trim()
+        : '';
+    if (!caption) {
+      return undefined;
+    }
+    return {
+      action: 'describeInputImage',
+      caption,
+    };
+  }
+  if (record.action === 'create_image' || record.action === 'createImage') {
+    const character = typeof record.character === 'string'
+      ? record.character.trim()
+      : typeof record.characters === 'string'
+        ? record.characters.trim()
+        : '';
+    const prompt = typeof record.prompt === 'string'
+      ? record.prompt.trim()
+      : typeof record.description === 'string'
+        ? record.description.trim()
+        : '';
+    if (!character || !prompt) {
+      return undefined;
+    }
+    return {
+      action: 'createImage',
+      character,
+      prompt,
+    };
+  }
+  if (record.action !== 'update_phone_image_caption' && record.action !== 'updatePhoneImageCaption') {
+    return undefined;
+  }
+  const imageAction = compactImageAction(record.imageAction);
+  const imageId = typeof record.imageId === 'string'
+    ? record.imageId.trim()
+    : typeof record.image_id === 'string'
+      ? record.image_id.trim()
+      : '';
+  const caption = typeof record.caption === 'string' ? record.caption.trim() : undefined;
+  if (!imageId || !imageAction || ((imageAction === 'create' || imageAction === 'update') && !caption)) {
+    return undefined;
+  }
+  const normalizedImageId = imageAction === 'create' ? 'new_image' : imageId;
+  return {
+    action: 'updatePhoneImageCaption',
+    imageId: normalizedImageId,
+    imageAction,
+    ...(caption ? { caption } : {}),
+  };
+}
+
+function jsonObjectRanges(text: string) {
+  const ranges: Array<{ start: number; end: number }> = [];
+  let depth = 0;
+  let start = -1;
+  let inString = false;
+  let escaped = false;
+  for (let index = 0; index < text.length; index += 1) {
+    const char = text[index];
+    if (inString) {
+      if (escaped) {
+        escaped = false;
+      } else if (char === '\\') {
+        escaped = true;
+      } else if (char === '"') {
+        inString = false;
+      }
+      continue;
+    }
+    if (char === '"') {
+      inString = true;
+      continue;
+    }
+    if (char === '{') {
+      if (depth === 0) {
+        start = index;
+      }
+      depth += 1;
+      continue;
+    }
+    if (char === '}') {
+      depth -= 1;
+      if (depth === 0 && start >= 0) {
+        ranges.push({ start, end: index + 1 });
+        start = -1;
+      }
+      if (depth < 0) {
+        depth = 0;
+        start = -1;
+      }
+    }
+  }
+  return ranges;
+}
+
+function parsePromptActionFromJsonSequence(text: string) {
+  const ranges = jsonObjectRanges(text);
+  if (ranges.length <= 1) {
+    return undefined;
+  }
+  const outside = ranges.reduceRight(
+    (current, range) => `${current.slice(0, range.start)}${current.slice(range.end)}`,
+    text,
+  );
+  if (outside.trim()) {
+    return undefined;
+  }
+  for (const range of ranges) {
+    try {
+      const action = parsePromptActionRecord(JSON.parse(text.slice(range.start, range.end)) as unknown);
+      if (action) {
+        return action;
+      }
+    } catch {
+      return undefined;
+    }
+  }
+  return undefined;
+}
+
+export function unwrapJsonCodeFence(text: string) {
+  const trimmedText = text.trim();
+  const fencedJson = trimmedText.match(/^```(?:json)?\s*([\s\S]*?)\s*```$/i);
+  return fencedJson ? fencedJson[1]?.trim() ?? trimmedText : trimmedText;
+}
+
+export function knownPromptActionId(actionName: string): PromptActionId | undefined {
+  switch (actionName) {
+    case 'get_image_id':
+    case 'getImageId':
+    case 'getImages':
+      return 'getImageId';
+    case 'describe_input_image':
+    case 'describeInputImage':
+      return 'describeInputImage';
+    case 'update_phone_image_caption':
+    case 'updatePhoneImageCaption':
+      return 'updatePhoneImageCaption';
+    case 'create_image':
+    case 'createImage':
+      return 'createImage';
+    default:
+      return undefined;
+  }
+}
+
+export function parsePromptActionCall(text: string): ParsedPromptActionCall | undefined {
+  const parseText = unwrapJsonCodeFence(text);
+  try {
+    const action = parsePromptActionRecord(JSON.parse(parseText) as unknown);
+    if (action) {
+      return action;
+    }
+  } catch {
+    // Fall through to the multi-object parser below.
+  }
+  return parsePromptActionFromJsonSequence(parseText);
+}
+
+function compactImageAction(value: unknown) {
+  const compacted = typeof value === 'string'
+    ? value.trim().toLocaleLowerCase().replace(/[\s_-]+/g, '')
+    : '';
+  return compacted === 'create'
+    ? 'create'
+    : compacted === 'update'
+      ? 'update'
+      : compacted === 'nochange'
+        ? 'no_change'
+        : undefined;
+}
+
+function normalizedSearchText(value: string) {
+  return value
+    .normalize('NFKD')
+    .replace(/[\u0300-\u036f]/g, '')
+    .toLocaleLowerCase()
+    .replace(/[_-]+/g, ' ')
+    .replace(/[^\p{L}\p{N}\s]+/gu, ' ')
+    .replace(/\s+/g, ' ')
+    .trim();
+}
+
+function splitCommaList(value: string) {
+  return value
+    .split(',')
+    .map((entry) => entry.trim())
+    .filter(Boolean);
+}
+
+function splitSearchWords(value: string) {
+  return normalizedSearchText(value)
+    .split(/\s+/)
+    .map((entry) => entry.trim())
+    .filter(Boolean);
+}
+
+function namesMatch(characterName: string, requestedName: string) {
+  const character = normalizedSearchText(characterName);
+  const requested = normalizedSearchText(requestedName);
+  if (!character || !requested) {
+    return false;
+  }
+  if (character === requested) {
+    return true;
+  }
+  const characterParts = character.split(' ');
+  const requestedParts = requested.split(' ');
+  return requestedParts.length === 1 && characterParts[0] === requestedParts[0];
+}
+
+function searchWords(tags: string[]) {
+  return Array.from(new Set(tags.flatMap(splitSearchWords)));
+}
+
+function tagScore(caption: string, words: string[]) {
+  if (words.length === 0) {
+    return 0;
+  }
+  const normalizedCaption = normalizedSearchText(caption);
+  const captionWords = new Set(splitSearchWords(caption));
+  return words.reduce(
+    (score, word) => score + (captionWords.has(word) || normalizedCaption.includes(word) ? 1 : 0),
+    0,
+  );
+}
+
+function findGetImagesResults(
+  nodes: WorkflowNode[],
+  call: ParsedPromptActionCall,
+  maxReturnedImages: number,
+): ActionImageResult[] {
+  const requestedCharacters = splitCommaList(call.characters ?? '');
+  const requestedTags = splitCommaList(call.tags ?? '');
+  const words = searchWords(requestedTags);
+  const lists = storybookImageListsFromNodes(nodes).filter((imageList) =>
+    requestedCharacters.length === 0 ||
+    requestedCharacters.some((characterName) => namesMatch(imageList.name, characterName)),
+  );
+  return lists
+    .flatMap((imageList) =>
+      imageList.images.map((image) => ({
+        imageId: image.id,
+        caption: image.description,
+        characterName: imageList.name,
+        score: tagScore(image.description, words),
+        attachment: {
+          id: image.id,
+          name: image.name,
+          mimeType: image.mimeType,
+          size: image.size,
+          dataUrl: image.dataUrl,
+          width: image.width,
+          height: image.height,
+          description: image.description,
+          receivedFrom: image.receivedFrom,
+          imageAccess: image.imageAccess,
+        },
+      })),
+    )
+    .filter((result) => words.length === 0 || result.score > 0)
+    .sort((left, right) =>
+      right.score - left.score ||
+      left.characterName.localeCompare(right.characterName) ||
+      left.imageId.localeCompare(right.imageId),
+    )
+    .slice(0, maxReturnedImages);
+}
+
+const imageTemplateTokenPattern =
+  /\{\{(imageReference|imageReferences|imageId|imageIdTag|imageId_tag|imageTag|imageTags|caption|imageText)\}\}/g;
+const imageTemplateLinePattern =
+  /\{\{(?:imageReference|imageReferences|imageId|imageIdTag|imageId_tag|imageTag|imageTags|caption|imageText)\}\}/;
+
+function noMatchingImagesLine() {
+  return '* No matching stored Storybook character images were found for the requested characters and tags.';
+}
+
+function imageReferenceLabel(index: number, includeImageOrderLabels: boolean) {
+  return includeImageOrderLabels ? `Image ${index + 1}` : 'imageId';
+}
+
+function imageTextValue(result: ActionImageResult, hideImageText: boolean) {
+  const imageText = result.caption.trim();
+  return !hideImageText ? imageText : '';
+}
+
+function formatImageLine(result: ActionImageResult, index: number, includeImageOrderLabels: boolean, hideImageText: boolean) {
+  const imageReference = imageReferenceLabel(index, includeImageOrderLabels);
+  const imageText = imageTextValue(result, hideImageText);
+  return `* ${imageReference}: ${result.imageId}${imageText ? ` : ${imageText}` : ''}`;
+}
+
+function imageTemplateValue(
+  tokenName: string,
+  result: ActionImageResult,
+  index: number,
+  includeImageOrderLabels: boolean,
+  hideImageText: boolean,
+) {
+  switch (tokenName) {
+    case 'imageReference':
+    case 'imageReferences':
+      return imageReferenceLabel(index, includeImageOrderLabels);
+    case 'imageId':
+      return result.imageId;
+    case 'imageText':
+      return imageTextValue(result, hideImageText);
+    case 'imageIdTag':
+    case 'imageId_tag':
+    case 'imageTag':
+    case 'imageTags':
+    case 'caption':
+      return hideImageText ? '' : result.caption.trim();
+    default:
+      return '';
+  }
+}
+
+function renderImageTemplateLine(
+  line: string,
+  result: ActionImageResult,
+  index: number,
+  includeImageOrderLabels: boolean,
+  hideImageText: boolean,
+) {
+  const rendered = line.replace(imageTemplateTokenPattern, (_match, tokenName: string) =>
+    imageTemplateValue(tokenName, result, index, includeImageOrderLabels, hideImageText),
+  );
+  return rendered.replace(/[ \t:=-]+$/g, '').trimEnd();
+}
+
+function expandImageTemplateRows(
+  template: string,
+  results: ActionImageResult[],
+  includeImageOrderLabels: boolean,
+  hideImageText: boolean,
+) {
+  const lines = template.split(/\r?\n/);
+  return lines
+    .flatMap((line) => {
+      if (!imageTemplateLinePattern.test(line)) {
+        return [line];
+      }
+      if (results.length === 0) {
+        return [noMatchingImagesLine()];
+      }
+      return results.map((result, index) =>
+        renderImageTemplateLine(line, result, index, includeImageOrderLabels, hideImageText),
+      );
+    })
+    .join('\n');
+}
+
+function formatImages(results: ActionImageResult[], includeImageOrderLabels: boolean, hideImageText: boolean) {
+  if (results.length === 0) {
+    return noMatchingImagesLine();
+  }
+  return results
+    .map((result, index) => formatImageLine(result, index, includeImageOrderLabels, hideImageText))
+    .join('\n');
+}
+
+function getImagesResultTemplateText(
+  config: PromptActionConfig,
+  call: ParsedPromptActionCall,
+  results: ActionImageResult[],
+  hideImageText: boolean,
+) {
+  const template = expandImageTemplateRows(config.resultTemplate, results, config.sendImagesToLlm, hideImageText);
+  return template
+    .split('{{actionId}}').join(config.actionId)
+    .split('{{characters}}').join(call.characters ?? '')
+    .split('{{tags}}').join(call.tags ?? '')
+    .split('{{images}}').join(formatImages(results, config.sendImagesToLlm, hideImageText))
+    .trim();
+}
+
+function imageCaptionActionJson(call: ParsedPromptActionCall) {
+  return JSON.stringify(
+    {
+      imageId: call.imageId,
+      imageAction: call.imageAction,
+      ...(call.caption ? { caption: call.caption } : {}),
+    },
+    null,
+    2,
+  );
+}
+
+function createImageResultTemplateText(
+  config: PromptActionConfig,
+  call: ParsedPromptActionCall,
+  result: {
+    character: string;
+    imageId: string;
+    description: string;
+  },
+) {
+  return config.resultTemplate
+    .split('{{actionId}}').join(config.actionId)
+    .split('{{character}}').join(result.character)
+    .split('{{characters}}').join(result.character)
+    .split('{{imageId}}').join(result.imageId)
+    .split('{{description}}').join(result.description)
+    .split('{{prompt}}').join(call.prompt ?? '')
+    .trim();
+}
+
+export async function executePromptAction(
+  context: ExecuteContext,
+  config: PromptActionConfig,
+  call: ParsedPromptActionCall,
+  options: PromptActionAvailabilityOptions & { llmConnectionId?: string } = {},
+) {
+  if (!promptActionAvailable(config, options)) {
+    return { text: '', images: [] };
+  }
+  if (call.action === 'describeInputImage') {
+    const imageJson = JSON.stringify({ image: call.caption ?? '' }, null, 2);
+    return {
+      text: config.resultTemplate
+        .split('{{actionId}}').join(config.actionId)
+        .split('{{imageJson}}').join(imageJson)
+        .split('{{caption}}').join(call.caption ?? '')
+        .trim(),
+      images: [],
+      finalOutputText: imageJson,
+    };
+  }
+  if (call.action === 'updatePhoneImageCaption') {
+    const imageActionJson = imageCaptionActionJson(call);
+    return {
+      text: config.resultTemplate
+        .split('{{actionId}}').join(config.actionId)
+        .split('{{imageActionJson}}').join(imageActionJson)
+        .split('{{imageId}}').join(call.imageId ?? '')
+        .split('{{imageAction}}').join(call.imageAction ?? '')
+        .split('{{caption}}').join(call.caption ?? '')
+        .trim(),
+      images: [],
+      finalOutputText: imageActionJson,
+    };
+  }
+  if (call.action !== 'getImageId') {
+    if (call.action !== 'createImage') {
+      return { text: '', images: [] };
+    }
+    const generatedImages = await createComfyImageForCharacter(context, {
+      characterName: call.character ?? '',
+      prompt: call.prompt ?? '',
+      llmConnectionId: options.llmConnectionId,
+      comfyProviderId: config.comfyProviderId,
+      manageModelMemory: config.manageModelMemoryForComfy,
+    });
+    const generatedImage = generatedImages.images[0];
+    const imageId = generatedImage?.id ?? generatedImages.imageIds[0] ?? '';
+    return {
+      text: createImageResultTemplateText(config, call, {
+        character: generatedImages.characterName,
+        imageId,
+        description: call.prompt ?? '',
+      }),
+      images: options.visionEnabled !== false && generatedImage ? [generatedImage] : [],
+    };
+  }
+  const results = findGetImagesResults(context.nodes, call, config.maxReturnedImages);
+  const sendImagesToLlm = options.visionEnabled !== false && config.sendImagesToLlm;
+  const resultConfig = sendImagesToLlm === config.sendImagesToLlm
+    ? config
+    : {
+        ...config,
+        sendImagesToLlm: false,
+        hideImageTextWhenSendingToLlm: false,
+      };
+  const hideImageText = sendImagesToLlm && config.hideImageTextWhenSendingToLlm;
+  const text = getImagesResultTemplateText(resultConfig, call, results, hideImageText);
+  return {
+    text,
+    images: sendImagesToLlm ? results.map((result) => result.attachment) : [],
+  };
+}
+
+export function isPromptActionConfig(value: unknown): value is PromptActionConfig {
+  return !!normalizePromptActionConfig(value);
+}

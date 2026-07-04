@@ -1,0 +1,3407 @@
+const { app, BrowserWindow, Menu, dialog, ipcMain, safeStorage } = require('electron');
+const crypto = require('node:crypto');
+const { execFile } = require('node:child_process');
+const fs = require('node:fs/promises');
+const fsSync = require('node:fs');
+const http = require('node:http');
+const https = require('node:https');
+const os = require('node:os');
+const path = require('node:path');
+const { currentScryptParameters } = require('./encryptionFormat.cjs');
+const {
+  currentEncryptedSessionEnvelopeFormatVersion,
+  currentSessionFormatVersion,
+  currentSessionWorkflowFormatVersion,
+  encryptedSessionMetadata,
+  sessionMetadata,
+} = require('./sessionFormat.cjs');
+const {
+  currentEncryptedWorkflowEnvelopeFormatVersion,
+  currentWorkflowFormatVersion,
+  encryptedWorkflowMetadata,
+  workflowMetadata,
+} = require('./workflowFormat.cjs');
+const {
+  currentEncryptedStorybookEnvelopeFormatVersion,
+  currentStorybookFormatVersion,
+  encryptedStorybookMetadata,
+  storybookMetadata,
+} = require('./storybookFormat.cjs');
+
+const developmentUrl = 'http://localhost:5173';
+const defaultWorkflowPath = path.join(__dirname, '../workflow.default.json');
+const defaultComfyWorkflowPath = path.join(__dirname, '../comfy-workflows/Krea2.json');
+const appIconPath = path.join(
+  __dirname,
+  process.platform === 'win32'
+    ? '../src/assets/app-icons/rpgraph.ico'
+    : '../src/assets/app-icons/rpgraph.png',
+);
+const jsonFileExtension = '.json';
+const maxSelectedImageBytes = 32 * 1024 * 1024;
+const maxSelectedImagesTotalBytes = 96 * 1024 * 1024;
+const sessionCipherAad = Buffer.from('rpgraph-encrypted-session:v2.1');
+const workflowCipherAad = Buffer.from('rpgraph-encrypted-workflow:v2');
+const storybookCipherAad = Buffer.from('rpgraph-encrypted-storybook:v1');
+const approvedWorkflowPaths = new Set([path.resolve(defaultWorkflowPath)]);
+const approvedFilePaths = new Set();
+const approvedComfyWorkflowPaths = new Set([path.resolve(defaultComfyWorkflowPath)]);
+const activeLlmRequests = new Map();
+const pendingCancelledLlmRequests = new Set();
+const fileBaseNameControlCharacters = `${String.fromCharCode(0)}-${String.fromCharCode(31)}`;
+const invalidFileBaseNameCharacters = new RegExp(`[<>:"/\\\\|?*${fileBaseNameControlCharacters}]`, 'g');
+let settingsWriteQueue = Promise.resolve();
+let windowStateSaveTimer;
+
+function configureLinuxVideoAcceleration() {
+  if (process.platform !== 'linux') {
+    return;
+  }
+
+  app.commandLine.appendSwitch('disable-features', 'VaapiVideoDecoder,VaapiVideoEncoder');
+  app.commandLine.appendSwitch('disable-accelerated-video-decode');
+}
+
+function configureLinuxChromiumLogging() {
+  if (process.platform !== 'linux') {
+    return;
+  }
+  // Chromium's compositor logs harmless "Frame latency is negative" errors on
+  // Linux (sub-millisecond display timing rounding). Chromium has no
+  // per-message filter, so raise the terminal log threshold to FATAL.
+  // Node-side console output from this file is unaffected.
+  app.commandLine.appendSwitch('log-level', '3');
+}
+
+configureLinuxVideoAcceleration();
+configureLinuxChromiumLogging();
+
+app.setName('RPgraph Studio');
+if (process.platform === 'win32') {
+  app.setAppUserModelId('studio.rpgraph.app');
+} else if (process.platform === 'linux') {
+  app.setDesktopName('rpgraph-studio.desktop');
+}
+
+function normalizedWorkflowPath(filePath) {
+  if (
+    typeof filePath !== 'string' ||
+    !filePath ||
+    filePath.includes('\0') ||
+    !filePath.toLowerCase().endsWith('.json')
+  ) {
+    throw new Error('Invalid workflow file path.');
+  }
+  return path.resolve(filePath);
+}
+
+function approveWorkflowPath(filePath) {
+  const resolved = normalizedWorkflowPath(filePath);
+  approvedWorkflowPaths.add(resolved);
+  return resolved;
+}
+
+function validateWorkflowPath(filePath) {
+  const resolved = normalizedWorkflowPath(filePath);
+  if (!approvedWorkflowPaths.has(resolved)) {
+    throw new Error('Workflow path was not selected through the application.');
+  }
+  return resolved;
+}
+
+function normalizedFilePath(filePath) {
+  if (
+    typeof filePath !== 'string' ||
+    !filePath ||
+    filePath.includes('\0') ||
+    !filePath.toLowerCase().endsWith('.json')
+  ) {
+    throw new Error('Invalid RPGraph file path.');
+  }
+  return path.resolve(filePath);
+}
+
+function approveFilePath(filePath) {
+  const resolved = normalizedFilePath(filePath);
+  approvedFilePaths.add(resolved);
+  return resolved;
+}
+
+function validateFilePath(filePath) {
+  const resolved = normalizedFilePath(filePath);
+  if (!approvedFilePaths.has(resolved)) {
+    throw new Error('RPGraph file path was not selected through the application.');
+  }
+  return resolved;
+}
+
+function settingsFilePath() {
+  return path.join(app.getPath('userData'), 'settings.json');
+}
+
+function apiKeyEncryptionAvailable() {
+  return Boolean(safeStorage?.isEncryptionAvailable?.());
+}
+
+function encryptedApiKeyPayload(apiKey) {
+  if (!apiKey) {
+    return undefined;
+  }
+  if (!apiKeyEncryptionAvailable()) {
+    return undefined;
+  }
+  return {
+    format: 'electron-safe-storage',
+    value: safeStorage.encryptString(apiKey).toString('base64'),
+  };
+}
+
+function decryptedApiKeyPayload(payload) {
+  if (!payload || typeof payload !== 'object') {
+    return '';
+  }
+  if (payload.format !== 'electron-safe-storage' || typeof payload.value !== 'string') {
+    return '';
+  }
+  if (!apiKeyEncryptionAvailable()) {
+    return '';
+  }
+  return safeStorage.decryptString(Buffer.from(payload.value, 'base64'));
+}
+
+function settingsHasEncryptedApiKeys(settings) {
+  return Boolean(
+    settings &&
+      typeof settings === 'object' &&
+      Array.isArray(settings.connections) &&
+      settings.connections.some((connection) => Boolean(connection?.apiKeyEncrypted)),
+  );
+}
+
+function settingsForDisk(settings) {
+  const encryptedSettings = structuredClone(settings);
+  if (!Array.isArray(encryptedSettings.connections)) {
+    return encryptedSettings;
+  }
+  encryptedSettings.apiKeyStorage = apiKeyEncryptionAvailable() ? 'encrypted' : 'plain';
+  encryptedSettings.connections = encryptedSettings.connections.map((connection) => {
+    const nextConnection = { ...connection };
+    const encryptedApiKey = encryptedApiKeyPayload(nextConnection.apiKey);
+    if (encryptedApiKey) {
+      nextConnection.apiKeyEncrypted = encryptedApiKey;
+      nextConnection.apiKey = '';
+    } else if (nextConnection.apiKey) {
+      delete nextConnection.apiKeyEncrypted;
+    } else if (!nextConnection.apiKeyEncrypted) {
+      delete nextConnection.apiKeyEncrypted;
+    }
+    return nextConnection;
+  });
+  return encryptedSettings;
+}
+
+function settingsFromDisk(settings) {
+  if (!settings || typeof settings !== 'object' || !Array.isArray(settings.connections)) {
+    return settings;
+  }
+  return {
+    ...settings,
+    apiKeyStorage: undefined,
+    connections: settings.connections.map((connection) => {
+      if (!connection || typeof connection !== 'object') {
+        return connection;
+      }
+      const apiKey = connection.apiKey || decryptedApiKeyPayload(connection.apiKeyEncrypted);
+      if (connection.apiKeyEncrypted && !apiKeyEncryptionAvailable()) {
+        return {
+          ...connection,
+          apiKey,
+        };
+      }
+      const rest = { ...connection };
+      delete rest.apiKeyEncrypted;
+      return {
+        ...rest,
+        apiKey,
+      };
+    }),
+  };
+}
+
+function windowStateFilePath() {
+  return path.join(app.getPath('userData'), 'window-state.json');
+}
+
+function imageDialogStateFilePath() {
+  return path.join(app.getPath('userData'), 'image-dialog-state.json');
+}
+
+function workflowStateFilePath() {
+  return path.join(app.getPath('userData'), 'workflow-state.json');
+}
+
+function filesDirectory() {
+  return path.join(app.getPath('userData'), 'files');
+}
+
+function isStoredFilePath(filePath) {
+  return path.dirname(path.resolve(filePath)) === path.resolve(filesDirectory());
+}
+
+async function loadImageDialogDirectory() {
+  try {
+    const contents = await fs.readFile(imageDialogStateFilePath(), 'utf8');
+    const state = JSON.parse(contents);
+    if (typeof state.lastDirectory !== 'string' || !state.lastDirectory) {
+      return app.getPath('pictures');
+    }
+    const directoryStats = await fs.stat(state.lastDirectory);
+    return directoryStats.isDirectory() ? state.lastDirectory : app.getPath('pictures');
+  } catch {
+    return app.getPath('pictures');
+  }
+}
+
+async function saveImageDialogDirectory(directory) {
+  const filePath = imageDialogStateFilePath();
+  const contents = `${JSON.stringify({ lastDirectory: directory }, null, 2)}\n`;
+  await writeTextFileAtomically(filePath, contents);
+}
+
+function imageMimeType(filePath) {
+  const extension = path.extname(filePath).toLowerCase();
+  const mimeTypes = {
+    '.jpeg': 'image/jpeg',
+    '.jpg': 'image/jpeg',
+    '.png': 'image/png',
+    '.webp': 'image/webp',
+  };
+  return mimeTypes[extension] ?? 'application/octet-stream';
+}
+
+function formatMegabytes(bytes) {
+  return `${(bytes / 1024 / 1024).toFixed(1)} MB`;
+}
+
+function validWindowBounds(bounds) {
+  return (
+    bounds &&
+    typeof bounds.x === 'number' &&
+    typeof bounds.y === 'number' &&
+    typeof bounds.width === 'number' &&
+    typeof bounds.height === 'number' &&
+    bounds.width >= 980 &&
+    bounds.height >= 620
+  );
+}
+
+async function loadWindowState() {
+  try {
+    const contents = await fs.readFile(windowStateFilePath(), 'utf8');
+    const state = JSON.parse(contents);
+    return {
+      bounds: validWindowBounds(state.bounds) ? state.bounds : undefined,
+      isMaximized: state.isMaximized === true,
+      isFullScreen: state.isFullScreen === true,
+    };
+  } catch (error) {
+    if (error && error.code !== 'ENOENT') {
+      console.error('Unable to read window state:', error);
+    }
+    return { isMaximized: true, isFullScreen: false };
+  }
+}
+
+function saveWindowState(window) {
+  if (window.isDestroyed()) {
+    return;
+  }
+  const state = {
+    bounds: window.getNormalBounds(),
+    isMaximized: window.isMaximized(),
+    isFullScreen: window.isFullScreen(),
+  };
+  const filePath = windowStateFilePath();
+  try {
+    fsSync.mkdirSync(path.dirname(filePath), { recursive: true });
+    fsSync.writeFileSync(filePath, `${JSON.stringify(state, null, 2)}\n`, 'utf8');
+  } catch (error) {
+    console.error('Unable to save window state:', error);
+  }
+}
+
+function scheduleWindowStateSave(window) {
+  clearTimeout(windowStateSaveTimer);
+  windowStateSaveTimer = setTimeout(() => saveWindowState(window), 180);
+}
+
+function safeSessionBaseName(value) {
+  const cleaned = String(value ?? '')
+    .trim()
+    .replace(invalidFileBaseNameCharacters, '-')
+    .replace(/[. ]+$/g, '')
+    .replace(/(\.rpgraph-session)?\.json$/i, '')
+    .slice(0, 80);
+  const baseName = cleaned || `session-${new Date().toISOString().replace(/[:.]/g, '-')}`;
+  return /^(con|prn|aux|nul|com[1-9]|lpt[1-9])$/i.test(baseName)
+    ? `session-${baseName}`
+    : baseName;
+}
+
+function safeWorkflowBaseName(value) {
+  const cleaned = String(value ?? '')
+    .trim()
+    .replace(invalidFileBaseNameCharacters, '-')
+    .replace(/[. ]+$/g, '')
+    .replace(/(\.rpgraph)?\.json$/i, '')
+    .slice(0, 80);
+  const baseName = cleaned || `workflow-${new Date().toISOString().replace(/[:.]/g, '-')}`;
+  return /^(con|prn|aux|nul|com[1-9]|lpt[1-9])$/i.test(baseName)
+    ? `workflow-${baseName}`
+    : baseName;
+}
+
+function safeStorybookBaseName(value) {
+  const cleaned = String(value ?? '')
+    .trim()
+    .replace(invalidFileBaseNameCharacters, '-')
+    .replace(/[. ]+$/g, '')
+    .replace(/(\.rpgraph-storybook)?\.json$/i, '')
+    .slice(0, 80);
+  const baseName = cleaned || `storybook-${new Date().toISOString().replace(/[:.]/g, '-')}`;
+  return /^(con|prn|aux|nul|com[1-9]|lpt[1-9])$/i.test(baseName)
+    ? `storybook-${baseName}`
+    : baseName;
+}
+
+function validatedStoredFileName(fileName) {
+  if (
+    typeof fileName !== 'string' ||
+    path.basename(fileName) !== fileName ||
+    !fileName.toLowerCase().endsWith(jsonFileExtension)
+  ) {
+    throw new Error('Invalid RPGraph file name.');
+  }
+  return fileName;
+}
+
+function storedJsonName(fileName) {
+  return fileName.replace(/(\.rpgraph-storybook|\.rpgraph-session|\.rpgraph)?\.json$/i, '');
+}
+
+function storedFileMetadata(value) {
+  if (value?.format === 'rpgraph-storybook') {
+    return storybookMetadata(value);
+  }
+  if (value?.format === 'rpgraph-encrypted-storybook') {
+    return encryptedStorybookMetadata(value);
+  }
+  if (value?.format === 'rpgraph-workflow') {
+    return workflowMetadata(value);
+  }
+  if (value?.format === 'rpgraph-encrypted-workflow') {
+    return encryptedWorkflowMetadata(value);
+  }
+  if (value?.format === 'rpgraph-session') {
+    return sessionMetadata(value);
+  }
+  if (value?.format === 'rpgraph-encrypted-session') {
+    return encryptedSessionMetadata(value);
+  }
+  return { type: 'unknown', protection: 'unknown', compatible: false };
+}
+
+async function readStoredFileMetadata(filePath) {
+  try {
+    return storedFileMetadata(JSON.parse(await fs.readFile(filePath, 'utf8')));
+  } catch {
+    return { type: 'unknown', protection: 'unknown', compatible: false };
+  }
+}
+
+async function assertOverwriteType(filePath, expectedType) {
+  let metadata;
+  try {
+    metadata = storedFileMetadata(JSON.parse(await fs.readFile(filePath, 'utf8')));
+  } catch (error) {
+    if (error && error.code === 'ENOENT') {
+      return;
+    }
+    throw new Error(`Cannot overwrite an unreadable file with a ${expectedType}. Choose another name.`, {
+      cause: error,
+    });
+  }
+  if (metadata.type !== expectedType) {
+    throw new Error(
+      `Cannot overwrite a ${metadata.type} file with a ${expectedType}. Choose another name.`,
+    );
+  }
+}
+
+async function writeTextFileAtomically(filePath, contents) {
+  const temporaryPath = `${filePath}.${process.pid}.${crypto.randomUUID()}.tmp`;
+  try {
+    await fs.writeFile(temporaryPath, contents, { encoding: 'utf8', flag: 'wx' });
+    await fs.rename(temporaryPath, filePath);
+  } catch (error) {
+    try {
+      await fs.unlink(temporaryPath);
+    } catch (cleanupError) {
+      if (!cleanupError || cleanupError.code !== 'ENOENT') {
+        console.error('Unable to clean up temporary file:', cleanupError);
+      }
+    }
+    throw error;
+  }
+}
+
+async function loadWorkflowState() {
+  try {
+    const state = JSON.parse(await fs.readFile(workflowStateFilePath(), 'utf8'));
+    return {
+      lastWorkflowFileName:
+        typeof state.lastWorkflowFileName === 'string'
+          ? path.basename(state.lastWorkflowFileName)
+          : '',
+    };
+  } catch {
+    return { lastWorkflowFileName: '' };
+  }
+}
+
+async function saveLastWorkflowFileName(fileName) {
+  const state = { lastWorkflowFileName: validatedStoredFileName(fileName) };
+  await writeTextFileAtomically(workflowStateFilePath(), `${JSON.stringify(state, null, 2)}\n`);
+}
+
+async function workflowFiles() {
+  const directory = filesDirectory();
+  await fs.mkdir(directory, { recursive: true });
+  const entries = await fs.readdir(directory, { withFileTypes: true });
+  const files = await Promise.all(
+    entries
+      .filter((entry) => entry.isFile() && entry.name.toLowerCase().endsWith(jsonFileExtension))
+      .map(async (entry) => {
+        const filePath = path.join(directory, entry.name);
+        const stats = await fs.stat(filePath);
+        const metadata = await readStoredFileMetadata(filePath);
+        return {
+          fileName: entry.name,
+          name: storedJsonName(entry.name),
+          filePath,
+          updatedAt: stats.mtime.toISOString(),
+          ...metadata,
+        };
+      }),
+  );
+  return files
+    .filter((file) => file.type === 'workflow')
+    .sort((left, right) => right.updatedAt.localeCompare(left.updatedAt));
+}
+
+async function restoreDefaultWorkflowFile() {
+  const directory = filesDirectory();
+  await fs.mkdir(directory, { recursive: true });
+  const baseName = 'workflow.default';
+  let fileName = `${baseName}${jsonFileExtension}`;
+  let filePath = path.join(directory, fileName);
+  for (let index = 2; fsSync.existsSync(filePath); index += 1) {
+    const metadata = await readStoredFileMetadata(filePath);
+    if (metadata.type === 'workflow' && metadata.protection === 'plain' && metadata.compatible) {
+      approveWorkflowPath(filePath);
+      await saveLastWorkflowFileName(fileName);
+      return { fileName, name: storedJsonName(fileName), filePath };
+    }
+    fileName = `${baseName}-${index}${jsonFileExtension}`;
+    filePath = path.join(directory, fileName);
+  }
+  const contents = await fs.readFile(defaultWorkflowPath, 'utf8');
+  await fs.writeFile(filePath, contents, { encoding: 'utf8', flag: 'wx' });
+  approveWorkflowPath(filePath);
+  await saveLastWorkflowFileName(fileName);
+  return { fileName, name: storedJsonName(fileName), filePath };
+}
+
+async function loadStoredWorkflowFile(fileName, password = '') {
+  const filePath = approveFilePath(path.join(filesDirectory(), validatedStoredFileName(fileName)));
+  const { metadata, value } = await readRpgraphFile(filePath, password);
+  if (metadata.type !== 'workflow') {
+    throw new Error('The selected file is not a workflow.');
+  }
+  if (metadata.protection === 'plain') {
+    approveWorkflowPath(filePath);
+  }
+  await saveLastWorkflowFileName(fileName);
+  return {
+    fileName,
+    name: storedJsonName(fileName),
+    filePath,
+    ...metadata,
+    value,
+  };
+}
+
+function unsupportedSessionFormatError(envelope) {
+  const { envelopeFormatVersion, formatVersion } = encryptedSessionMetadata(envelope);
+  if (envelopeFormatVersion !== currentEncryptedSessionEnvelopeFormatVersion) {
+    return new Error(
+      `This encrypted RP save uses Envelope Format ${envelopeFormatVersion ?? 'Unknown'}, which is incompatible with supported Envelope Format ${currentEncryptedSessionEnvelopeFormatVersion}.`,
+    );
+  }
+  return new Error(
+    `This RP save uses RP Save Format v${formatVersion ?? 'Unknown'}, which is incompatible with supported RP Save Format v${currentSessionFormatVersion}.`,
+  );
+}
+
+function unsupportedWorkflowFormatError(envelope) {
+  const { envelopeFormatVersion, formatVersion } = encryptedWorkflowMetadata(envelope);
+  if (envelopeFormatVersion !== currentEncryptedWorkflowEnvelopeFormatVersion) {
+    return new Error(
+      `This encrypted workflow uses Envelope Format ${envelopeFormatVersion ?? 'Unknown'}, which is incompatible with supported Envelope Format ${currentEncryptedWorkflowEnvelopeFormatVersion}.`,
+    );
+  }
+  return new Error(
+    `This workflow uses Workflow File Format ${formatVersion ?? 'Unknown'}, which is incompatible with supported Workflow File Format ${currentWorkflowFormatVersion}.`,
+  );
+}
+
+function unsupportedStorybookFormatError(envelope) {
+  const { envelopeFormatVersion, formatVersion } = encryptedStorybookMetadata(envelope);
+  if (envelopeFormatVersion !== currentEncryptedStorybookEnvelopeFormatVersion) {
+    return new Error(
+      `This encrypted storybook uses Envelope Format ${envelopeFormatVersion ?? 'Unknown'}, which is incompatible with supported Envelope Format ${currentEncryptedStorybookEnvelopeFormatVersion}.`,
+    );
+  }
+  return new Error(
+    `This storybook uses Storybook Format ${formatVersion ?? 'Unknown'}, which is incompatible with supported Storybook Format ${currentStorybookFormatVersion}.`,
+  );
+}
+
+function unsupportedStoredFileError(value, metadata) {
+  if (metadata.type === 'workflow') {
+    if (metadata.protection === 'encrypted' &&
+      metadata.envelopeFormatVersion !== currentEncryptedWorkflowEnvelopeFormatVersion) {
+      return new Error(
+        `This encrypted workflow uses Envelope Format ${metadata.envelopeFormatVersion ?? 'Unknown'}, which is incompatible with supported Envelope Format ${currentEncryptedWorkflowEnvelopeFormatVersion}.`,
+      );
+    }
+    return new Error(
+      `This workflow uses Workflow File Format ${metadata.formatVersion ?? 'Unknown'}, which is incompatible with supported Workflow File Format ${currentWorkflowFormatVersion}.`,
+    );
+  }
+  if (metadata.type === 'session') {
+    if (metadata.protection === 'encrypted' &&
+      metadata.envelopeFormatVersion !== currentEncryptedSessionEnvelopeFormatVersion) {
+      return new Error(
+        `This encrypted RP save uses Envelope Format ${metadata.envelopeFormatVersion ?? 'Unknown'}, which is incompatible with supported Envelope Format ${currentEncryptedSessionEnvelopeFormatVersion}.`,
+      );
+    }
+    return new Error(
+      `This RP save uses RP Save Format v${metadata.formatVersion ?? 'Unknown'}, which is incompatible with supported RP Save Format v${currentSessionFormatVersion}.`,
+    );
+  }
+  if (metadata.type === 'storybook') {
+    if (metadata.protection === 'encrypted' &&
+      metadata.envelopeFormatVersion !== currentEncryptedStorybookEnvelopeFormatVersion) {
+      return new Error(
+        `This encrypted storybook uses Envelope Format ${metadata.envelopeFormatVersion ?? 'Unknown'}, which is incompatible with supported Envelope Format ${currentEncryptedStorybookEnvelopeFormatVersion}.`,
+      );
+    }
+    return new Error(
+      `This storybook uses Storybook Format ${metadata.formatVersion ?? 'Unknown'}, which is incompatible with supported Storybook Format ${currentStorybookFormatVersion}.`,
+    );
+  }
+  return new Error('This is not a supported RPGraph file.');
+}
+
+async function deriveFileKey(password, salt, parameters) {
+  return new Promise((resolve, reject) => {
+    crypto.scrypt(
+      password,
+      salt,
+      32,
+      { ...parameters, maxmem: 128 * 1024 * 1024 },
+      (error, key) => {
+        if (error) {
+          reject(error);
+          return;
+        }
+        resolve(key);
+      },
+    );
+  });
+}
+
+function requiredEncryptionPassword(password) {
+  if (typeof password !== 'string' || !password) {
+    throw new Error('Password-protected files require a password or PIN.');
+  }
+  return password;
+}
+
+async function encryptSession(session, password) {
+  if (
+    !session ||
+    session.format !== 'rpgraph-session' ||
+    session.formatVersion !== currentSessionFormatVersion ||
+    session.workflow?.formatVersion !== currentSessionWorkflowFormatVersion ||
+    !Array.isArray(session.timeline)
+  ) {
+    throw new Error(
+      `Only RPGraph RP Save Format v${currentSessionFormatVersion} payloads can be encrypted.`,
+    );
+  }
+  requiredEncryptionPassword(password);
+  const salt = crypto.randomBytes(16);
+  const iv = crypto.randomBytes(12);
+  const key = await deriveFileKey(password, salt, currentScryptParameters);
+  const cipher = crypto.createCipheriv('aes-256-gcm', key, iv);
+  cipher.setAAD(sessionCipherAad);
+  const encrypted = Buffer.concat([
+    cipher.update(JSON.stringify(session), 'utf8'),
+    cipher.final(),
+  ]);
+  const latestTurnNumber = session.timeline.reduce((highest, entry) => (
+    entry?.kind === 'message' && typeof entry.turnNumber === 'number' && Number.isFinite(entry.turnNumber)
+      ? Math.max(highest, entry.turnNumber)
+      : highest
+  ), 0);
+
+  return {
+    format: 'rpgraph-encrypted-session',
+    envelopeFormatVersion: currentEncryptedSessionEnvelopeFormatVersion,
+    payloadFormat: session.format,
+    payloadFormatVersion: session.formatVersion,
+    workflowFormatVersion: session.workflow.formatVersion,
+    latestTurnNumber,
+    encryption: 'aes-256-gcm',
+    keyDerivation: 'scrypt',
+    keyDerivationParameters: currentScryptParameters,
+    salt: salt.toString('base64'),
+    iv: iv.toString('base64'),
+    authenticationTag: cipher.getAuthTag().toString('base64'),
+    ciphertext: encrypted.toString('base64'),
+  };
+}
+
+async function encryptWorkflow(workflow, password) {
+  if (
+    !workflow ||
+    workflow.format !== 'rpgraph-workflow' ||
+    workflow.formatVersion !== currentWorkflowFormatVersion
+  ) {
+    throw new Error(
+      `Only RPGraph Workflow File Format ${currentWorkflowFormatVersion} payloads can be encrypted.`,
+    );
+  }
+  requiredEncryptionPassword(password);
+  const salt = crypto.randomBytes(16);
+  const iv = crypto.randomBytes(12);
+  const key = await deriveFileKey(password, salt, currentScryptParameters);
+  const cipher = crypto.createCipheriv('aes-256-gcm', key, iv);
+  cipher.setAAD(workflowCipherAad);
+  const encrypted = Buffer.concat([
+    cipher.update(JSON.stringify(workflow), 'utf8'),
+    cipher.final(),
+  ]);
+
+  return {
+    format: 'rpgraph-encrypted-workflow',
+    envelopeFormatVersion: currentEncryptedWorkflowEnvelopeFormatVersion,
+    payloadFormat: workflow.format,
+    payloadFormatVersion: workflow.formatVersion,
+    encryption: 'aes-256-gcm',
+    keyDerivation: 'scrypt',
+    keyDerivationParameters: currentScryptParameters,
+    salt: salt.toString('base64'),
+    iv: iv.toString('base64'),
+    authenticationTag: cipher.getAuthTag().toString('base64'),
+    ciphertext: encrypted.toString('base64'),
+  };
+}
+
+async function encryptStorybook(storybook, password) {
+  if (
+    !storybook ||
+    storybook.format !== 'rpgraph-storybook' ||
+    storybook.version !== currentStorybookFormatVersion
+  ) {
+    throw new Error(
+      `Only RPGraph Storybook Format ${currentStorybookFormatVersion} payloads can be encrypted.`,
+    );
+  }
+  requiredEncryptionPassword(password);
+  const salt = crypto.randomBytes(16);
+  const iv = crypto.randomBytes(12);
+  const key = await deriveFileKey(password, salt, currentScryptParameters);
+  const cipher = crypto.createCipheriv('aes-256-gcm', key, iv);
+  cipher.setAAD(storybookCipherAad);
+  const encrypted = Buffer.concat([
+    cipher.update(JSON.stringify(storybook), 'utf8'),
+    cipher.final(),
+  ]);
+
+  return {
+    format: 'rpgraph-encrypted-storybook',
+    envelopeFormatVersion: currentEncryptedStorybookEnvelopeFormatVersion,
+    payloadFormat: storybook.format,
+    payloadFormatVersion: storybook.version,
+    encryption: 'aes-256-gcm',
+    keyDerivation: 'scrypt',
+    keyDerivationParameters: currentScryptParameters,
+    salt: salt.toString('base64'),
+    iv: iv.toString('base64'),
+    authenticationTag: cipher.getAuthTag().toString('base64'),
+    ciphertext: encrypted.toString('base64'),
+  };
+}
+
+async function decryptSession(envelope, password) {
+  if (!envelope || envelope.format !== 'rpgraph-encrypted-session') {
+    throw new Error('This is not a supported encrypted session file.');
+  }
+  if (!encryptedSessionMetadata(envelope).compatible) {
+    throw unsupportedSessionFormatError(envelope);
+  }
+  if (
+    envelope.encryption !== 'aes-256-gcm' ||
+    envelope.keyDerivation !== 'scrypt'
+  ) {
+    throw new Error('This RPGraph session file uses an unsupported format version.');
+  }
+  requiredEncryptionPassword(password);
+
+  try {
+    const salt = Buffer.from(envelope.salt, 'base64');
+    const iv = Buffer.from(envelope.iv, 'base64');
+    const key = await deriveFileKey(password, salt, envelope.keyDerivationParameters);
+    const decipher = crypto.createDecipheriv('aes-256-gcm', key, iv);
+    decipher.setAAD(sessionCipherAad);
+    decipher.setAuthTag(Buffer.from(envelope.authenticationTag, 'base64'));
+    const decrypted = Buffer.concat([
+      decipher.update(Buffer.from(envelope.ciphertext, 'base64')),
+      decipher.final(),
+    ]);
+    const session = JSON.parse(decrypted.toString('utf8'));
+    if (
+      !session ||
+      session.format !== envelope.payloadFormat ||
+      session.formatVersion !== envelope.payloadFormatVersion ||
+      session.workflow?.formatVersion !== envelope.workflowFormatVersion ||
+      !Array.isArray(session.timeline) ||
+      session.timeline.reduce((highest, entry) => (
+        entry?.kind === 'message' && typeof entry.turnNumber === 'number' && Number.isFinite(entry.turnNumber)
+          ? Math.max(highest, entry.turnNumber)
+          : highest
+      ), 0) !== envelope.latestTurnNumber
+    ) {
+      throw new Error('Encrypted session metadata does not match its payload.');
+    }
+    return session;
+  } catch (error) {
+    if (
+      error instanceof Error &&
+      error.message === 'Encrypted session metadata does not match its payload.'
+    ) {
+      throw error;
+    }
+    throw new Error('Unable to unlock session. The password is incorrect or the file is damaged.', {
+      cause: error,
+    });
+  }
+}
+
+async function decryptWorkflow(envelope, password) {
+  if (!envelope || envelope.format !== 'rpgraph-encrypted-workflow') {
+    throw new Error('This is not a supported encrypted workflow file.');
+  }
+  if (!encryptedWorkflowMetadata(envelope).compatible) {
+    throw unsupportedWorkflowFormatError(envelope);
+  }
+  requiredEncryptionPassword(password);
+
+  try {
+    const salt = Buffer.from(envelope.salt, 'base64');
+    const iv = Buffer.from(envelope.iv, 'base64');
+    const key = await deriveFileKey(password, salt, envelope.keyDerivationParameters);
+    const decipher = crypto.createDecipheriv('aes-256-gcm', key, iv);
+    decipher.setAAD(workflowCipherAad);
+    decipher.setAuthTag(Buffer.from(envelope.authenticationTag, 'base64'));
+    const decrypted = Buffer.concat([
+      decipher.update(Buffer.from(envelope.ciphertext, 'base64')),
+      decipher.final(),
+    ]);
+    const workflow = JSON.parse(decrypted.toString('utf8'));
+    if (
+      !workflow ||
+      workflow.format !== envelope.payloadFormat ||
+      workflow.formatVersion !== envelope.payloadFormatVersion
+    ) {
+      throw new Error('Encrypted workflow metadata does not match its payload.');
+    }
+    return workflow;
+  } catch (error) {
+    if (
+      error instanceof Error &&
+      error.message === 'Encrypted workflow metadata does not match its payload.'
+    ) {
+      throw error;
+    }
+    throw new Error('Unable to unlock workflow. The password is incorrect or the file is damaged.', {
+      cause: error,
+    });
+  }
+}
+
+async function decryptStorybook(envelope, password) {
+  if (!envelope || envelope.format !== 'rpgraph-encrypted-storybook') {
+    throw new Error('This is not a supported encrypted storybook file.');
+  }
+  if (!encryptedStorybookMetadata(envelope).compatible) {
+    throw unsupportedStorybookFormatError(envelope);
+  }
+  requiredEncryptionPassword(password);
+
+  try {
+    const salt = Buffer.from(envelope.salt, 'base64');
+    const iv = Buffer.from(envelope.iv, 'base64');
+    const key = await deriveFileKey(password, salt, envelope.keyDerivationParameters);
+    const decipher = crypto.createDecipheriv('aes-256-gcm', key, iv);
+    decipher.setAAD(storybookCipherAad);
+    decipher.setAuthTag(Buffer.from(envelope.authenticationTag, 'base64'));
+    const decrypted = Buffer.concat([
+      decipher.update(Buffer.from(envelope.ciphertext, 'base64')),
+      decipher.final(),
+    ]);
+    const storybook = JSON.parse(decrypted.toString('utf8'));
+    if (
+      !storybook ||
+      storybook.format !== envelope.payloadFormat ||
+      storybook.version !== envelope.payloadFormatVersion
+    ) {
+      throw new Error('Encrypted storybook metadata does not match its payload.');
+    }
+    return storybook;
+  } catch (error) {
+    if (
+      error instanceof Error &&
+      error.message === 'Encrypted storybook metadata does not match its payload.'
+    ) {
+      throw error;
+    }
+    throw new Error('Unable to unlock storybook. The password is incorrect or the file is damaged.', {
+      cause: error,
+    });
+  }
+}
+
+async function readRpgraphFile(filePath, password) {
+  const value = JSON.parse(await fs.readFile(filePath, 'utf8'));
+  const metadata = storedFileMetadata(value);
+  if (!metadata.compatible) {
+    throw unsupportedStoredFileError(value, metadata);
+  }
+  if (metadata.type === 'workflow') {
+    return {
+      metadata,
+      value: metadata.protection === 'encrypted'
+        ? await decryptWorkflow(value, password)
+        : value,
+    };
+  }
+  if (metadata.type === 'storybook') {
+    return {
+      metadata,
+      value: metadata.protection === 'encrypted'
+        ? await decryptStorybook(value, password)
+        : value,
+    };
+  }
+  if (metadata.type === 'session') {
+    return {
+      metadata,
+      value: metadata.protection === 'encrypted'
+        ? await decryptSession(value, password)
+        : value,
+    };
+  }
+  throw new Error('This is not a supported RPGraph file.');
+}
+
+function endpoint(baseUrl, route) {
+  return `${baseUrl.replace(/\/+$/, '')}/${route}`;
+}
+
+function lmStudioBaseUrl(connection) {
+  const baseUrl = typeof connection?.baseUrl === 'string' && connection.baseUrl.trim()
+    ? connection.baseUrl.trim()
+    : 'http://localhost:1234/v1';
+  const parsed = new URL(baseUrl);
+  if (parsed.pathname.replace(/\/+$/, '') === '/v1') {
+    parsed.pathname = '/';
+  }
+  parsed.search = '';
+  parsed.hash = '';
+  return parsed.toString().replace(/\/+$/, '');
+}
+
+function lmStudioEndpoint(connection, route) {
+  return `${lmStudioBaseUrl(connection)}/api/v1/${route}`;
+}
+
+function nativeProviderBaseUrl(connection, defaultBaseUrl) {
+  const baseUrl = typeof connection?.baseUrl === 'string' && connection.baseUrl.trim()
+    ? connection.baseUrl.trim()
+    : defaultBaseUrl;
+  const parsed = new URL(baseUrl);
+  if (parsed.pathname.replace(/\/+$/, '') === '/v1') {
+    parsed.pathname = '/';
+  }
+  parsed.search = '';
+  parsed.hash = '';
+  return parsed.toString().replace(/\/+$/, '');
+}
+
+function ollamaBaseUrl(connection) {
+  return nativeProviderBaseUrl(connection, 'http://localhost:11434/v1');
+}
+
+function ollamaEndpoint(connection, route) {
+  return `${ollamaBaseUrl(connection)}/api/${route}`;
+}
+
+function lmStudioModelEntries(result) {
+  if (Array.isArray(result?.data)) {
+    return result.data;
+  }
+  if (Array.isArray(result?.models)) {
+    return result.models;
+  }
+  return Array.isArray(result) ? result : [];
+}
+
+function lmStudioModelKey(model) {
+  return [model?.key, model?.model_key, model?.id, model?.model]
+    .find((value) => typeof value === 'string' && value.trim());
+}
+
+function lmStudioModelDisplayName(model, key) {
+  return [model?.display_name, model?.name, model?.path, key]
+    .find((value) => typeof value === 'string' && value.trim()) ?? key;
+}
+
+function lmStudioNormalizedModel(model) {
+  const id = lmStudioModelKey(model);
+  if (!id) {
+    return null;
+  }
+  const capabilities = model?.capabilities && typeof model.capabilities === 'object'
+    ? model.capabilities
+    : {};
+  const type = typeof model?.type === 'string' ? model.type : undefined;
+  return {
+    id: id.trim(),
+    name: lmStudioModelDisplayName(model, id).trim(),
+    type,
+    vision: capabilities.vision === true || type === 'vlm',
+    trainedForToolUse: capabilities.trained_for_tool_use === true,
+  };
+}
+
+function stringArray(value) {
+  return Array.isArray(value)
+    ? value.filter((entry) => typeof entry === 'string')
+    : [];
+}
+
+function ollamaModelId(model) {
+  return [model?.model, model?.name]
+    .find((value) => typeof value === 'string' && value.trim())
+    ?.trim() ?? '';
+}
+
+function ollamaNormalizedModel(model, capabilities) {
+  const id = ollamaModelId(model);
+  if (!id) {
+    return null;
+  }
+  // Older Ollama versions omit `capabilities` in /api/show; treat those
+  // models as plain text models instead of dropping them.
+  if (capabilities.length > 0 && !capabilities.includes('completion')) {
+    return null;
+  }
+  return {
+    id,
+    name: typeof model?.name === 'string' && model.name.trim() ? model.name.trim() : id,
+    vision: capabilities.includes('vision'),
+    trainedForToolUse: capabilities.includes('tools'),
+  };
+}
+
+function openRouterNormalizedModel(model) {
+  const id = typeof model?.id === 'string' ? model.id.trim() : '';
+  if (!id) {
+    return null;
+  }
+  const architecture = model?.architecture && typeof model.architecture === 'object'
+    ? model.architecture
+    : {};
+  const inputModalities = stringArray(architecture.input_modalities);
+  const outputModalities = stringArray(architecture.output_modalities);
+  return {
+    id,
+    name: typeof model?.name === 'string' && model.name.trim() ? model.name.trim() : id,
+    vision: inputModalities.includes('image'),
+    inputModalities,
+    outputModalities,
+    contextLength: Number.isFinite(model?.context_length) ? model.context_length : undefined,
+    pricing: model?.pricing,
+  };
+}
+
+function lmStudioLoadedInstanceIds(models, preferredModel) {
+  const preferred = typeof preferredModel === 'string' ? preferredModel.trim() : '';
+  const entries = lmStudioModelEntries(models);
+  const loaded = entries
+    .filter((model) => typeof model?.instance_id === 'string' && model.instance_id.trim())
+    .filter((model) => {
+      if (!preferred) {
+        return true;
+      }
+      const key = lmStudioModelKey(model);
+      return !key || key === preferred || model.instance_id === preferred;
+    })
+    .map((model) => model.instance_id.trim());
+  return [...new Set(loaded)];
+}
+
+function lmStudioCliName() {
+  return process.platform === 'win32' ? 'lms.cmd' : 'lms';
+}
+
+function runLmStudioCli(args) {
+  return new Promise((resolve, reject) => {
+    execFile(
+      lmStudioCliName(),
+      args,
+      { timeout: 60 * 1000, windowsHide: true },
+      (error, stdout, stderr) => {
+        if (error) {
+          const message = stderr || stdout || error.message;
+          reject(new Error(message.trim()));
+          return;
+        }
+        resolve({
+          stdout: String(stdout ?? '').trim(),
+          stderr: String(stderr ?? '').trim(),
+        });
+      },
+    );
+  });
+}
+
+function linuxMemoryStats() {
+  if (process.platform !== 'linux') {
+    return null;
+  }
+  try {
+    const fields = Object.fromEntries(
+      fsSync.readFileSync('/proc/meminfo', 'utf8')
+        .split('\n')
+        .map((line) => {
+          const match = /^([A-Za-z_()]+):\s+(\d+)\s+kB$/.exec(line.trim());
+          return match ? [match[1], Number(match[2]) * 1024] : null;
+        })
+        .filter(Boolean),
+    );
+    const totalBytes = fields.MemTotal;
+    if (!Number.isFinite(totalBytes) || totalBytes <= 0) {
+      return null;
+    }
+    const availableBytes = Number.isFinite(fields.MemAvailable) ? fields.MemAvailable : os.freemem();
+    const cachedBytes =
+      (Number.isFinite(fields.Cached) ? fields.Cached : 0) +
+      (Number.isFinite(fields.Buffers) ? fields.Buffers : 0) +
+      (Number.isFinite(fields.SReclaimable) ? fields.SReclaimable : 0);
+    return {
+      totalBytes,
+      usedBytes: Math.max(0, totalBytes - availableBytes),
+      cachedBytes: Math.max(0, cachedBytes),
+    };
+  } catch {
+    return null;
+  }
+}
+
+function memoryStats() {
+  const linuxStats = linuxMemoryStats();
+  if (linuxStats) {
+    return linuxStats;
+  }
+  const totalBytes = os.totalmem();
+  const freeBytes = os.freemem();
+  return {
+    totalBytes,
+    usedBytes: Math.max(0, totalBytes - freeBytes),
+  };
+}
+
+function runNvidiaSmiMemoryQuery() {
+  return new Promise((resolve) => {
+    execFile(
+      'nvidia-smi',
+      ['--query-gpu=memory.used,memory.total', '--format=csv,noheader,nounits'],
+      { timeout: 2500, windowsHide: true },
+      (error, stdout) => {
+        if (error) {
+          resolve(null);
+          return;
+        }
+        const rows = String(stdout ?? '')
+          .trim()
+          .split(/\r?\n/)
+          .map((line) => line.split(',').map((value) => Number(value.trim())))
+          .filter(([used, total]) => Number.isFinite(used) && Number.isFinite(total) && total > 0);
+        if (rows.length === 0) {
+          resolve(null);
+          return;
+        }
+        const mibToBytes = 1024 * 1024;
+        const totals = rows.reduce(
+          (sum, [used, total]) => ({
+            usedBytes: sum.usedBytes + used * mibToBytes,
+            totalBytes: sum.totalBytes + total * mibToBytes,
+          }),
+          { usedBytes: 0, totalBytes: 0 },
+        );
+        resolve({
+          ...totals,
+          source: 'nvidia-smi',
+        });
+      },
+    );
+  });
+}
+
+function isAllowedNavigationUrl(url) {
+  if (process.argv.includes('--dev')) {
+    return url.startsWith(developmentUrl);
+  }
+  try {
+    const parsed = new URL(url);
+    return parsed.protocol === 'file:' &&
+      path.normalize(parsed.pathname).startsWith(path.normalize(path.join(__dirname, '../dist')));
+  } catch {
+    return false;
+  }
+}
+
+function requestHeaders(connection) {
+  const headers = { 'Content-Type': 'application/json' };
+  if (connection.apiKey) {
+    headers.Authorization = `Bearer ${connection.apiKey}`;
+  }
+  return headers;
+}
+
+function chatMessageContent(prompt, images) {
+  if (!Array.isArray(images) || images.length === 0) {
+    return prompt;
+  }
+  return [
+    { type: 'text', text: prompt },
+    ...images
+      .filter((image) => image && typeof image.dataUrl === 'string' && image.dataUrl)
+      .map((image) => ({
+        type: 'image_url',
+        image_url: { url: image.dataUrl },
+      })),
+  ];
+}
+
+const supportedReasoningEfforts = new Set([
+  'none',
+  'minimal',
+  'low',
+  'medium',
+  'high',
+  'xhigh',
+  'max',
+]);
+
+function chatCompletionReasoningOptions(connection) {
+  const effort = connection?.reasoningEffort;
+  if (!supportedReasoningEfforts.has(effort)) {
+    return {};
+  }
+  return {
+    reasoning: { effort },
+  };
+}
+
+function chatCompletionSamplingOptions(request) {
+  const options = {
+    temperature: typeof request.temperature === 'number' ? request.temperature : 0.8,
+  };
+  if (typeof request.topP === 'number' && Number.isFinite(request.topP)) {
+    options.top_p = request.topP;
+  }
+  if (typeof request.presencePenalty === 'number' && Number.isFinite(request.presencePenalty)) {
+    options.presence_penalty = request.presencePenalty;
+  }
+  if (typeof request.frequencyPenalty === 'number' && Number.isFinite(request.frequencyPenalty)) {
+    options.frequency_penalty = request.frequencyPenalty;
+  }
+  return options;
+}
+
+function textFromChatContentPart(part) {
+  if (!part || typeof part !== 'object') {
+    return '';
+  }
+  if (typeof part.text === 'string') {
+    return part.text;
+  }
+  if (typeof part.refusal === 'string') {
+    return part.refusal;
+  }
+  if (typeof part.content === 'string') {
+    return part.content;
+  }
+  if (Array.isArray(part.content)) {
+    return textFromChatContent(part.content);
+  }
+  return '';
+}
+
+function textFromChatContent(content) {
+  if (typeof content === 'string') {
+    return content;
+  }
+  if (Array.isArray(content)) {
+    return content.map(textFromChatContentPart).filter(Boolean).join('');
+  }
+  return '';
+}
+
+function textFromChatMessage(message) {
+  if (!message || typeof message !== 'object') {
+    return '';
+  }
+  return textFromChatContent(message.content) ||
+    textFromChatContent(message.content_parts) ||
+    (typeof message.refusal === 'string' ? message.refusal : '') ||
+    (typeof message.text === 'string' ? message.text : '');
+}
+
+function textFromChatChoice(choice) {
+  if (!choice || typeof choice !== 'object') {
+    return '';
+  }
+  return textFromChatMessage(choice.message) ||
+    textFromChatMessage(choice.delta) ||
+    (typeof choice.text === 'string' ? choice.text : '');
+}
+
+function emptyChatCompletionTextError(choice) {
+  const finishReason = typeof choice?.finish_reason === 'string' ? choice.finish_reason : '';
+  const details = [];
+  if (finishReason) {
+    details.push(`finish_reason: ${finishReason}`);
+  }
+  if (finishReason === 'length') {
+    details.push('the output token limit may be too low for this model');
+  }
+  return new Error(
+    details.length
+      ? `The LLM response does not contain any text (${details.join('; ')}).`
+      : 'The LLM response does not contain any text.',
+  );
+}
+
+function finiteNumber(value) {
+  return typeof value === 'number' && Number.isFinite(value) ? value : undefined;
+}
+
+function firstFiniteNumber(...values) {
+  return values.find((value) => typeof value === 'number' && Number.isFinite(value));
+}
+
+function usageReasoningTokens(usage) {
+  if (!usage || typeof usage !== 'object') {
+    return undefined;
+  }
+  return firstFiniteNumber(
+    usage.completion_tokens_details?.reasoning_tokens,
+    usage.output_tokens_details?.reasoning_tokens,
+    usage.reasoning_tokens,
+    usage.internal_reasoning_tokens,
+    usage.internal_reasoning,
+  );
+}
+
+function llmStatsFromUsage(usage, durationMs) {
+  const inputTokens = firstFiniteNumber(usage?.prompt_tokens, usage?.input_tokens);
+  const rawOutputTokens = firstFiniteNumber(usage?.completion_tokens, usage?.output_tokens);
+  const totalTokens = finiteNumber(usage?.total_tokens);
+  const inferredExtraOutputTokens =
+    inputTokens !== undefined && rawOutputTokens !== undefined && totalTokens !== undefined
+      ? Math.max(0, totalTokens - inputTokens - rawOutputTokens)
+      : 0;
+  const outputTokens =
+    rawOutputTokens !== undefined
+      ? rawOutputTokens + inferredExtraOutputTokens
+      : inputTokens !== undefined && totalTokens !== undefined
+        ? Math.max(0, totalTokens - inputTokens)
+        : undefined;
+  return {
+    inputTokens,
+    outputTokens,
+    reasoningTokens: usageReasoningTokens(usage),
+    totalTokens,
+    durationMs,
+  };
+}
+
+function llmRequestId(request) {
+  return typeof request?.requestId === 'number' && Number.isFinite(request.requestId)
+    ? request.requestId
+    : undefined;
+}
+
+function createLlmAbortController(request) {
+  const requestId = llmRequestId(request);
+  const controller = new AbortController();
+  const cancelHandlers = new Set();
+  let timeout;
+  const handle = {
+    signal: controller.signal,
+    abort: (reason = 'cancelled') => {
+      for (const cancelHandler of cancelHandlers) {
+        try {
+          cancelHandler(reason);
+        } catch {
+          // Best effort: still abort the shared signal below.
+        }
+      }
+      if (!controller.signal.aborted) {
+        controller.abort(reason);
+      }
+    },
+    onCancel: (cancelHandler) => {
+      cancelHandlers.add(cancelHandler);
+      return () => cancelHandlers.delete(cancelHandler);
+    },
+    dispose: () => {
+      clearTimeout(timeout);
+      cancelHandlers.clear();
+      if (requestId !== undefined) {
+        activeLlmRequests.delete(requestId);
+        pendingCancelledLlmRequests.delete(requestId);
+      }
+    },
+  };
+  if (requestId !== undefined) {
+    activeLlmRequests.set(requestId, handle);
+  }
+  timeout = setTimeout(() => handle.abort('timeout'), 15 * 60 * 1000);
+  if (requestId !== undefined && pendingCancelledLlmRequests.has(requestId)) {
+    queueMicrotask(() => handle.abort('cancelled'));
+  }
+  return handle;
+}
+
+function cancelledLlmError() {
+  return new Error('The LLM request was cancelled.');
+}
+
+function cancelledLlmIpcResult() {
+  return { __rpgraphLlmCancelled: true };
+}
+
+function failedLlmIpcResult(error) {
+  const normalized = normalizeLlmError(error);
+  return {
+    __rpgraphLlmError: true,
+    name: normalized instanceof Error ? normalized.name : 'Error',
+    message: normalized instanceof Error ? normalized.message : String(normalized),
+  };
+}
+
+function normalizeLlmError(error) {
+  if (error instanceof Error && error.name === 'AbortError') {
+    return cancelledLlmError();
+  }
+  if (error instanceof TypeError && String(error.message).includes('aborted')) {
+    return cancelledLlmError();
+  }
+  return error;
+}
+
+function nodeHttpClient(url) {
+  if (url.protocol === 'http:') {
+    return http;
+  }
+  if (url.protocol === 'https:') {
+    return https;
+  }
+  throw new Error(`Unsupported LLM endpoint protocol: ${url.protocol}`);
+}
+
+function streamChunkBytes(chunk) {
+  return chunk instanceof Uint8Array ? chunk : Buffer.from(String(chunk));
+}
+
+async function readNodeStreamText(stream) {
+  const decoder = new TextDecoder();
+  let text = '';
+  for await (const chunk of stream) {
+    text += decoder.decode(streamChunkBytes(chunk), { stream: true });
+  }
+  text += decoder.decode();
+  return text;
+}
+
+async function readNodeStreamBuffer(stream) {
+  const chunks = [];
+  for await (const chunk of stream) {
+    chunks.push(streamChunkBytes(chunk));
+  }
+  return Buffer.concat(chunks);
+}
+
+function requestLlmResponse(url, init, abort) {
+  if (abort.signal.aborted) {
+    return Promise.reject(cancelledLlmError());
+  }
+
+  const parsedUrl = new URL(url);
+  const client = nodeHttpClient(parsedUrl);
+  return new Promise((resolve, reject) => {
+    let responseStream;
+    const request = client.request(
+      parsedUrl,
+      {
+        method: init.method ?? 'GET',
+        headers: init.headers,
+        agent: false,
+      },
+      (response) => {
+        responseStream = response;
+        response.on('error', () => {});
+        resolve({
+          ok: response.statusCode >= 200 && response.statusCode < 300,
+          status: response.statusCode,
+          statusText: response.statusMessage ?? '',
+          headers: response.headers,
+          body: response,
+          text: () => readNodeStreamText(response),
+          buffer: () => readNodeStreamBuffer(response),
+          json: async () => JSON.parse(await readNodeStreamText(response)),
+        });
+      },
+    );
+    const destroy = () => {
+      const error = cancelledLlmError();
+      request.destroy(error);
+      if (responseStream && !responseStream.destroyed) {
+        responseStream.destroy(error);
+      }
+    };
+
+    abort.onCancel(destroy);
+    request.on('error', (error) => {
+      reject(abort.signal.aborted ? cancelledLlmError() : error);
+    });
+
+    if (init.body === undefined) {
+      request.end();
+    } else {
+      request.end(init.body);
+    }
+  });
+}
+
+async function readError(response) {
+  const body = await response.text();
+  return body || `${response.status} ${response.statusText}`;
+}
+
+async function requestLmStudioJson(connection, route, init, abort) {
+  const response = await requestLlmResponse(lmStudioEndpoint(connection, route), {
+    ...init,
+    headers: requestHeaders(connection),
+  }, abort);
+  if (!response.ok) {
+    throw new Error(await readError(response));
+  }
+  const body = await response.text();
+  return body ? JSON.parse(body) : {};
+}
+
+async function requestOllamaJson(connection, route, init, abort) {
+  const response = await requestLlmResponse(ollamaEndpoint(connection, route), {
+    ...init,
+    headers: requestHeaders(connection),
+  }, abort);
+  if (!response.ok) {
+    throw new Error(await readError(response));
+  }
+  const body = await response.text();
+  return body ? JSON.parse(body) : {};
+}
+
+function comfyBaseUrl(baseUrl) {
+  const parsed = new URL(
+    typeof baseUrl === 'string' && baseUrl.trim()
+      ? baseUrl.trim()
+      : 'http://127.0.0.1:8188',
+  );
+  if (parsed.protocol !== 'http:' && parsed.protocol !== 'https:') {
+    throw new Error('ComfyUI URL must use http or https.');
+  }
+  parsed.search = '';
+  parsed.hash = '';
+  return parsed.toString().replace(/\/+$/, '');
+}
+
+function comfyEndpoint(baseUrl, route) {
+  return endpoint(comfyBaseUrl(baseUrl), route);
+}
+
+function normalizedComfyWorkflowPath(filePath) {
+  if (
+    typeof filePath !== 'string' ||
+    !filePath ||
+    filePath.includes('\0') ||
+    !filePath.toLowerCase().endsWith('.json')
+  ) {
+    throw new Error('Invalid ComfyUI workflow file path.');
+  }
+  const resolved = path.isAbsolute(filePath)
+    ? path.resolve(filePath)
+    : path.resolve(path.join(__dirname, '..', filePath));
+  return resolved;
+}
+
+function approveComfyWorkflowPath(filePath) {
+  const resolved = normalizedComfyWorkflowPath(filePath);
+  approvedComfyWorkflowPaths.add(resolved);
+  return resolved;
+}
+
+function validateComfyWorkflowPath(filePath) {
+  const resolved = normalizedComfyWorkflowPath(filePath);
+  const bundledDirectory = path.resolve(path.join(__dirname, '../comfy-workflows'));
+  if (
+    !approvedComfyWorkflowPaths.has(resolved) &&
+    !resolved.startsWith(`${bundledDirectory}${path.sep}`)
+  ) {
+    throw new Error('ComfyUI workflow path was not selected through the application.');
+  }
+  return resolved;
+}
+
+function isComfyApiPrompt(value) {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) {
+    return false;
+  }
+  const entries = Object.values(value);
+  return entries.length > 0 && entries.every((entry) =>
+    entry &&
+    typeof entry === 'object' &&
+    !Array.isArray(entry) &&
+    typeof entry.class_type === 'string' &&
+    entry.inputs &&
+    typeof entry.inputs === 'object' &&
+    !Array.isArray(entry.inputs),
+  );
+}
+
+function comfyPromptFromWorkflow(value) {
+  if (value && typeof value === 'object' && !Array.isArray(value) && isComfyApiPrompt(value.prompt)) {
+    return value.prompt;
+  }
+  if (isComfyApiPrompt(value)) {
+    return value;
+  }
+  if (value && typeof value === 'object' && !Array.isArray(value) && Array.isArray(value.nodes)) {
+    throw new Error('This looks like a ComfyUI UI workflow. Export/save it in API format first.');
+  }
+  throw new Error('This JSON does not look like a ComfyUI API workflow.');
+}
+
+function extractComfyWorkflowPlaceholders(value, placeholders = new Set()) {
+  if (typeof value === 'string') {
+    for (const match of value.matchAll(/\{\{\s*([a-z0-9_]+)\s*\}\}/gi)) {
+      placeholders.add(String(match[1]).toLowerCase());
+    }
+    return placeholders;
+  }
+  if (Array.isArray(value)) {
+    value.forEach((entry) => extractComfyWorkflowPlaceholders(entry, placeholders));
+    return placeholders;
+  }
+  if (value && typeof value === 'object') {
+    Object.values(value).forEach((entry) => extractComfyWorkflowPlaceholders(entry, placeholders));
+  }
+  return placeholders;
+}
+
+function comfyWorkflowInspection(value, workflowPath = '') {
+  let format = 'unknown';
+  let prompt = null;
+  if (value && typeof value === 'object' && !Array.isArray(value) && Array.isArray(value.nodes)) {
+    format = 'ui';
+  } else if (value && typeof value === 'object' && !Array.isArray(value) && isComfyApiPrompt(value.prompt)) {
+    format = 'api';
+    prompt = value.prompt;
+  } else if (isComfyApiPrompt(value)) {
+    format = 'api';
+    prompt = value;
+  }
+
+  const placeholders = Array.from(extractComfyWorkflowPlaceholders(prompt ?? value)).sort();
+  const placeholderSet = new Set(placeholders);
+  const hasCheckpoint = placeholderSet.has('checkpoint');
+  const hasDiffusionModel = placeholderSet.has('diffusion_model');
+  const hasLora = placeholders.some((placeholder) => /^lora(_\d+)?$/.test(placeholder));
+  const missing = [];
+
+  if (format !== 'api') {
+    missing.push(format === 'ui' ? 'API workflow export' : 'ComfyUI API workflow JSON');
+  }
+  if (placeholders.length === 0) {
+    missing.push('RPGraph placeholders');
+  }
+  for (const required of ['width', 'height', 'prompt', 'vae', 'text_encoder']) {
+    if (!placeholderSet.has(required)) {
+      missing.push(required);
+    }
+  }
+  if (!hasCheckpoint && !hasDiffusionModel) {
+    missing.push('checkpoint or diffusion_model');
+  }
+  if (!hasLora) {
+    missing.push('at least one lora placeholder');
+  }
+
+  const modelSource = hasCheckpoint && hasDiffusionModel
+    ? 'both'
+    : hasCheckpoint
+      ? 'checkpoint'
+      : hasDiffusionModel
+        ? 'diffusion_model'
+        : 'missing';
+
+  return {
+    ok: format === 'api' && missing.length === 0,
+    format,
+    modelSource,
+    placeholders,
+    missing: Array.from(new Set(missing)),
+    workflowPath,
+    fileName: workflowPath ? path.basename(workflowPath) : '',
+  };
+}
+
+function assertComfyWorkflowCompatible(value, workflowPath = '') {
+  const inspection = comfyWorkflowInspection(value, workflowPath);
+  if (!inspection.ok) {
+    throw new Error(
+      `ComfyUI workflow is not compatible with RPGraph. Missing: ${inspection.missing.join(', ')}.`,
+    );
+  }
+  return inspection;
+}
+
+function comfyWorkflowRepairPrompt(workflowJson, inspection) {
+  return `You are fixing a ComfyUI workflow for RPGraph.
+
+Return only a valid RFC 6902 JSON Patch array. Do not wrap it in Markdown. Do not explain. Do not return the complete workflow.
+
+The patch must transform the provided workflow into a ComfyUI API workflow: an object whose node IDs map to nodes with class_type and inputs. Do not transform it into the ComfyUI UI graph format with nodes/links.
+
+Keep the original workflow logic as much as possible, but make it RPGraph-compatible by using these exact placeholders:
+- Width: {{width}}
+- Height: {{height}}
+- Positive prompt text: {{prompt}}
+- VAE file name: {{vae}}
+- Text encoder or CLIP file name: {{text_encoder}}
+- Use exactly the model loader style that fits this workflow:
+  - If it loads a checkpoint, use {{checkpoint}} for the checkpoint file name.
+  - If it loads a diffusion/UNET model, use {{diffusion_model}} for the diffusion model file name.
+- Add at least one LoRA loader for character LoRAs. Use {{lora_01}} as the LoRA file name and {{lora_strength_01}} as its strength.
+- If you add more optional LoRA slots, use {{lora_02}}, {{lora_strength_02}}, {{lora_03}}, {{lora_strength_03}}, {{lora_04}}, {{lora_strength_04}}.
+- If a LoRA slot can be disabled, make it accept "None" as the model name.
+- Do not invent other RPGraph placeholder names.
+
+Current RPGraph check:
+- Format: ${inspection.format}
+- Missing: ${inspection.missing.join(', ') || 'none'}
+- Existing placeholders: ${inspection.placeholders.join(', ') || 'none'}
+
+Workflow JSON:
+${workflowJson}`;
+}
+
+function extractJsonValueFromText(text) {
+  const trimmed = typeof text === 'string' ? text.trim() : '';
+  if (!trimmed) {
+    throw new Error('The LLM returned empty JSON.');
+  }
+
+  const candidates = [trimmed];
+  for (const match of trimmed.matchAll(/```(?:json)?\s*([\s\S]*?)```/gi)) {
+    candidates.push(match[1].trim());
+  }
+
+  for (const candidate of candidates) {
+    try {
+      return JSON.parse(candidate);
+    } catch {
+      // Try the next candidate or balanced object extraction below.
+    }
+  }
+
+  const start = trimmed.indexOf('{');
+  const arrayStart = trimmed.indexOf('[');
+  const valueStart = [start, arrayStart].filter((index) => index >= 0).sort((a, b) => a - b)[0];
+  if (valueStart === undefined) {
+    throw new Error('The LLM response did not contain JSON.');
+  }
+
+  const openChar = trimmed[valueStart];
+  const closeChar = openChar === '[' ? ']' : '}';
+  let depth = 0;
+  let inString = false;
+  let escaped = false;
+  for (let index = valueStart; index < trimmed.length; index += 1) {
+    const char = trimmed[index];
+    if (inString) {
+      if (escaped) {
+        escaped = false;
+      } else if (char === '\\') {
+        escaped = true;
+      } else if (char === '"') {
+        inString = false;
+      }
+      continue;
+    }
+    if (char === '"') {
+      inString = true;
+      continue;
+    }
+    if (char === openChar) {
+      depth += 1;
+    } else if (char === closeChar) {
+      depth -= 1;
+      if (depth === 0) {
+        return JSON.parse(trimmed.slice(valueStart, index + 1));
+      }
+    }
+  }
+
+  throw new Error('The LLM response JSON was incomplete.');
+}
+
+function extractJsonObjectFromText(text) {
+  const value = extractJsonValueFromText(text);
+  if (!value || typeof value !== 'object' || Array.isArray(value)) {
+    throw new Error('Expected a JSON object.');
+  }
+  return value;
+}
+
+function decodeJsonPointerPath(pathValue) {
+  if (pathValue === '') {
+    return [];
+  }
+  if (typeof pathValue !== 'string' || !pathValue.startsWith('/')) {
+    throw new Error('JSON Patch path must start with /.');
+  }
+  return pathValue
+    .slice(1)
+    .split('/')
+    .map((part) => part.replace(/~1/g, '/').replace(/~0/g, '~'));
+}
+
+function jsonPatchParent(target, pathValue) {
+  const parts = decodeJsonPointerPath(pathValue);
+  if (parts.length === 0) {
+    throw new Error('JSON Patch path cannot target the document root.');
+  }
+  let parent = target;
+  for (const part of parts.slice(0, -1)) {
+    if (!parent || typeof parent !== 'object') {
+      throw new Error(`JSON Patch path does not exist: ${pathValue}`);
+    }
+    parent = parent[part];
+  }
+  return { parent, key: parts[parts.length - 1] };
+}
+
+function applyJsonPatchOperation(target, operation) {
+  if (!operation || typeof operation !== 'object' || Array.isArray(operation)) {
+    throw new Error('JSON Patch entries must be objects.');
+  }
+  const op = operation.op;
+  if (op !== 'add' && op !== 'replace' && op !== 'remove') {
+    throw new Error(`Unsupported JSON Patch operation: ${String(op)}`);
+  }
+  const { parent, key } = jsonPatchParent(target, operation.path);
+  if (!parent || typeof parent !== 'object') {
+    throw new Error(`JSON Patch path has no parent: ${operation.path}`);
+  }
+  if (Array.isArray(parent)) {
+    if (op === 'add' && key === '-') {
+      parent.push(operation.value);
+      return;
+    }
+    const index = Number(key);
+    if (!Number.isInteger(index) || index < 0 || index >= parent.length + (op === 'add' ? 1 : 0)) {
+      throw new Error(`Invalid JSON Patch array index: ${operation.path}`);
+    }
+    if (op === 'remove') {
+      parent.splice(index, 1);
+    } else if (op === 'add') {
+      parent.splice(index, 0, operation.value);
+    } else {
+      parent[index] = operation.value;
+    }
+    return;
+  }
+  if (op === 'remove') {
+    delete parent[key];
+    return;
+  }
+  parent[key] = operation.value;
+}
+
+function applyJsonPatchDocument(value, patch) {
+  if (!Array.isArray(patch)) {
+    throw new Error('The LLM must return a JSON Patch array.');
+  }
+  let target = structuredClone(value);
+  for (const operation of patch) {
+    if (operation?.path === '') {
+      if (operation.op !== 'replace' && operation.op !== 'add') {
+        throw new Error(`Unsupported JSON Patch root operation: ${String(operation.op)}`);
+      }
+      target = operation.value;
+      continue;
+    }
+    applyJsonPatchOperation(target, operation);
+  }
+  return target;
+}
+
+async function repairComfyWorkflowWithLlm(workflowPath, connection, abort) {
+  const contents = await fs.readFile(workflowPath, 'utf8');
+  const parsedWorkflow = JSON.parse(contents);
+  const inspection = comfyWorkflowInspection(parsedWorkflow, workflowPath);
+  if (inspection.ok) {
+    return {
+      ok: true,
+      changed: false,
+      inspection,
+      workflowJson: JSON.stringify(parsedWorkflow, null, 2),
+    };
+  }
+
+  const model = typeof connection?.model === 'string' ? connection.model.trim() : '';
+  if (!model) {
+    throw new Error('Choose an LLM provider with a model before fixing the ComfyUI workflow.');
+  }
+
+  const response = await requestLlmResponse(endpoint(connection.baseUrl, 'chat/completions'), {
+    method: 'POST',
+    headers: requestHeaders(connection),
+    body: JSON.stringify({
+      model,
+      messages: [{
+        role: 'user',
+        content: comfyWorkflowRepairPrompt(contents, inspection),
+      }],
+      ...chatCompletionReasoningOptions(connection),
+      temperature: 0.1,
+    }),
+  }, abort);
+
+  if (!response.ok) {
+    throw new Error(await readError(response));
+  }
+
+  const result = await response.json();
+  const choice = result.choices?.[0];
+  const patchResult = extractJsonValueFromText(textFromChatChoice(choice));
+  const patch = Array.isArray(patchResult)
+    ? patchResult
+    : Array.isArray(patchResult?.patch)
+      ? patchResult.patch
+      : null;
+  const fixedWorkflow = patch
+    ? applyJsonPatchDocument(parsedWorkflow, patch)
+    : patchResult && typeof patchResult === 'object' && !Array.isArray(patchResult)
+      ? patchResult
+      : null;
+  if (!fixedWorkflow) {
+    throw new Error('The LLM must return a JSON Patch array.');
+  }
+  const fixedInspection = comfyWorkflowInspection(fixedWorkflow, workflowPath);
+  if (!fixedInspection.ok) {
+    throw new Error(`The LLM returned a workflow that is still incompatible. Missing: ${fixedInspection.missing.join(', ')}.`);
+  }
+
+  return {
+    ok: true,
+    changed: true,
+    inspection: fixedInspection,
+    workflowJson: `${JSON.stringify(fixedWorkflow, null, 2)}\n`,
+  };
+}
+
+function comfyDimension(value, fallback) {
+  return typeof value === 'number' && Number.isFinite(value)
+    ? Math.min(4096, Math.max(64, Math.round(value)))
+    : fallback;
+}
+
+function comfyWorkflowVariables(request) {
+  const loraSlots = Array.isArray(request?.loraSlots) ? request.loraSlots : [];
+  const loraVariables = Object.fromEntries(
+    [0, 1, 2, 3].flatMap((index) => {
+      const slot = loraSlots[index];
+      const fallbackName = '';
+      const fallbackStrength = 1;
+      const suffix = String(index + 1).padStart(2, '0');
+      const slotName = typeof slot?.name === 'string' && slot.name.trim()
+        ? slot.name.trim()
+        : fallbackName;
+      const runtimeSlotName = slotName === 'Character LoRA' ? 'None' : slotName;
+      return [
+        [
+          `lora_${suffix}`,
+          runtimeSlotName,
+        ],
+        [
+          `lora_strength_${suffix}`,
+          typeof slot?.strength === 'number' && Number.isFinite(slot.strength)
+            ? Math.min(2, Math.max(-2, slot.strength))
+            : fallbackStrength,
+        ],
+      ];
+    }),
+  );
+  return {
+    width: comfyDimension(request?.width, 832),
+    height: comfyDimension(request?.height, 1216),
+    prompt: typeof request?.prompt === 'string' ? request.prompt.trim() : '',
+    checkpoint: typeof request?.checkpointName === 'string' ? request.checkpointName.trim() : '',
+    diffusion_model: typeof request?.diffusionModelName === 'string' ? request.diffusionModelName.trim() : '',
+    vae: typeof request?.vaeName === 'string' ? request.vaeName.trim() : '',
+    text_encoder: typeof request?.textEncoderName === 'string' ? request.textEncoderName.trim() : '',
+    ...loraVariables,
+  };
+}
+
+function replaceComfyWorkflowPlaceholders(value, variables) {
+  if (typeof value === 'string') {
+    const exact = value.trim().match(/^\{\{\s*([a-z0-9_]+)\s*\}\}$/i);
+    if (exact) {
+      const key = exact[1].toLowerCase();
+      return Object.prototype.hasOwnProperty.call(variables, key) ? variables[key] : value;
+    }
+    return value.replace(/\{\{\s*([a-z0-9_]+)\s*\}\}/gi, (match, key) => {
+      const normalizedKey = String(key).toLowerCase();
+      return Object.prototype.hasOwnProperty.call(variables, normalizedKey)
+        ? String(variables[normalizedKey])
+        : match;
+    });
+  }
+  if (Array.isArray(value)) {
+    return value.map((entry) => replaceComfyWorkflowPlaceholders(entry, variables));
+  }
+  if (value && typeof value === 'object') {
+    return Object.fromEntries(
+      Object.entries(value).map(([key, entry]) => [
+        key,
+        replaceComfyWorkflowPlaceholders(entry, variables),
+      ]),
+    );
+  }
+  return value;
+}
+
+async function requestComfyJson(baseUrl, route, init, abort) {
+  const response = await requestLlmResponse(comfyEndpoint(baseUrl, route), {
+    ...init,
+    headers: { 'Content-Type': 'application/json', ...(init?.headers ?? {}) },
+  }, abort);
+  if (!response.ok) {
+    throw new Error(await readError(response));
+  }
+  const body = await response.text();
+  return body ? JSON.parse(body) : {};
+}
+
+function isComfyConnectionUnavailable(error) {
+  const code = error && typeof error === 'object' ? error.code : undefined;
+  if (code === 'ECONNREFUSED' ||
+    code === 'ECONNRESET' ||
+    code === 'EHOSTUNREACH' ||
+    code === 'ENETUNREACH' ||
+    code === 'ETIMEDOUT' ||
+    code === 'UND_ERR_CONNECT_TIMEOUT' ||
+    code === 'UND_ERR_SOCKET') {
+    return true;
+  }
+  const cause = error && typeof error === 'object' ? error.cause : null;
+  return Boolean(cause && cause !== error && isComfyConnectionUnavailable(cause));
+}
+
+const comfyModelCategories = new Set([
+  'checkpoints',
+  'loras',
+  'vae',
+  'text_encoders',
+  'diffusion_models',
+  'controlnet',
+  'upscale_models',
+]);
+
+function comfyModelCategory(value) {
+  if (typeof value !== 'string' || !comfyModelCategories.has(value)) {
+    throw new Error('Unsupported ComfyUI model category.');
+  }
+  return value;
+}
+
+async function requestComfyImage(baseUrl, image, abort) {
+  const params = new URLSearchParams();
+  params.set('filename', image.filename);
+  params.set('type', image.type || 'output');
+  if (image.subfolder) {
+    params.set('subfolder', image.subfolder);
+  }
+
+  const response = await requestLlmResponse(
+    `${comfyEndpoint(baseUrl, 'view')}?${params.toString()}`,
+    { headers: {} },
+    abort,
+  );
+  if (!response.ok) {
+    throw new Error(await readError(response));
+  }
+
+  const contentType = Array.isArray(response.headers['content-type'])
+    ? response.headers['content-type'][0]
+    : response.headers['content-type'];
+  const mimeType = contentType || 'image/png';
+  const buffer = await response.buffer();
+  return `data:${mimeType};base64,${buffer.toString('base64')}`;
+}
+
+function comfyHistoryImages(promptId, history) {
+  const promptHistory = history?.[promptId];
+  const outputs = promptHistory?.outputs;
+  if (!outputs || typeof outputs !== 'object') {
+    return [];
+  }
+
+  const images = [];
+  for (const [nodeId, output] of Object.entries(outputs)) {
+    const outputImages = Array.isArray(output?.images) ? output.images : [];
+    for (const image of outputImages) {
+      if (typeof image?.filename !== 'string' || !image.filename.trim()) {
+        continue;
+      }
+      images.push({
+        nodeId,
+        filename: image.filename,
+        subfolder: typeof image.subfolder === 'string' ? image.subfolder : '',
+        type: typeof image.type === 'string' ? image.type : 'output',
+      });
+    }
+  }
+  return images;
+}
+
+async function runComfyPrompt(baseUrl, workflow, timeoutMs, abort) {
+  if (!workflow || typeof workflow !== 'object' || Array.isArray(workflow)) {
+    throw new Error('Choose a ComfyUI API workflow JSON before sending.');
+  }
+
+  const clientId = crypto.randomUUID();
+  const promptResult = await requestComfyJson(baseUrl, 'prompt', {
+    method: 'POST',
+    body: JSON.stringify({ prompt: workflow, client_id: clientId }),
+  }, abort);
+  const promptId = promptResult?.prompt_id;
+  if (typeof promptId !== 'string' || !promptId) {
+    throw new Error('ComfyUI did not return a prompt_id.');
+  }
+
+  const safeTimeoutMs = Number.isFinite(timeoutMs)
+    ? Math.min(15 * 60 * 1000, Math.max(5 * 1000, Number(timeoutMs)))
+    : 3 * 60 * 1000;
+  const startedAt = Date.now();
+  let history = null;
+
+  while (Date.now() - startedAt < safeTimeoutMs) {
+    if (abort.signal.aborted) {
+      throw cancelledLlmError();
+    }
+    history = await requestComfyJson(baseUrl, `history/${encodeURIComponent(promptId)}`, {}, abort);
+    if (history?.[promptId]) {
+      break;
+    }
+    await delay(1000, abort);
+  }
+
+  if (!history?.[promptId]) {
+    throw new Error(`Timed out waiting for ComfyUI prompt ${promptId}.`);
+  }
+
+  const imageRefs = comfyHistoryImages(promptId, history);
+  if (imageRefs.length === 0) {
+    throw new Error(`ComfyUI prompt ${promptId} finished, but no output images were found in history.`);
+  }
+
+  const images = [];
+  for (const image of imageRefs) {
+    images.push({
+      ...image,
+      dataUrl: await requestComfyImage(baseUrl, image, abort),
+    });
+  }
+
+  return { promptId, images };
+}
+
+function delay(ms, abort) {
+  return new Promise((resolve, reject) => {
+    let settled = false;
+    let dispose = () => {};
+    const timeout = setTimeout(() => {
+      if (settled) {
+        return;
+      }
+      settled = true;
+      dispose();
+      resolve();
+    }, ms);
+    dispose = abort.onCancel(() => {
+      if (settled) {
+        return;
+      }
+      settled = true;
+      clearTimeout(timeout);
+      reject(cancelledLlmError());
+    });
+  });
+}
+
+ipcMain.handle('lmstudio:load-model', async (_event, request) => {
+  const connection = request?.connection ?? request;
+  const abort = createLlmAbortController(request);
+  try {
+    const model = typeof connection?.model === 'string' ? connection.model.trim() : '';
+    if (!model) {
+      throw new Error('Choose a model ID before loading an LM Studio model.');
+    }
+    try {
+      await requestLmStudioJson(connection, 'models/load', {
+        method: 'POST',
+        body: JSON.stringify({ model }),
+      }, abort);
+      return { loadedModel: model, method: 'rest' };
+    } catch (restError) {
+      if (abort.signal.aborted) {
+        throw restError;
+      }
+      try {
+        await runLmStudioCli(['load', model]);
+        return { loadedModel: model, method: 'cli' };
+      } catch {
+        throw restError;
+      }
+    }
+  } catch (error) {
+    if (abort.signal.aborted) {
+      return cancelledLlmIpcResult();
+    }
+    throw normalizeLlmError(error);
+  } finally {
+    abort.dispose();
+  }
+});
+
+ipcMain.handle('lmstudio:unload-models', async (_event, request) => {
+  const connection = request?.connection ?? request;
+  const abort = createLlmAbortController(request);
+  try {
+    const models = await requestLmStudioJson(connection, 'models', {}, abort);
+    const instanceIds = lmStudioLoadedInstanceIds(models);
+    if (instanceIds.length === 0) {
+      await runLmStudioCli(['unload', '--all']);
+      return { unloadedCount: undefined, instanceIds: [], method: 'cli' };
+    }
+
+    for (const instanceId of instanceIds) {
+      await requestLmStudioJson(connection, 'models/unload', {
+        method: 'POST',
+        body: JSON.stringify({ instance_id: instanceId }),
+      }, abort);
+    }
+    return { unloadedCount: instanceIds.length, instanceIds, method: 'rest' };
+  } catch (error) {
+    if (abort.signal.aborted) {
+      return cancelledLlmIpcResult();
+    }
+    throw normalizeLlmError(error);
+  } finally {
+    abort.dispose();
+  }
+});
+
+ipcMain.handle('lmstudio:list-models', async (_event, request) => {
+  const connection = request?.connection ?? request;
+  const abort = createLlmAbortController(request);
+  try {
+    const result = await requestLmStudioJson(connection, 'models', {}, abort);
+    const models = lmStudioModelEntries(result)
+      .map(lmStudioNormalizedModel)
+      .filter(Boolean);
+    const seen = new Set();
+    return models.filter((model) => {
+      if (seen.has(model.id)) {
+        return false;
+      }
+      seen.add(model.id);
+      return true;
+    });
+  } catch (error) {
+    if (abort.signal.aborted) {
+      return cancelledLlmIpcResult();
+    }
+    return failedLlmIpcResult(error);
+  } finally {
+    abort.dispose();
+  }
+});
+
+ipcMain.handle('openrouter:list-models', async (_event, request) => {
+  const connection = request?.connection ?? request;
+  const abort = createLlmAbortController(request);
+  try {
+    const response = await requestLlmResponse(`${endpoint(connection.baseUrl, 'models')}?output_modalities=all`, {
+      headers: requestHeaders(connection),
+    }, abort);
+
+    if (!response.ok) {
+      throw new Error(await readError(response));
+    }
+
+    const result = await response.json();
+    const models = Array.isArray(result.data)
+      ? result.data.map(openRouterNormalizedModel).filter(Boolean)
+      : [];
+    const seen = new Set();
+    return models.filter((model) => {
+      if (seen.has(model.id)) {
+        return false;
+      }
+      seen.add(model.id);
+      return true;
+    });
+  } catch (error) {
+    if (abort.signal.aborted) {
+      return cancelledLlmIpcResult();
+    }
+    throw normalizeLlmError(error);
+  } finally {
+    abort.dispose();
+  }
+});
+
+// The renderer polls local providers every 2 seconds; without this cache each
+// poll would issue one /api/show request per installed Ollama model.
+const ollamaCapabilitiesByModelDigest = new Map();
+
+ipcMain.handle('ollama:list-models', async (_event, request) => {
+  const connection = request?.connection ?? request;
+  const abort = createLlmAbortController(request);
+  try {
+    const tags = await requestOllamaJson(connection, 'tags', {}, abort);
+    const entries = Array.isArray(tags?.models) ? tags.models : [];
+    const models = await Promise.all(entries.map(async (model) => {
+      const id = ollamaModelId(model);
+      if (!id) {
+        return null;
+      }
+      const digest = typeof model?.digest === 'string' ? model.digest : '';
+      const cacheKey = `${ollamaBaseUrl(connection)}|${id}|${digest}`;
+      let capabilities = ollamaCapabilitiesByModelDigest.get(cacheKey);
+      if (!capabilities) {
+        try {
+          const info = await requestOllamaJson(connection, 'show', {
+            method: 'POST',
+            body: JSON.stringify({ model: id }),
+          }, abort);
+          capabilities = stringArray(info?.capabilities);
+          if (ollamaCapabilitiesByModelDigest.size > 500) {
+            ollamaCapabilitiesByModelDigest.clear();
+          }
+          ollamaCapabilitiesByModelDigest.set(cacheKey, capabilities);
+        } catch (error) {
+          if (abort.signal.aborted) {
+            throw error;
+          }
+          // /api/show can fail per model without invalidating the list.
+          capabilities = [];
+        }
+      }
+      return ollamaNormalizedModel(model, capabilities);
+    }));
+    const seen = new Set();
+    return models.filter((model) => {
+      if (!model || seen.has(model.id)) {
+        return false;
+      }
+      seen.add(model.id);
+      return true;
+    });
+  } catch (error) {
+    if (abort.signal.aborted) {
+      return cancelledLlmIpcResult();
+    }
+    return failedLlmIpcResult(error);
+  } finally {
+    abort.dispose();
+  }
+});
+
+ipcMain.handle('ollama:load-model', async (_event, request) => {
+  const connection = request?.connection ?? request;
+  const abort = createLlmAbortController(request);
+  try {
+    const model = typeof connection?.model === 'string' ? connection.model.trim() : '';
+    if (!model) {
+      throw new Error('Choose a model ID before loading an Ollama model.');
+    }
+    await requestOllamaJson(connection, 'generate', {
+      method: 'POST',
+      body: JSON.stringify({
+        model,
+        prompt: '',
+        stream: false,
+      }),
+    }, abort);
+    return { loadedModel: model };
+  } catch (error) {
+    if (abort.signal.aborted) {
+      return cancelledLlmIpcResult();
+    }
+    throw normalizeLlmError(error);
+  } finally {
+    abort.dispose();
+  }
+});
+
+ipcMain.handle('ollama:unload-models', async (_event, request) => {
+  const connection = request?.connection ?? request;
+  const abort = createLlmAbortController(request);
+  try {
+    const ps = await requestOllamaJson(connection, 'ps', {}, abort);
+    const models = Array.isArray(ps?.models)
+      ? ps.models
+          .map((model) => [model?.name, model?.model].find((value) => typeof value === 'string' && value.trim()))
+          .filter((model) => typeof model === 'string' && model.trim())
+      : [];
+    const uniqueModels = [...new Set(models)];
+    if (uniqueModels.length === 0) {
+      return { unloadedCount: 0, models: [] };
+    }
+    for (const model of uniqueModels) {
+      await requestOllamaJson(connection, 'generate', {
+        method: 'POST',
+        body: JSON.stringify({
+          model,
+          prompt: '',
+          stream: false,
+          keep_alive: 0,
+        }),
+      }, abort);
+    }
+    return { unloadedCount: uniqueModels.length, models: uniqueModels };
+  } catch (error) {
+    if (abort.signal.aborted) {
+      return cancelledLlmIpcResult();
+    }
+    throw normalizeLlmError(error);
+  } finally {
+    abort.dispose();
+  }
+});
+
+ipcMain.handle('llm:list-models', async (_event, request) => {
+  const connection = request?.connection ?? request;
+  const abort = createLlmAbortController(request);
+  try {
+    const response = await requestLlmResponse(endpoint(connection.baseUrl, 'models'), {
+      headers: requestHeaders(connection),
+    }, abort);
+
+    if (!response.ok) {
+      throw new Error(await readError(response));
+    }
+
+    const result = await response.json();
+    return Array.isArray(result.data)
+      ? result.data.map((model) => model.id).filter((id) => typeof id === 'string')
+      : [];
+  } catch (error) {
+    if (abort.signal.aborted) {
+      return cancelledLlmIpcResult();
+    }
+    throw normalizeLlmError(error);
+  } finally {
+    abort.dispose();
+  }
+});
+
+ipcMain.handle('llm:chat-completion', async (_event, request) => {
+  const startedAt = performance.now();
+  const abort = createLlmAbortController(request);
+  try {
+    const response = await requestLlmResponse(endpoint(request.connection.baseUrl, 'chat/completions'), {
+      method: 'POST',
+      headers: requestHeaders(request.connection),
+      body: JSON.stringify({
+        model: request.connection.model,
+        messages: [{
+          role: 'user',
+          content: chatMessageContent(request.prompt, request.images),
+        }],
+        ...chatCompletionReasoningOptions(request.connection),
+        ...chatCompletionSamplingOptions(request),
+        ...(Number.isInteger(request.maxTokens) && request.maxTokens > 0
+          ? { max_tokens: request.maxTokens }
+          : {}),
+      }),
+    }, abort);
+
+    if (!response.ok) {
+      throw new Error(await readError(response));
+    }
+
+    const result = await response.json();
+    const choice = result.choices?.[0];
+    const content = textFromChatChoice(choice);
+    if (!content) {
+      throw emptyChatCompletionTextError(choice);
+    }
+
+    return {
+      text: content,
+      stats: llmStatsFromUsage(result.usage, Math.round(performance.now() - startedAt)),
+    };
+  } catch (error) {
+    if (abort.signal.aborted) {
+      return cancelledLlmIpcResult();
+    }
+    throw normalizeLlmError(error);
+  } finally {
+    abort.dispose();
+  }
+});
+
+ipcMain.handle('llm:chat-completion-stream', async (event, request) => {
+  const startedAt = performance.now();
+  const abort = createLlmAbortController(request);
+  try {
+    const response = await requestLlmResponse(endpoint(request.connection.baseUrl, 'chat/completions'), {
+      method: 'POST',
+      headers: requestHeaders(request.connection),
+      body: JSON.stringify({
+        model: request.connection.model,
+        messages: [{
+          role: 'user',
+          content: chatMessageContent(request.prompt, request.images),
+        }],
+        ...chatCompletionReasoningOptions(request.connection),
+        ...chatCompletionSamplingOptions(request),
+        ...(Number.isInteger(request.maxTokens) && request.maxTokens > 0
+          ? { max_tokens: request.maxTokens }
+          : {}),
+        stream: true,
+        stream_options: { include_usage: true },
+      }),
+    }, abort);
+
+    if (!response.ok) {
+      throw new Error(await readError(response));
+    }
+    if (!response.body) {
+      throw new Error('The LLM streaming response does not contain a body.');
+    }
+
+    const decoder = new TextDecoder();
+    let buffered = '';
+    let content = '';
+    let usage;
+    let finishReason = '';
+
+    function consumeLine(line) {
+      if (!line.startsWith('data:')) {
+        return;
+      }
+      const data = line.slice(5).trim();
+      if (!data || data === '[DONE]') {
+        return;
+      }
+      let chunk;
+      try {
+        chunk = JSON.parse(data);
+      } catch {
+        return;
+      }
+      const choice = chunk.choices?.[0];
+      const deltaText = textFromChatMessage(choice?.delta) ||
+        (!content ? textFromChatChoice(choice) : '');
+      if (deltaText) {
+        content += deltaText;
+        event.sender.send(`llm:chat-stream-chunk:${request.requestId}`, deltaText);
+      }
+      if (typeof choice?.finish_reason === 'string') {
+        finishReason = choice.finish_reason;
+      }
+      if (chunk.usage) {
+        usage = chunk.usage;
+      }
+    }
+
+    for await (const value of response.body) {
+      if (abort.signal.aborted) {
+        throw cancelledLlmError();
+      }
+      buffered += decoder.decode(streamChunkBytes(value), { stream: true });
+      const lines = buffered.split(/\r?\n/);
+      buffered = lines.pop() ?? '';
+      lines.forEach(consumeLine);
+    }
+    buffered += decoder.decode();
+    if (buffered) {
+      consumeLine(buffered);
+    }
+
+    if (!content) {
+      throw emptyChatCompletionTextError({ finish_reason: finishReason });
+    }
+
+    return {
+      text: content,
+      stats: llmStatsFromUsage(usage, Math.round(performance.now() - startedAt)),
+    };
+  } catch (error) {
+    if (abort.signal.aborted) {
+      return cancelledLlmIpcResult();
+    }
+    throw normalizeLlmError(error);
+  } finally {
+    abort.dispose();
+  }
+});
+
+ipcMain.handle('llm:cancel-request', (_event, requestId) => {
+  const handle = activeLlmRequests.get(requestId);
+  if (handle) {
+    handle.abort('cancelled');
+    activeLlmRequests.delete(requestId);
+  }
+  if (!handle && typeof requestId === 'number' && Number.isFinite(requestId)) {
+    pendingCancelledLlmRequests.add(requestId);
+  }
+  return { cancelled: !!handle };
+});
+
+ipcMain.handle('comfy:run-workflow', async (_event, request) => {
+  const abort = createLlmAbortController(request);
+  try {
+    return await runComfyPrompt(request?.baseUrl, request?.workflow, request?.timeoutMs, abort);
+  } catch (error) {
+    if (abort.signal.aborted) {
+      return cancelledLlmIpcResult();
+    }
+    throw normalizeLlmError(error);
+  } finally {
+    abort.dispose();
+  }
+});
+
+ipcMain.handle('comfy:select-workflow', async () => {
+  const result = await dialog.showOpenDialog({
+    title: 'Choose ComfyUI Workflow JSON',
+    properties: ['openFile'],
+    filters: [
+      { name: 'ComfyUI Workflow JSON', extensions: ['json'] },
+      { name: 'All Files', extensions: ['*'] },
+    ],
+  });
+
+  if (result.canceled || !result.filePaths[0]) {
+    return { canceled: true };
+  }
+
+  const filePath = approveComfyWorkflowPath(result.filePaths[0]);
+  return {
+    canceled: false,
+    filePath,
+    fileName: path.basename(filePath),
+  };
+});
+
+ipcMain.handle('comfy:inspect-workflow', async (_event, request) => {
+  let filePath = '';
+  try {
+    filePath = validateComfyWorkflowPath(request?.workflowPath || 'comfy-workflows/Krea2.json');
+    const contents = await fs.readFile(filePath, 'utf8');
+    return comfyWorkflowInspection(JSON.parse(contents), filePath);
+  } catch (error) {
+    return {
+      ok: false,
+      format: 'unknown',
+      modelSource: 'missing',
+      placeholders: [],
+      missing: [error instanceof Error ? error.message : String(error)],
+      workflowPath: filePath,
+      fileName: filePath ? path.basename(filePath) : '',
+    };
+  }
+});
+
+ipcMain.handle('comfy:repair-workflow', async (_event, request) => {
+  const abort = createLlmAbortController(request);
+  try {
+    const filePath = validateComfyWorkflowPath(request?.workflowPath || 'comfy-workflows/Krea2.json');
+    return await repairComfyWorkflowWithLlm(filePath, request?.connection, abort);
+  } catch (error) {
+    if (abort.signal.aborted) {
+      return cancelledLlmIpcResult();
+    }
+    throw normalizeLlmError(error);
+  } finally {
+    abort.dispose();
+  }
+});
+
+ipcMain.handle('comfy:apply-workflow-repair', async (_event, request) => {
+  try {
+    const filePath = validateComfyWorkflowPath(request?.workflowPath || 'comfy-workflows/Krea2.json');
+    const workflow = extractJsonObjectFromText(request?.workflowJson);
+    const inspection = assertComfyWorkflowCompatible(workflow, filePath);
+    const workflowJson = `${JSON.stringify(workflow, null, 2)}\n`;
+    await fs.writeFile(filePath, workflowJson, 'utf8');
+    return {
+      ok: true,
+      inspection,
+      workflowPath: filePath,
+      fileName: path.basename(filePath),
+    };
+  } catch (error) {
+    throw normalizeLlmError(error);
+  }
+});
+
+ipcMain.handle('comfy:run-workflow-path', async (_event, request) => {
+  const abort = createLlmAbortController(request);
+  try {
+    const filePath = validateComfyWorkflowPath(request?.workflowPath || 'comfy-workflows/Krea2.json');
+    const contents = await fs.readFile(filePath, 'utf8');
+    const parsedWorkflow = JSON.parse(contents);
+    assertComfyWorkflowCompatible(parsedWorkflow, filePath);
+    const workflowJson = replaceComfyWorkflowPlaceholders(
+      parsedWorkflow,
+      comfyWorkflowVariables(request),
+    );
+    const workflow = comfyPromptFromWorkflow(workflowJson);
+    return await runComfyPrompt(request?.baseUrl, workflow, request?.timeoutMs, abort);
+  } catch (error) {
+    if (abort.signal.aborted) {
+      return cancelledLlmIpcResult();
+    }
+    throw normalizeLlmError(error);
+  } finally {
+    abort.dispose();
+  }
+});
+
+ipcMain.handle('comfy:list-models', async (_event, request) => {
+  const abort = createLlmAbortController(request);
+  try {
+    const category = comfyModelCategory(request?.category);
+    const result = await requestComfyJson(request?.baseUrl, `models/${category}`, {}, abort);
+    return Array.isArray(result)
+      ? result.filter((name) => typeof name === 'string')
+      : [];
+  } catch (error) {
+    if (abort.signal.aborted) {
+      return cancelledLlmIpcResult();
+    }
+    if (isComfyConnectionUnavailable(error)) {
+      return [];
+    }
+    throw normalizeLlmError(error);
+  } finally {
+    abort.dispose();
+  }
+});
+
+ipcMain.handle('comfy:free-memory', async (_event, request) => {
+  const abort = createLlmAbortController(request);
+  try {
+    await requestComfyJson(request?.baseUrl, 'free', {
+      method: 'POST',
+      body: JSON.stringify({
+        unload_models: true,
+        free_memory: true,
+      }),
+    }, abort);
+    return { ok: true };
+  } catch (error) {
+    if (abort.signal.aborted) {
+      return cancelledLlmIpcResult();
+    }
+    throw normalizeLlmError(error);
+  } finally {
+    abort.dispose();
+  }
+});
+
+ipcMain.handle('comfy:check-connection', async (_event, request) => {
+  const abort = createLlmAbortController(request);
+  try {
+    const stats = await requestComfyJson(request?.baseUrl, 'system_stats', {}, abort);
+    return {
+      ok: true,
+      system: stats?.system,
+      devices: stats?.devices,
+    };
+  } catch (error) {
+    if (abort.signal.aborted) {
+      return cancelledLlmIpcResult();
+    }
+    const normalized = normalizeLlmError(error);
+    return {
+      ok: false,
+      error: normalized instanceof Error ? normalized.message : String(normalized),
+    };
+  } finally {
+    abort.dispose();
+  }
+});
+
+ipcMain.handle('system:resource-stats', async () => ({
+  ram: memoryStats(),
+  vram: await runNvidiaSmiMemoryQuery(),
+  updatedAt: new Date().toISOString(),
+}));
+
+ipcMain.handle('file:list', async () => {
+  const directory = filesDirectory();
+  await fs.mkdir(directory, { recursive: true });
+  const entries = await fs.readdir(directory, { withFileTypes: true });
+  const files = await Promise.all(
+    entries
+      .filter((entry) => entry.isFile() && entry.name.toLowerCase().endsWith(jsonFileExtension))
+      .map(async (entry) => {
+        const filePath = path.join(directory, entry.name);
+        const stats = await fs.stat(filePath);
+        const metadata = await readStoredFileMetadata(filePath);
+        return {
+          fileName: entry.name,
+          name: storedJsonName(entry.name),
+          updatedAt: stats.mtime.toISOString(),
+          ...metadata,
+        };
+      }),
+  );
+  return files.sort((left, right) => right.updatedAt.localeCompare(left.updatedAt));
+});
+
+ipcMain.handle('workflow:save-named', async (_event, request) => {
+  const directory = filesDirectory();
+  await fs.mkdir(directory, { recursive: true });
+  const baseName = safeWorkflowBaseName(request?.name);
+  const fileName = `${baseName}${jsonFileExtension}`;
+  const filePath = path.join(directory, fileName);
+  if (request.overwrite) {
+    await assertOverwriteType(filePath, 'workflow');
+  }
+  const workflow = request.protection === 'encrypted'
+    ? await encryptWorkflow(request.workflow, request.password)
+    : request.protection === 'plain'
+      ? request.workflow
+      : (() => { throw new Error('Choose Plain JSON or Password encrypted.'); })();
+  try {
+    const contents = `${JSON.stringify(workflow, null, 2)}\n`;
+    if (request.overwrite) {
+      await writeTextFileAtomically(filePath, contents);
+    } else {
+      await fs.writeFile(filePath, contents, { encoding: 'utf8', flag: 'wx' });
+    }
+  } catch (error) {
+    if (!request.overwrite && error && error.code === 'EEXIST') {
+      return { conflict: true, fileName, name: baseName };
+    }
+    throw error;
+  }
+  if (request.protection === 'plain') {
+    approveWorkflowPath(filePath);
+  }
+  await saveLastWorkflowFileName(fileName);
+  return { fileName, name: baseName, filePath };
+});
+
+ipcMain.handle('storybook:save', async (_event, request) => {
+  const directory = filesDirectory();
+  await fs.mkdir(directory, { recursive: true });
+  const baseName = safeStorybookBaseName(request?.name ?? request?.storybook?.title);
+  const fileName = `${baseName}.rpgraph-storybook${jsonFileExtension}`;
+  const filePath = path.join(directory, fileName);
+  if (request.overwrite) {
+    await assertOverwriteType(filePath, 'storybook');
+  }
+  const storybook = request.protection === 'encrypted'
+    ? await encryptStorybook(request.storybook, request.password)
+    : request.protection === 'plain'
+      ? request.storybook
+      : (() => { throw new Error('Choose Plain JSON or Password encrypted.'); })();
+  try {
+    const contents = `${JSON.stringify(storybook, null, 2)}\n`;
+    if (request.overwrite) {
+      await writeTextFileAtomically(filePath, contents);
+    } else {
+      await fs.writeFile(filePath, contents, { encoding: 'utf8', flag: 'wx' });
+    }
+  } catch (error) {
+    if (!request.overwrite && error && error.code === 'EEXIST') {
+      return { conflict: true, fileName, name: baseName };
+    }
+    throw error;
+  }
+  approveFilePath(filePath);
+  return { fileName, name: baseName, filePath };
+});
+
+ipcMain.handle('file:save-to-path', async (_event, request) => {
+  const kind = request?.kind;
+  const protection = request?.protection;
+  let baseName;
+  let expectedType;
+  let payload;
+  let title;
+  let defaultFileName;
+
+  if (kind === 'workflow') {
+    baseName = safeWorkflowBaseName(request?.name);
+    expectedType = 'workflow';
+    title = 'Save Workflow File';
+    defaultFileName = `${baseName}${jsonFileExtension}`;
+    payload = protection === 'encrypted'
+      ? await encryptWorkflow(request.workflow, request.password)
+      : protection === 'plain'
+        ? request.workflow
+        : (() => { throw new Error('Choose Plain JSON or Password encrypted.'); })();
+  } else if (kind === 'storybook') {
+    baseName = safeStorybookBaseName(request?.name ?? request?.storybook?.title);
+    expectedType = 'storybook';
+    title = 'Save Storybook File';
+    defaultFileName = `${baseName}.rpgraph-storybook${jsonFileExtension}`;
+    payload = protection === 'encrypted'
+      ? await encryptStorybook(request.storybook, request.password)
+      : protection === 'plain'
+        ? request.storybook
+        : (() => { throw new Error('Choose Plain JSON or Password encrypted.'); })();
+  } else if (kind === 'session') {
+    baseName = safeSessionBaseName(request?.name);
+    expectedType = 'session';
+    title = 'Save RP File';
+    defaultFileName = `${baseName}${jsonFileExtension}`;
+    payload = protection === 'encrypted'
+      ? await encryptSession(request.session, request.password)
+      : protection === 'plain'
+        ? request.session
+        : (() => { throw new Error('Choose Plain JSON or Password encrypted.'); })();
+  } else {
+    throw new Error('Choose Workflow, Storybook, or RP save.');
+  }
+
+  const result = await dialog.showSaveDialog({
+    title,
+    defaultPath: defaultFileName,
+    filters: [{ name: 'RPGraph JSON', extensions: ['json'] }],
+  });
+  if (result.canceled || !result.filePath) {
+    return { canceled: true };
+  }
+  const filePath = normalizedFilePath(result.filePath);
+  await fs.mkdir(path.dirname(filePath), { recursive: true });
+  await assertOverwriteType(filePath, expectedType);
+  await writeTextFileAtomically(filePath, `${JSON.stringify(payload, null, 2)}\n`);
+  approveFilePath(filePath);
+  if (expectedType === 'workflow' && protection === 'plain') {
+    approveWorkflowPath(filePath);
+  }
+  if (expectedType === 'workflow' && isStoredFilePath(filePath)) {
+    await saveLastWorkflowFileName(path.basename(filePath));
+  }
+  return {
+    canceled: false,
+    fileName: path.basename(filePath),
+    name: storedJsonName(path.basename(filePath)),
+    filePath,
+  };
+});
+
+ipcMain.handle('text-file:load', async () => {
+  const result = await dialog.showOpenDialog({
+    title: 'Load Text File',
+    properties: ['openFile'],
+    filters: [
+      {
+        name: 'Text Files',
+        extensions: [
+          'txt', 'md', 'markdown', 'json', 'jsonl', 'csv', 'tsv', 'xml',
+          'html', 'htm', 'css', 'js', 'jsx', 'ts', 'tsx', 'yaml', 'yml',
+          'toml', 'ini', 'cfg', 'conf', 'log', 'prompt',
+        ],
+      },
+      { name: 'All Files', extensions: ['*'] },
+    ],
+  });
+
+  if (result.canceled || !result.filePaths[0]) {
+    return { canceled: true };
+  }
+
+  const filePath = result.filePaths[0];
+  const contents = await fs.readFile(filePath, 'utf8');
+  return { canceled: false, fileName: path.basename(filePath), contents };
+});
+
+ipcMain.handle('json-file:load', async () => {
+  const result = await dialog.showOpenDialog({
+    title: 'Import SillyTavern Character JSON',
+    properties: ['openFile'],
+    filters: [
+      { name: 'JSON Files', extensions: ['json'] },
+      { name: 'All Files', extensions: ['*'] },
+    ],
+  });
+
+  if (result.canceled || !result.filePaths[0]) {
+    return { canceled: true };
+  }
+
+  const filePath = result.filePaths[0];
+  const contents = await fs.readFile(filePath, 'utf8');
+  return { canceled: false, fileName: path.basename(filePath), contents };
+});
+
+ipcMain.handle('workflow:load-default', async () => {
+  const restored = await restoreDefaultWorkflowFile();
+  const contents = await fs.readFile(restored.filePath, 'utf8');
+  return {
+    filePath: restored.filePath,
+    fileName: restored.fileName,
+    workflow: JSON.parse(contents),
+  };
+});
+
+ipcMain.handle('workflow:restore-default', async () => {
+  const restored = await restoreDefaultWorkflowFile();
+  const contents = await fs.readFile(restored.filePath, 'utf8');
+  return {
+    filePath: restored.filePath,
+    fileName: restored.fileName,
+    workflow: JSON.parse(contents),
+  };
+});
+
+ipcMain.handle('workflow:load-startup', async () => {
+  let files = await workflowFiles();
+  if (files.length === 0) {
+    await restoreDefaultWorkflowFile();
+    files = await workflowFiles();
+  }
+  const state = await loadWorkflowState();
+  const workflow =
+    files.find((file) => file.fileName === state.lastWorkflowFileName) ??
+    files.find((file) => file.compatible) ??
+    files[0];
+  if (!workflow) {
+    throw new Error('No workflow file is available.');
+  }
+  if (!workflow.compatible) {
+    throw unsupportedStoredFileError({}, workflow);
+  }
+  if (workflow.protection === 'encrypted') {
+    approveFilePath(workflow.filePath);
+    await saveLastWorkflowFileName(workflow.fileName);
+    return {
+      fileName: workflow.fileName,
+      name: workflow.name,
+      filePath: workflow.filePath,
+      type: workflow.type,
+      protection: workflow.protection,
+      envelopeFormatVersion: workflow.envelopeFormatVersion,
+      formatVersion: workflow.formatVersion,
+      workflowFormatVersion: workflow.workflowFormatVersion,
+      compatible: workflow.compatible,
+      requiresPassword: true,
+    };
+  }
+  const loaded = await loadStoredWorkflowFile(workflow.fileName);
+  return { ...loaded, workflow: loaded.value };
+});
+
+ipcMain.handle('workflow:reload', async (_event, filePath) => {
+  const validatedPath = validateWorkflowPath(filePath);
+  const contents = await fs.readFile(validatedPath, 'utf8');
+  return { filePath: validatedPath, workflow: JSON.parse(contents) };
+});
+
+ipcMain.handle('workflow:save-current', async (_event, request) => {
+  const validatedPath = validateWorkflowPath(request?.filePath);
+  await assertOverwriteType(validatedPath, 'workflow');
+  await writeTextFileAtomically(validatedPath, `${JSON.stringify(request.workflow, null, 2)}\n`);
+  await saveLastWorkflowFileName(path.basename(validatedPath));
+  return { filePath: validatedPath };
+});
+
+ipcMain.handle('settings:load', async () => {
+  const filePath = settingsFilePath();
+  try {
+    const contents = await fs.readFile(filePath, 'utf8');
+    const settings = JSON.parse(contents);
+    return {
+      filePath,
+      settings: settingsFromDisk(settings),
+      apiKeyEncryptionAvailable: apiKeyEncryptionAvailable(),
+      apiKeyDecryptionUnavailable: settingsHasEncryptedApiKeys(settings) && !apiKeyEncryptionAvailable(),
+    };
+  } catch (error) {
+    if (error && error.code === 'ENOENT') {
+      return {
+        filePath,
+        settings: null,
+        apiKeyEncryptionAvailable: apiKeyEncryptionAvailable(),
+        apiKeyDecryptionUnavailable: false,
+      };
+    }
+    throw error;
+  }
+});
+
+ipcMain.handle('settings:save', async (_event, settings) => {
+  const filePath = settingsFilePath();
+  settingsWriteQueue = settingsWriteQueue.catch(() => {}).then(async () => {
+    await fs.mkdir(path.dirname(filePath), { recursive: true });
+    await writeTextFileAtomically(filePath, `${JSON.stringify(settingsForDisk(settings), null, 2)}\n`);
+  });
+  await settingsWriteQueue;
+  return {
+    filePath,
+    apiKeyEncryptionAvailable: apiKeyEncryptionAvailable(),
+  };
+});
+
+ipcMain.handle('session:save', async (_event, request) => {
+  const directory = filesDirectory();
+  await fs.mkdir(directory, { recursive: true });
+  const baseName = safeSessionBaseName(request.name);
+  const fileName = `${baseName}${jsonFileExtension}`;
+  const filePath = path.join(directory, fileName);
+  if (request.overwrite) {
+    await assertOverwriteType(filePath, 'session');
+  }
+  const session = request.protection === 'encrypted'
+    ? await encryptSession(request.session, request.password)
+    : request.protection === 'plain'
+      ? request.session
+      : (() => { throw new Error('Choose Plain JSON or Password encrypted.'); })();
+  try {
+    const contents = `${JSON.stringify(session, null, 2)}\n`;
+    if (request.overwrite) {
+      await writeTextFileAtomically(filePath, contents);
+    } else {
+      await fs.writeFile(filePath, contents, { encoding: 'utf8', flag: 'wx' });
+    }
+  } catch (error) {
+    if (!request.overwrite && error && error.code === 'EEXIST') {
+      return { conflict: true, fileName, name: baseName };
+    }
+    throw error;
+  }
+  approveFilePath(filePath);
+  return { fileName, name: baseName, filePath };
+});
+
+ipcMain.handle('image:select', async (_event, request = {}) => {
+  const multiple = request?.multiple !== false;
+  const result = await dialog.showOpenDialog({
+    title: 'Attach Image',
+    defaultPath: await loadImageDialogDirectory(),
+    properties: multiple ? ['openFile', 'multiSelections'] : ['openFile'],
+    filters: [
+      {
+        name: 'Images',
+        extensions: ['jpg', 'jpeg', 'png', 'webp'],
+      },
+    ],
+  });
+
+  if (result.canceled || result.filePaths.length === 0) {
+    return { canceled: true, images: [] };
+  }
+
+  await saveImageDialogDirectory(path.dirname(result.filePaths[0]));
+  const selectedFiles = await Promise.all(
+    result.filePaths.map(async (filePath) => ({
+      filePath,
+      stats: await fs.stat(filePath),
+    })),
+  );
+  const oversizedFile = selectedFiles.find(({ stats }) => stats.size > maxSelectedImageBytes);
+  if (oversizedFile) {
+    throw new Error(
+      `Selected image is too large: ${path.basename(oversizedFile.filePath)} is ` +
+        `${formatMegabytes(oversizedFile.stats.size)}. The limit is ` +
+        `${formatMegabytes(maxSelectedImageBytes)} per image.`,
+    );
+  }
+  const totalSize = selectedFiles.reduce((sum, { stats }) => sum + stats.size, 0);
+  if (totalSize > maxSelectedImagesTotalBytes) {
+    throw new Error(
+      `Selected images are too large together: ${formatMegabytes(totalSize)}. ` +
+        `The limit is ${formatMegabytes(maxSelectedImagesTotalBytes)} per selection.`,
+    );
+  }
+  const images = await Promise.all(
+    selectedFiles.map(async ({ filePath, stats }) => {
+      const contents = await fs.readFile(filePath);
+      const mimeType = imageMimeType(filePath);
+      return {
+        name: path.basename(filePath),
+        mimeType,
+        size: stats.size,
+        dataUrl: `data:${mimeType};base64,${contents.toString('base64')}`,
+      };
+    }),
+  );
+
+  return { canceled: false, images };
+});
+
+ipcMain.handle('file:select', async () => {
+  const result = await dialog.showOpenDialog({
+    title: 'Open RPGraph File',
+    defaultPath: filesDirectory(),
+    properties: ['openFile'],
+    filters: [{ name: 'RPGraph File', extensions: ['json'] }],
+  });
+
+  if (result.canceled || !result.filePaths[0]) {
+    return { canceled: true };
+  }
+
+  const filePath = result.filePaths[0];
+  const fileName = path.basename(filePath);
+  const value = JSON.parse(await fs.readFile(filePath, 'utf8'));
+  const metadata = storedFileMetadata(value);
+  approveFilePath(filePath);
+  if (metadata.type === 'workflow' && metadata.protection === 'plain') {
+    approveWorkflowPath(filePath);
+  }
+  return {
+    canceled: false,
+    filePath,
+    fileName,
+    ...metadata,
+    name: storedJsonName(fileName),
+  };
+});
+
+ipcMain.handle('file:load', async (_event, request) => {
+  const fileName = validatedStoredFileName(request.fileName);
+  const filePath = approveFilePath(path.join(filesDirectory(), fileName));
+  const { metadata, value } = await readRpgraphFile(filePath, request.password);
+  if (metadata.type === 'workflow' && metadata.protection === 'plain') {
+    approveWorkflowPath(filePath);
+  }
+  if (metadata.type === 'workflow') {
+    await saveLastWorkflowFileName(fileName);
+  }
+  return {
+    fileName,
+    name: storedJsonName(fileName),
+    filePath,
+    ...metadata,
+    value,
+  };
+});
+
+ipcMain.handle('session:save-current', async (_event, request) => {
+  const filePath = validateFilePath(request.filePath);
+  await assertOverwriteType(filePath, 'session');
+  const session = request.protection === 'encrypted'
+    ? await encryptSession(request.session, request.password)
+    : request.protection === 'plain'
+      ? request.session
+      : (() => { throw new Error('Choose Plain JSON or Password encrypted.'); })();
+  await writeTextFileAtomically(filePath, `${JSON.stringify(session, null, 2)}\n`);
+  return { filePath, fileName: path.basename(filePath) };
+});
+
+ipcMain.handle('file:load-file', async (_event, request) => {
+  const filePath = validateFilePath(request.filePath);
+  const fileName = path.basename(filePath);
+  const { metadata, value } = await readRpgraphFile(filePath, request.password);
+  if (metadata.type === 'workflow' && metadata.protection === 'plain') {
+    approveWorkflowPath(filePath);
+  }
+  if (metadata.type === 'workflow' && isStoredFilePath(filePath)) {
+    await saveLastWorkflowFileName(fileName);
+  }
+  return {
+    fileName,
+    name: storedJsonName(fileName),
+    filePath,
+    ...metadata,
+    value,
+  };
+});
+
+ipcMain.handle('file:delete', async (_event, fileName) => {
+  const validatedFileName = validatedStoredFileName(fileName);
+  try {
+    await fs.unlink(path.join(filesDirectory(), validatedFileName));
+  } catch (error) {
+    if (!error || error.code !== 'ENOENT') {
+      throw error;
+    }
+  }
+  return { fileName: validatedFileName };
+});
+
+ipcMain.handle('window:minimize', (event) => {
+  BrowserWindow.fromWebContents(event.sender)?.minimize();
+});
+
+ipcMain.handle('window:toggle-maximize', (event) => {
+  const window = BrowserWindow.fromWebContents(event.sender);
+  if (!window) {
+    return { isMaximized: false };
+  }
+  if (window.isMaximized()) {
+    window.unmaximize();
+    return { isMaximized: false };
+  }
+  window.maximize();
+  return { isMaximized: true };
+});
+
+ipcMain.handle('window:toggle-full-screen', (event) => {
+  const window = BrowserWindow.fromWebContents(event.sender);
+  if (!window) {
+    return { isFullScreen: false };
+  }
+  const isFullScreen = !window.isFullScreen();
+  window.setFullScreen(isFullScreen);
+  return { isFullScreen };
+});
+
+ipcMain.handle('window:close', (event) => {
+  BrowserWindow.fromWebContents(event.sender)?.close();
+});
+
+async function createWindow() {
+  Menu.setApplicationMenu(null);
+  const windowState = await loadWindowState();
+
+  const window = new BrowserWindow({
+    ...(windowState.bounds ?? { width: 1480, height: 900 }),
+    show: false,
+    minWidth: 980,
+    minHeight: 620,
+    frame: false,
+    icon: appIconPath,
+    backgroundColor: '#090d14',
+    webPreferences: {
+      contextIsolation: true,
+      nodeIntegration: false,
+      preload: path.join(__dirname, 'preload.cjs'),
+    },
+  });
+
+  window.webContents.setWindowOpenHandler(() => ({ action: 'deny' }));
+  window.webContents.on('will-navigate', (event, url) => {
+    if (!isAllowedNavigationUrl(url)) {
+      event.preventDefault();
+    }
+  });
+  window.webContents.on('before-input-event', (event, input) => {
+    if (input.type === 'keyDown' && input.key === 'F11') {
+      event.preventDefault();
+      window.setFullScreen(!window.isFullScreen());
+    }
+  });
+  window.webContents.session.setPermissionRequestHandler((_webContents, _permission, callback) => {
+    callback(false);
+  });
+
+  for (const eventName of [
+    'move',
+    'resize',
+    'maximize',
+    'unmaximize',
+    'enter-full-screen',
+    'leave-full-screen',
+  ]) {
+    window.on(eventName, () => scheduleWindowStateSave(window));
+  }
+  window.on('close', () => saveWindowState(window));
+  window.once('ready-to-show', () => {
+    if (windowState.isFullScreen) {
+      window.setFullScreen(true);
+    } else if (windowState.isMaximized) {
+      window.maximize();
+    }
+    window.show();
+  });
+
+  if (process.argv.includes('--dev')) {
+    window.loadURL(developmentUrl);
+    return;
+  }
+
+  window.loadFile(path.join(__dirname, '../dist/index.html'));
+}
+
+app.whenReady().then(async () => {
+  await createWindow();
+
+  app.on('activate', () => {
+    if (BrowserWindow.getAllWindows().length === 0) {
+      void createWindow();
+    }
+  });
+});
+
+app.on('window-all-closed', () => {
+  if (process.platform !== 'darwin') {
+    app.quit();
+  }
+});

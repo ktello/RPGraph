@@ -1,0 +1,54 @@
+{
+  "name": "rpgraph-studio",
+  "private": true,
+  "version": "0.4.3",
+  "description": "Local-first node graph studio for roleplay workflows.",
+  "license": "AGPL-3.0-or-later",
+  "main": "electron/main.cjs",
+  "engines": {
+    "node": ">=24"
+  },
+  "scripts": {
+    "dev": "vite",
+    "build": "tsc -b && vite build",
+    "lint": "eslint .",
+    "check:unused": "knip",
+    "check:session-format": "node electron/sessionFormat.fixtures.cjs",
+    "check:workflow-format": "node electron/workflowFormat.fixtures.cjs",
+    "check:workflow-fixtures": "vite build --ssr src/workflow/validation.fixtures.ts --outDir node_modules/.tmp/workflow-fixtures --emptyOutDir && node node_modules/.tmp/workflow-fixtures/validation.fixtures.mjs",
+    "workflow:redact": "node scripts/workflow-redact.mjs redact",
+    "workflow:merge": "node scripts/workflow-redact.mjs merge",
+    "preview": "vite preview",
+    "desktop:dev": "concurrently -k \"vite\" \"wait-on tcp:5173 && electron . --dev --no-sandbox\"",
+    "desktop": "electron . --no-sandbox",
+    "desktop:windows:dev": "concurrently -k \"vite\" \"wait-on tcp:5173 && electron . --dev\"",
+    "desktop:windows": "electron ."
+  },
+  "dependencies": {
+    "@toon-format/toon": "^2.3.0",
+    "@xyflow/react": "^12.11.0",
+    "react": "^19.2.7",
+    "react-dom": "^19.2.7"
+  },
+  "devDependencies": {
+    "@eslint/js": "^10.0.1",
+    "@types/node": "^24.13.2",
+    "@types/react": "^19.2.17",
+    "@types/react-dom": "^19.1.2",
+    "@vitejs/plugin-react": "^5.2.0",
+    "concurrently": "^9.1.2",
+    "electron": "^41.8.0",
+    "eslint": "^10.6.0",
+    "eslint-plugin-react-hooks": "^7.1.1",
+    "eslint-plugin-react-refresh": "^0.5.3",
+    "globals": "^17.7.0",
+    "knip": "^6.24.0",
+    "typescript": "~5.9.3",
+    "typescript-eslint": "^8.62.1",
+    "vite": "^7.3.5",
+    "wait-on": "^8.0.3"
+  },
+  "overrides": {
+    "esbuild": "0.28.1"
+  }
+}

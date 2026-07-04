@@ -1,0 +1,6096 @@
+import {
+  type FormEvent,
+  useCallback,
+  useEffect,
+  useMemo,
+  useRef,
+  useState,
+} from 'react';
+import { encode } from '@toon-format/toon';
+import {
+  ImagePreviewDialog,
+  CustomNodeAssistantDialog,
+  OutputFormatHelpDialog,
+  RunLlmReportDialog,
+  StorybookCreatorDialog,
+  SystemLogDialog,
+  type CustomNodeAssistantMessage,
+} from './components/AppDialogs';
+import {
+  AssistantDialog,
+  type AssistantMessage as AssistantChatMessage,
+  type DebugSnapshotAssistantSection,
+} from './components/AssistantDialog';
+import { ChatConversationPanel } from './components/ChatConversationPanel';
+import { EventsPanel } from './components/EventsPanel';
+import { ErrorBoundary } from './components/ErrorBoundary';
+import { PhonePanel } from './components/PhonePanel';
+import { PromptPresetOverview } from './components/PromptPresetOverview';
+import { ResourceMonitor } from './components/ResourceMonitor';
+import {
+  autoTurnNarratorInstruction,
+  autoTurnNarratorPhoneInstruction,
+  autoTurnPhoneInstruction,
+  autoTurnRpInstruction,
+  autoTurnInstructionSettings,
+  eventChatDisplayText,
+  eventGraphInputText,
+} from './chat/instructions';
+import {
+  canonicalPhoneName,
+  parsePhoneGraphInput,
+  phoneImageActionMatchesMessage,
+  phoneNamesMatch,
+  type ParsedPhoneImageAction,
+  type ParsedPhoneMessage,
+} from './chat/phoneMessages';
+import { useNextTurnReferenceImages } from './chat/useNextTurnReferenceImages';
+import { type OutputActionContextCapacityRequest } from './chat/outputActions';
+import {
+  applyTimeCommandsToWorkflowNodes,
+  structuredInputPayload,
+  type CommandInputCommand,
+  type StructuredInputCommand,
+} from './chat/structuredCommands';
+import {
+  directInputPrompt,
+  translationPrompt,
+} from './chat/inputTransforms';
+import {
+  extractDialogueQuotes,
+} from './chat/textRendering';
+import {
+  chatAttachmentFromStorybookImage,
+  findChatEndpoints,
+  storybookOpeningSituation,
+  storyCharactersFromNodes,
+  type StorybookCharacter,
+} from './storybook/runtime';
+import {
+  configForPromptActionToken,
+  parsePromptActionTokens,
+  promptActionConfigs,
+  withPromptActionRuntimeSettingsList,
+} from './nodes/shared/promptActions';
+import {
+  storybookImageDescriptions,
+  storybookImageSourceById,
+  withImagesEnsuredForStorybookCharacter,
+  withStorybookExternalImagesPruned,
+  withStorybookImageDescriptionUpdated,
+  type StorybookImageLibraryEnsureOptions,
+} from './storybook/imageLibrary';
+import {
+  formatDebugSnapshot as formatDataManagementDebugSnapshot,
+  formatEventsContext,
+  formatPhoneContext,
+  formatTimelineContext,
+} from './data-management/formatters';
+import {
+  compactDebugNode,
+  compactDebugValue,
+  recentTurnDebugSummaries,
+  sanitizeDebugSnapshotValue,
+} from './app/debugSnapshot';
+import { useTurnTraceState } from './app/useTurnTraceState';
+import { sanitizeDataUrlsInText } from './utils/sanitize';
+import {
+  suggestedSessionNameFromCharacters,
+  suggestedWorkflowNameFromPath,
+  workflowSnapshotFromGraph,
+} from './app/workflowSnapshot';
+import { hydrateLoadedWorkflow } from './app/workflowHydration';
+import {
+  lastMessage,
+  narratorCharacterId,
+  narratorSpeakerName,
+} from './app/runOrchestration';
+import {
+  useGraphRun,
+  type OutputAttribution,
+  type PhoneMessageSound,
+} from './app/useGraphRun';
+import {
+  phoneConversationKey,
+  phoneSeenStateFromMessages,
+} from './data-management/selectors';
+import {
+  appStateFromSessionV2,
+  latestSessionV2TurnNumber,
+  sessionV2FromCurrentState,
+  type SessionV2CurrentStateInput,
+  workflowV2ToWorkflowFile,
+} from './data-management/sessionStore';
+import { isRpgraphSessionV2 } from './data-management/validation';
+import type { RpgraphSessionV2 } from './data-management/types';
+import {
+  appointmentsFromEventEntities,
+  eventEntitiesFromNodes,
+  normalizeEventAppointments,
+} from './data-management/eventStore';
+import { useStorybookActions } from './storybook/useStorybookActions';
+import { storybookImageIdsUsedByMessages } from './storybook/imageUsage';
+import storybookFormatVersions from './storybook/formatVersions.json';
+import {
+  openingHistoryEventsFromNodes,
+  openingHistoryCheckpointsFromNodes,
+  openingHistoryTurnsFromNodes,
+  remapOpeningTurnMessageIds,
+} from './storybook/openingHistoryRuntime';
+import {
+  flattenTurnMessages,
+  lastSessionTurn,
+  lastSessionTurnIndex,
+  restoreTurnRuntime,
+  turnMessageIds,
+} from './chat/turns';
+import { useTurnRecordState } from './chat/useTurnRecordState';
+import { currentSessionFormatVersion } from './session/version';
+import {
+  Background,
+  BackgroundVariant,
+  Controls,
+  ReactFlow,
+  type Connection,
+  type Edge,
+  type EdgeTypes,
+  type ReactFlowInstance,
+  useEdgesState,
+  useNodesState,
+} from '@xyflow/react';
+import { StudioDialogs } from './dialogs/StudioDialogs';
+import { ComfyGeneratedImageDialog } from './comfy/ComfyGeneratedImageDialog';
+import { WelcomeDialog } from './components/WelcomeDialog';
+import {
+  withSourceNodeStatusConnectionColors,
+  workflowEdgeType,
+} from './graph/edges';
+import { WorkflowEdge } from './graph/WorkflowEdge';
+import { validatePortConnection } from './graph/portCompatibility';
+import { useImageAttachments } from './hooks/useImageAttachments';
+import { useSystemLog } from './hooks/useSystemLog';
+import type { NodeLlmApi } from './llm/NodeLlmApi';
+import {
+  isLmStudioConnection,
+  isOllamaConnection,
+} from './llm/providerKind';
+import { TextMetricsApi } from './llm/tokenMetrics';
+import { NodeActionsContext } from './nodes/NodeActionsContext';
+import type { OutputFormatHelpKind } from './nodes/output/formatHelp';
+import type { ExecuteTraceFormatResult } from './nodes/types';
+import { getRegisteredCoreNode } from './nodes/registry';
+import type { NodeViewValues } from './nodes/types';
+import { NodeViewContext } from './nodes/NodeViewContext';
+import { WorkflowNodeRenderer } from './nodes/WorkflowNodeRenderer';
+import { resetCharacterStatsRuntimeData } from './nodes/character-stats/runtime';
+import { contextCompressionCapacitySegments } from './nodes/context-compression/capacity';
+import {
+  syncStorybookImageContextRules,
+} from './nodes/dynamic-context-injection/storybookImageRules';
+import {
+  customNodeAssistantPrompt,
+  defaultCustomNodeDefinition,
+  customNodeDefinition,
+  isCustomNodeDefinition,
+  parseCustomNodeAssistantResult,
+} from './nodes/custom-node/model';
+import {
+  assertCompilableCustomNodeCode,
+  assertAllowedCustomNodeCode,
+  inputValuesFromRuntimePorts,
+  outputRuntimePortValues,
+  runCustomNodeDefinition,
+} from './nodes/custom-node/runtime';
+import {
+  customNodeImageInputMetadata,
+  customNodeImageInputsFromGraph,
+  customNodeImagesForRequest,
+} from './nodes/custom-node/images';
+import {
+  defaultRpStorybookImageDescriptionPrompt,
+  emptyRpStorybookV1,
+  parseRpStorybookJson,
+  rpStorybookJsonText,
+  withRpStorybookPhoneContactPairAllowed,
+  type RpStorybookCharacterImage,
+  type RpStorybookV1,
+} from './nodes/rp-storybook-v1/model';
+import {
+  buildOutputSpeakerPrompt,
+  outputSpeakerFormatInstructions,
+  outputSpeakerResponseFormat,
+  parseOutputSpeakerResponse,
+  speakerDataForFormat,
+} from './nodes/output/speakerPrompt';
+import {
+  defaultChatPanelWidth,
+  defaultConnection,
+  useAppSettings,
+} from './settings';
+import {
+  incompatibleSessionStatus,
+  incompatibleStorybookStatus,
+  incompatibleWorkflowStatus,
+  useRpgraphFiles,
+  workflowName,
+} from './app/useRpgraphFiles';
+import { useUiScaling } from './app/useUiScaling';
+import { useNodePalette } from './app/useNodePalette';
+import { useRunLifecycle } from './app/useRunLifecycle';
+import { useProviderConnections } from './app/useProviderConnections';
+import { useNodeLlmApi } from './app/useNodeLlmApi';
+import { useRuntimeNodePatching } from './app/useRuntimeNodePatching';
+import { useNodeActionsController } from './app/useNodeActionsController';
+import { useRoleplayPanelRuntime } from './app/useRoleplayPanelRuntime';
+import type {
+  ChatImageAttachment,
+  ImageCaptionChange,
+  InputActionSelection,
+  MessageRecord,
+  OutputActionContextCapacityBar,
+  ConnectionPreset,
+  RpAppointment,
+  RpDateTimeFormat,
+  RpWeekdayLanguage,
+  SettingsValueDefinition,
+  SavedFileSummary,
+  WorkflowFile,
+  WorkflowNode,
+  WorkflowNodeData,
+} from './types';
+import type { WorkflowVariableSetCommand } from './workflow';
+import {
+  llmPromptSwitchPromptAftersByOutput,
+  llmPromptSwitchPromptBeforesByOutput,
+  contextLengthMaxOptionKey,
+  builtInWorkflowVariables,
+  currentWorkflowFormatVersion,
+  createInitialEdges,
+  createInitialNodes,
+  defaultWorkflowVariableValue,
+  formatChatHistory,
+  formatLastMessageForContext,
+  persistentNodeData,
+  settingsValueEntries,
+  settingsValueHandle,
+  textSetsWorkflowVariable,
+  textReferencesWorkflowVariable,
+  validEstimatedTokenBytesPerToken,
+  workflowVariableValueKind,
+} from './workflow';
+
+const currentStorybookFormatVersion = storybookFormatVersions.storybook;
+
+type CopiedGraphSelection = {
+  nodes: WorkflowNode[];
+  edges: Edge[];
+};
+
+type DeletedGraphRestoreAction = {
+  nodes: WorkflowNode[];
+  edges: Edge[];
+};
+
+function formatRuntimeSeconds(durationMs: number) {
+  return (durationMs / 1000).toFixed(2);
+}
+
+
+
+const maxDeletedNodeRestoreActions = 30;
+
+const phoneMessageSoundUrls = {
+  sent: new URL('./assets/sounds/message-send.mp3', import.meta.url).href,
+  received: new URL('./assets/sounds/new-notification.mp3', import.meta.url).href,
+} as const;
+
+const phoneMessageAudio = new Map<PhoneMessageSound, HTMLAudioElement>();
+
+function phoneMessageAudioElement(sound: PhoneMessageSound) {
+  const cached = phoneMessageAudio.get(sound);
+  if (cached) {
+    return cached;
+  }
+  const audio = new Audio(phoneMessageSoundUrls[sound]);
+  audio.preload = 'auto';
+  phoneMessageAudio.set(sound, audio);
+  return audio;
+}
+
+function primePhoneMessageSounds() {
+  (Object.keys(phoneMessageSoundUrls) as PhoneMessageSound[]).forEach((sound) => {
+    const audio = phoneMessageAudioElement(sound);
+    const previousMuted = audio.muted;
+    audio.muted = true;
+    const playPromise = audio.play();
+    if (playPromise) {
+      void playPromise
+        .then(() => {
+          audio.pause();
+          audio.currentTime = 0;
+          audio.muted = previousMuted;
+        })
+        .catch(() => {
+          audio.muted = previousMuted;
+        });
+    } else {
+      audio.muted = previousMuted;
+    }
+  });
+}
+
+function playPhoneMessageSound(sound: PhoneMessageSound) {
+  const audio = phoneMessageAudioElement(sound);
+  audio.muted = false;
+  audio.pause();
+  audio.currentTime = 0;
+  void audio.play().catch(() => {
+    // Browsers may block audio until the user has interacted with the page.
+  });
+}
+
+function storedAutoTurnInputText(graphText: string) {
+  const withoutMarker = graphText.replace(/^\[AUTO TURN\]\s*/i, '').trim();
+  const phoneInput = parsePhoneGraphInput(withoutMarker);
+  if (!phoneInput) {
+    return withoutMarker;
+  }
+  const separatorIndex = withoutMarker.indexOf(':');
+  const text = separatorIndex >= 0 ? withoutMarker.slice(separatorIndex + 1).trim() : withoutMarker;
+  return text || `${phoneInput.from} texts ${phoneInput.to}.`;
+}
+
+function storedNarratorInputText(graphText: string) {
+  return graphText.replace(/^Narrator:\s*/i, '').trim();
+}
+
+function normalizedEventAppointments(appointments: WorkflowNodeData['eventAppointments']) {
+  return normalizeEventAppointments(appointments ?? []);
+}
+
+function phoneSeenStateForLoadedMessages(messages: MessageRecord[]) {
+  return phoneSeenStateFromMessages(messages);
+}
+
+function mergePhoneSeenStates(...states: Array<Record<string, number> | undefined>) {
+  return states.reduce<Record<string, number>>((merged, state) => {
+    Object.entries(state ?? {}).forEach(([key, value]) => {
+      merged[key] = Math.max(merged[key] ?? 0, value);
+    });
+    return merged;
+  }, {});
+}
+
+function lastMessageNodeText(
+  message: MessageRecord | undefined,
+  includeRpDateTime: boolean | undefined,
+  rpDateTimeFormat: RpDateTimeFormat,
+  rpWeekdayLanguage: RpWeekdayLanguage,
+) {
+  if (!message) {
+    return '';
+  }
+  return formatLastMessageForContext(
+    message,
+    false,
+    rpDateTimeFormat,
+    rpWeekdayLanguage,
+    includeRpDateTime ?? false,
+  );
+}
+
+function errorMessage(error: unknown) {
+  return (error instanceof Error ? error.message : String(error)).replace(
+    /^Error invoking remote method '[^']+': Error: /,
+    '',
+  );
+}
+
+function customNodeSecurityReviewRole(text: string): CustomNodeAssistantMessage['role'] {
+  const verdictMatch = /^Verdict:\s*(Safe|Needs changes|Unsafe)\s*$/im.exec(text);
+  if (!verdictMatch) {
+    return 'assistant';
+  }
+  return verdictMatch[1].toLowerCase() === 'safe' ? 'assistant' : 'error';
+}
+
+function workflowFileMissing(error: unknown) {
+  return errorMessage(error).includes('ENOENT');
+}
+
+function displayStorybookName(
+  headerStorybookFileName: string | undefined,
+  headerStorybookJson: string | undefined,
+  activeSessionFileName: string | null,
+) {
+  if (headerStorybookFileName) {
+    return `${headerStorybookFileName} (file)`;
+  }
+  if (!headerStorybookJson) {
+    return 'not loaded';
+  }
+  try {
+    const storybook = parseRpStorybookJson(headerStorybookJson);
+    const title = storybook.title || 'untitled';
+    return `${title} - embedded in ${activeSessionFileName ? 'RP' : 'WF'}`;
+  } catch {
+    return `embedded in ${activeSessionFileName ? 'RP' : 'WF'}`;
+  }
+}
+
+const assistantConnectionStorageKey = 'rpgraph.assistantConnectionId';
+
+function loadAssistantConnectionId() {
+  try {
+    return window.localStorage.getItem(assistantConnectionStorageKey) || undefined;
+  } catch {
+    return undefined;
+  }
+}
+
+const minChatPanelWidth = 779;
+const minGraphPanelWidth = 520;
+const phoneEmojiOptions = [
+  '🙂',
+  '😀',
+  '😂',
+  '😊',
+  '😍',
+  '😘',
+  '😏',
+  '😢',
+  '😡',
+  '😳',
+  '👍',
+  '❤️',
+  '🤣',
+  '🥰',
+  '😇',
+  '😉',
+  '🤔',
+  '🙄',
+  '😅',
+  '😭',
+  '😎',
+  '🤗',
+  '🙏',
+  '🔥',
+  '👌',
+  '👏',
+  '💯',
+  '✨',
+  '🎉',
+  '💀',
+  '🥺',
+  '😬',
+  '🤩',
+  '😴',
+  '🤦',
+  '💔',
+  '🥳',
+  '😋',
+  '😜',
+  '🤪',
+  '🤤',
+  '😒',
+  '😔',
+  '😩',
+  '😤',
+  '😱',
+  '😰',
+  '🤢',
+  '🤮',
+  '🤫',
+  '🥱',
+  '🤐',
+  '🤨',
+  '😐',
+  '😑',
+  '😶',
+  '💩',
+  '🤡',
+  '👾',
+  '👽',
+  '👻',
+  '👑',
+  '💸',
+  '👀',
+  '💪',
+  '✌️',
+  '🤟',
+  '🤞',
+  '🤙',
+  '🎈',
+  '🍀',
+  '🌟',
+];
+
+function dataContainsWorkflowVariable(value: unknown, definition: SettingsValueDefinition): boolean {
+  if (typeof value === 'string') {
+    return textReferencesWorkflowVariable(value, definition) ||
+      textSetsWorkflowVariable(value, definition);
+  }
+  if (Array.isArray(value)) {
+    return value.some((entry) => dataContainsWorkflowVariable(entry, definition));
+  }
+  if (value && typeof value === 'object') {
+    return Object.values(value).some((entry) => dataContainsWorkflowVariable(entry, definition));
+  }
+  return false;
+}
+const pastePositionOffset = 36;
+const connectionRadius = 66;
+const reconnectRadius = 54;
+const fitViewPadding = 0.12;
+
+function isEditableKeyboardTarget(target: EventTarget | null) {
+  return (
+    target instanceof HTMLElement &&
+    !!target.closest('input, textarea, select, [contenteditable="true"]')
+  );
+}
+
+function normalizedCharacterName(value: string) {
+  return value.trim().toLocaleLowerCase();
+}
+
+function textMentionsCharacter(text: string, character: StorybookCharacter) {
+  const names = [
+    character.name,
+    character.name.trim().split(/\s+/)[0] ?? '',
+  ].filter(Boolean);
+  return names.some((name) => {
+    const escapedName = name.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+    return new RegExp(`(^|[^\\p{L}\\p{N}_])${escapedName}($|[^\\p{L}\\p{N}_])`, 'iu').test(text);
+  });
+}
+
+const workflowAssistantExcludedDataKeys = new Set([
+  'rawHistory',
+  'originalHistory',
+  'translatedHistory',
+  'storybookJson',
+  'storybookFileName',
+  'storybookFilePath',
+]);
+
+const workflowAssistantMaxStringLength = 3000;
+const workflowAssistantMaxArrayItems = 50;
+
+function sameNodeViewNodes(left: WorkflowNode[], right: WorkflowNode[]) {
+  return left.length === right.length && left.every((node, index) => {
+    const other = right[index];
+    return (
+      !!other &&
+      node.id === other.id &&
+      node.type === other.type &&
+      node.data === other.data &&
+      node.style === other.style
+    );
+  });
+}
+
+function limitWorkflowAssistantText(text: string) {
+  if (text.length <= workflowAssistantMaxStringLength) {
+    return text;
+  }
+  return `${text.slice(0, workflowAssistantMaxStringLength)}\n\n[Truncated ${text.length - workflowAssistantMaxStringLength} characters.]`;
+}
+
+function sanitizeWorkflowAssistantValue(value: unknown, depth = 0): unknown {
+  if (typeof value === 'string') {
+    return limitWorkflowAssistantText(sanitizeDataUrlsInText(value));
+  }
+  if (typeof value !== 'object' || value === null) {
+    return value;
+  }
+  if (depth > 5) {
+    return '[Nested value omitted]';
+  }
+  if (Array.isArray(value)) {
+    const items = value
+      .slice(0, workflowAssistantMaxArrayItems)
+      .map((item) => sanitizeWorkflowAssistantValue(item, depth + 1));
+    if (value.length > workflowAssistantMaxArrayItems) {
+      items.push(`[${value.length - workflowAssistantMaxArrayItems} more items omitted]`);
+    }
+    return items;
+  }
+  return Object.fromEntries(
+    Object.entries(value)
+      .filter(([key]) => !workflowAssistantExcludedDataKeys.has(key))
+      .map(([key, entryValue]) => [key, sanitizeWorkflowAssistantValue(entryValue, depth + 1)]),
+  );
+}
+
+function createWorkflowAssistantSnapshot(nodes: WorkflowNode[], edges: Edge[]) {
+  return {
+    nodes: nodes.map((node) => {
+      const persistentData = persistentNodeData(node.data);
+      return {
+        id: node.id,
+        label: persistentData.label,
+        type: persistentData.nodeType,
+        data: sanitizeWorkflowAssistantValue(persistentData),
+      };
+    }),
+    edges: edges.map((edge) => ({
+      id: edge.id,
+      source: edge.source,
+      sourceHandle: edge.sourceHandle ?? 'default',
+      target: edge.target,
+      targetHandle: edge.targetHandle ?? 'default',
+    })),
+  };
+}
+
+function eventStoryCharacter(event: RpAppointment, characters: StorybookCharacter[]) {
+  const explicitName = event.assignedTo ?? event.requestedBy;
+  if (explicitName) {
+    const normalizedExplicitName = normalizedCharacterName(explicitName);
+    const explicitMatch = characters.find(
+      (character) =>
+        normalizedCharacterName(character.name) === normalizedExplicitName ||
+        normalizedCharacterName(character.name.trim().split(/\s+/)[0] ?? '') === normalizedExplicitName,
+    );
+    if (explicitMatch) {
+      return explicitMatch;
+    }
+  }
+
+  const eventText = [event.title, event.details, event.condition].filter(Boolean).join('\n');
+  const mentionedCharacters = characters.filter((character) => textMentionsCharacter(eventText, character));
+  return mentionedCharacters.length === 1 ? mentionedCharacters[0] : characters[0];
+}
+
+type PreviewImageState = {
+  image: ChatImageAttachment;
+};
+
+type WorkflowCapabilityKind = 'text' | 'vision' | 'image';
+type WorkflowCapabilityTone = 'ready' | 'missing';
+
+type WorkflowCapabilityIndicator = {
+  kind: WorkflowCapabilityKind;
+  tone: WorkflowCapabilityTone;
+  active: boolean;
+  label: string;
+};
+
+function WorkflowCapabilityIcon({ kind }: { kind: WorkflowCapabilityKind }) {
+  if (kind === 'text') {
+    return <span className="workflow-capability-text-mark" aria-hidden="true">TXT</span>;
+  }
+  if (kind === 'vision') {
+    return (
+      <svg viewBox="0 0 24 24" aria-hidden="true">
+        <path d="M1 12s4-8 11-8 11 8 11 8-4 8-11 8-11-8-11-8z" />
+        <circle cx="12" cy="12" r="3" />
+      </svg>
+    );
+  }
+  return (
+    <svg viewBox="0 0 24 24" aria-hidden="true">
+      <rect x="3" y="3" width="18" height="18" rx="2" ry="2" />
+      <circle cx="8.5" cy="8.5" r="1.5" />
+      <polyline points="21 15 16 10 5 21" />
+    </svg>
+  );
+}
+
+function WorkflowCapabilityStrip({ indicators }: { indicators: WorkflowCapabilityIndicator[] }) {
+  if (indicators.length === 0) {
+    return null;
+  }
+  return (
+    <div className="workflow-capability-strip" aria-label="Workflow capability requirements">
+      {indicators.map((indicator) => (
+        <span
+          key={indicator.kind}
+          className={`workflow-capability-icon ${indicator.tone}${indicator.active ? ' active' : ''}`}
+          title={indicator.label}
+          aria-label={indicator.label}
+        >
+          <WorkflowCapabilityIcon kind={indicator.kind} />
+        </span>
+      ))}
+    </div>
+  );
+}
+
+function App() {
+  const [nodes, setNodes, onNodesChange] = useNodesState<WorkflowNode>(createInitialNodes());
+  const [edges, setEdges, onEdgesChange] = useEdgesState(createInitialEdges());
+  const nodesRef = useRef(nodes);
+  const commitNodes = useCallback((nextNodes: WorkflowNode[]) => {
+    nodesRef.current = nextNodes;
+    setNodes(nextNodes);
+  }, [setNodes]);
+  useEffect(() => {
+    nodesRef.current = nodes;
+  }, [nodes]);
+  // Dragging recreates `nodes` every frame with only positions changed; keep a
+  // semantically-stable array so downstream memos only recompute on real changes.
+  // Guarded render-phase setState is React's sanctioned previous-render pattern.
+  const [nodeViewNodes, setNodeViewNodes] = useState(nodes);
+  if (!sameNodeViewNodes(nodeViewNodes, nodes)) {
+    setNodeViewNodes(nodes);
+  }
+  const [showWelcome, setShowWelcome] = useState(() => {
+    return window.localStorage.getItem('rpgraph.welcomeSeen') !== 'true';
+  });
+  const {
+    connections,
+    setConnections,
+    defaultConnectionId,
+    setDefaultConnectionId,
+    englishProcessingEnabled,
+    setEnglishProcessingEnabled,
+    inputTranslationOnlyEnabled,
+    setInputTranslationOnlyEnabled,
+    displayLanguage,
+    setDisplayLanguage,
+    tokenEstimateBytesPerToken,
+    setTokenEstimateBytesPerToken,
+    autoCalibrateTokenEstimate,
+    setAutoCalibrateTokenEstimate,
+    calibratedTokenBytesPerToken,
+    setCalibratedTokenBytesPerToken,
+    workflowSettingsValues,
+    setWorkflowSettingsValues,
+    promptActionCustomPresets,
+    setPromptActionCustomPresets,
+    promptActionSettings,
+    setPromptActionSettings,
+    promptTextCustomPresets,
+    setPromptTextCustomPresets,
+    chatTextSize,
+    setChatTextSize,
+    phoneChatTextSize,
+    setPhoneChatTextSize,
+    smoothChatAutoScrollEnabled,
+    setSmoothChatAutoScrollEnabled,
+    smoothChatAutoScrollMinSpeed,
+    setSmoothChatAutoScrollMinSpeed,
+    thoughtTextStyle,
+    setThoughtTextStyle,
+    rpDateTimeFormat,
+    setRpDateTimeFormat,
+    rpWeekdayLanguage,
+    setRpWeekdayLanguage,
+    showReferenceImagesInContext,
+    setShowReferenceImagesInContext,
+    referenceImageTurnLookback,
+    setReferenceImageTurnLookback,
+    maxReferenceImages,
+    setMaxReferenceImages,
+    chatPanelWidth: storedChatPanelWidth,
+    setChatPanelWidth: setStoredChatPanelWidth,
+    settingsLoadComplete,
+    settingsStatus,
+    glassDesignEnabled,
+    setGlassDesignEnabled,
+    glassDesignOpacity,
+    setGlassDesignOpacity,
+    nodeTextSize,
+    setNodeTextSize,
+    uiScale,
+    setUiScale,
+    retryFormatErrorsEnabled,
+    setRetryFormatErrorsEnabled,
+  } = useAppSettings();
+  const {
+    appliedUiScale,
+    minUiScale: minimumAllowedUiScale,
+    maxUiScale: allowedUiScale,
+    changeUiScale,
+  } = useUiScaling(uiScale, setUiScale);
+  const activeTokenEstimateBytesPerToken = validEstimatedTokenBytesPerToken(
+    autoCalibrateTokenEstimate
+      ? calibratedTokenBytesPerToken ?? tokenEstimateBytesPerToken
+      : tokenEstimateBytesPerToken,
+  );
+  function isLlmConnection(connection: ConnectionPreset) {
+    return connection.kind !== 'comfyui';
+  }
+  function firstLlmConnection(connectionsToSearch = connections) {
+    return connectionsToSearch.find(isLlmConnection) ?? defaultConnection;
+  }
+  const connectionHasVision = useCallback((connectionId?: string) => {
+    const connection = connections.find(
+      (entry) => entry.id === (connectionId ?? defaultConnectionId),
+    );
+    return !!connection && isLlmConnection(connection) && !!connection.vision;
+  }, [connections, defaultConnectionId]);
+  const nodeHasVision = useCallback((node: WorkflowNode) => {
+    return node.data.kind === undefined && connectionHasVision(node.data.connectionId);
+  }, [connectionHasVision]);
+  function nodeCanUseUploadedImages(node: WorkflowNode) {
+    return (
+      node.data.kind === undefined &&
+      (
+        node.data.nodeType === 'llm-prompt' ||
+        node.data.nodeType === 'llm-prompt-switch' ||
+        node.data.nodeType === 'custom'
+      )
+    );
+  }
+  const imageUploadVisionEnabled = useMemo(
+    () => nodeViewNodes.some((node) => nodeCanUseUploadedImages(node) && nodeHasVision(node)),
+    [nodeHasVision, nodeViewNodes],
+  );
+  const referenceImageOptions = useMemo(
+    () => ({
+      enabled: showReferenceImagesInContext && imageUploadVisionEnabled,
+      turnLookback: referenceImageTurnLookback,
+      maxImages: maxReferenceImages,
+    }),
+    [imageUploadVisionEnabled, showReferenceImagesInContext, referenceImageTurnLookback, maxReferenceImages],
+  );
+  const settingsValueDefinitions = useMemo<SettingsValueDefinition[]>(() => {
+    const definitions = new Map<string, SettingsValueDefinition>(
+      builtInWorkflowVariables.map((definition) => [definition.key, definition]),
+    );
+    Object.entries(workflowSettingsValues).forEach(([key]) => {
+      if (!definitions.has(key)) {
+        definitions.set(key, {
+          key,
+          label: key,
+          enabled: true,
+          valueKind: workflowVariableValueKind(workflowSettingsValues[key] ?? ''),
+          used: false,
+          usedAsNumber: false,
+        });
+      }
+    });
+    nodeViewNodes
+      .filter((node) => node.data.kind === undefined && node.data.nodeType === 'settings-value')
+      .flatMap((node) => settingsValueEntries(node.data))
+      .forEach((entry) => {
+        const current = definitions.get(entry.optionKey);
+        definitions.set(entry.optionKey, {
+          key: entry.optionKey,
+          label: current?.builtIn ? current.label : entry.label,
+          enabled: true,
+          builtIn: current?.builtIn,
+          valueKind: workflowVariableValueKind(
+            workflowSettingsValues[entry.optionKey] ?? defaultWorkflowVariableValue(entry.optionKey),
+          ),
+          used: true,
+          usedAsNumber: false,
+        });
+      });
+    const settingsVariableNumberKeys = new Set(
+      edges.flatMap((edge) => {
+        const source = nodeViewNodes.find((node) => node.id === edge.source);
+        const target = nodeViewNodes.find((node) => node.id === edge.target);
+        if (
+          source?.data.nodeType !== 'settings-value' ||
+          target?.data.nodeType !== 'context-compression' ||
+          edge.targetHandle !== 'max-tokens'
+        ) {
+          return [];
+        }
+        const entry = settingsValueEntries(source.data).find(
+          (candidate) => settingsValueHandle(candidate.id) === edge.sourceHandle,
+        );
+        return entry ? [entry.optionKey] : [];
+      }),
+    );
+    return Array.from(definitions.values()).map((definition) => {
+      const usedInText = nodeViewNodes.some((node) => dataContainsWorkflowVariable(node.data, definition));
+      const usedAsNumber = nodeViewNodes.some((node) =>
+        textReferencesWorkflowVariable(String(node.data.contextCompressionMaxTokens ?? ''), definition) ||
+        textReferencesWorkflowVariable(String(node.data.contextCompressionLengthWords ?? ''), definition) ||
+        textReferencesWorkflowVariable(String(node.data.fixedNumberValue ?? ''), definition) ||
+        textReferencesWorkflowVariable(String(node.data.historyLastTurnsCount ?? ''), definition)
+      );
+      return {
+        ...definition,
+        valueKind: workflowVariableValueKind(
+          workflowSettingsValues[definition.key] ?? defaultWorkflowVariableValue(definition.key),
+        ),
+        used: definition.used || usedInText || usedAsNumber,
+        usedAsNumber: definition.usedAsNumber || usedAsNumber || settingsVariableNumberKeys.has(definition.key),
+      };
+    });
+  }, [edges, nodeViewNodes, workflowSettingsValues]);
+  const resolvedWorkflowSettingsValues = useMemo(
+    () =>
+      Object.fromEntries(
+        settingsValueDefinitions.map((definition) => [
+          definition.key,
+          workflowSettingsValues[definition.key] ?? defaultWorkflowVariableValue(definition.key),
+        ]),
+      ),
+    [settingsValueDefinitions, workflowSettingsValues],
+  );
+  const settingsValueDefinitionsRef = useRef(settingsValueDefinitions);
+  const workflowSettingsValuesRef = useRef(workflowSettingsValues);
+
+  useEffect(() => {
+    settingsValueDefinitionsRef.current = settingsValueDefinitions;
+  }, [settingsValueDefinitions]);
+  useEffect(() => {
+    workflowSettingsValuesRef.current = workflowSettingsValues;
+  }, [workflowSettingsValues]);
+
+  function replaceWorkflowSettingsValues(values: Record<string, string>) {
+    const nextValues = structuredClone(values);
+    workflowSettingsValuesRef.current = nextValues;
+    setWorkflowSettingsValues(nextValues);
+  }
+
+  function workflowSettingsValuesForGraph() {
+    const currentValues = workflowSettingsValuesRef.current;
+    return Object.fromEntries(
+      settingsValueDefinitionsRef.current.map((definition) => [
+        definition.key,
+        currentValues[definition.key] ?? defaultWorkflowVariableValue(definition.key),
+      ]),
+    );
+  }
+  const [draft, setDraft] = useState('');
+  const [draftCommands, setDraftCommands] = useState<CommandInputCommand[]>([]);
+  const [draftImages, setDraftImages] = useState<ChatImageAttachment[]>([]);
+  const [editingMessageId, setEditingMessageId] = useState<number | null>(null);
+  const [editingDraft, setEditingDraft] = useState('');
+  const [previewImage, setPreviewImage] = useState<PreviewImageState | null>(null);
+  const {
+    isRunning,
+    setIsRunning,
+    runLlmReport,
+    setRunLlmReport,
+    showRunLlmReport,
+    setShowRunLlmReport,
+    runDurationMs,
+    setRunDurationMs,
+    runHistory,
+    setRunHistory,
+    workflowComfyGenerationActive,
+    updateWorkflowComfyGenerationActive,
+    activeRunRef,
+    activeRunId,
+    setActiveRunId,
+    lastRunDebugRef,
+    activeRunCancelReasonRef,
+    activeRunLlmReportRef,
+    pendingRunRestartRef,
+    runStartTimeRef,
+    runEndTimeRef,
+    cancelCurrentRun,
+  } = useRunLifecycle();
+  const [characterDropdownOpen, setCharacterDropdownOpen] = useState(false);
+  const [showOptions, setShowOptions] = useState(false);
+  const [textDialogNodeId, setTextDialogNodeId] = useState<string | null>(null);
+  const [textDialogView, setTextDialogView] =
+    useState<
+      | 'text'
+      | 'output-highlighting'
+      | 'character-stats-context'
+      | 'character-stats-response'
+      | 'character-stats-prompts'
+      | 'character-stats-chart'
+      | 'history-time-response'
+      | 'event-manager-response'
+      | 'event-manager-appointments'
+    >('text');
+  const [jsonDialogNodeId, setJsonDialogNodeId] = useState<string | null>(null);
+  const [customNodeAssistantNodeId, setCustomNodeAssistantNodeId] = useState<string | null>(null);
+  const [customNodeAssistantHistories, setCustomNodeAssistantHistories] = useState<Record<string, CustomNodeAssistantMessage[]>>({});
+  const [nodeAssistantNodeId, setNodeAssistantNodeId] = useState<string | null>(null);
+  const [nodeAssistantHistories, setNodeAssistantHistories] = useState<Record<string, AssistantChatMessage[]>>({});
+  const [assistantConnectionId, setAssistantConnectionId] = useState<string | undefined>(
+    loadAssistantConnectionId,
+  );
+  const [workflowAssistantOpen, setWorkflowAssistantOpen] = useState(false);
+  const [workflowAssistantMessages, setWorkflowAssistantMessages] = useState<AssistantChatMessage[]>([]);
+  const [outputFormatHelpKind, setOutputFormatHelpKind] =
+    useState<OutputFormatHelpKind | null>(null);
+  const [chatWidth, setChatWidth] = useState(defaultChatPanelWidth);
+  const [isChatPanelOpen, setIsChatPanelOpen] = useState(false);
+  const [isResizing, setIsResizing] = useState(false);
+  const [showDeletedNodeRestoreButton, setShowDeletedNodeRestoreButton] = useState(false);
+  const [activeWorkflowProtection, setActiveWorkflowProtection] = useState<'plain' | 'encrypted'>('plain');
+  const [activeStorybookProtection, setActiveStorybookProtection] = useState<'plain' | 'encrypted'>('plain');
+  const [flowInstance, setFlowInstance] = useState<ReactFlowInstance<WorkflowNode> | null>(null);
+  const flowInstanceRef = useRef<ReactFlowInstance<WorkflowNode> | null>(null);
+  const imageInputRef = useRef<HTMLInputElement | null>(null);
+  const characterDropdownRef = useRef<HTMLDivElement | null>(null);
+  const {
+    messages,
+    setMessages,
+    messagesRef,
+    turns,
+    setTurns,
+    turnsRef,
+    setTurnCheckpoints,
+    turnCheckpointsRef,
+    nextMessageIdRef,
+    activeTurnCollectorRef,
+    appendMessage,
+    updateMessage,
+    updateHistoryMessageTimes,
+    updatePhoneImageDescriptions,
+    removeMessage,
+    applyTurnRuntime,
+    applyTurnCheckpointRuntime,
+    removeTurnCheckpoint,
+    commitCollectedTurn,
+  } = useTurnRecordState({
+    nodesRef,
+    setNodes,
+    workflowVariablesRef: workflowSettingsValuesRef,
+    setWorkflowVariables: replaceWorkflowSettingsValues,
+  });
+  const {
+    turnTraces,
+    recordTurnTrace,
+    removeTurnTracesForTurn,
+    clearTurnTraces,
+  } = useTurnTraceState();
+  const notifySystemRef = useRef<(level: 'info' | 'warning' | 'error', message: string) => void>(() => {});
+  const { characterStorybookNodes } = useMemo(() => findChatEndpoints(nodeViewNodes), [nodeViewNodes]);
+  const storybooksByNodeId = useMemo(() => {
+    return new Map(
+      nodeViewNodes.flatMap((node) => {
+        if (node.data.kind !== undefined || node.data.nodeType !== 'rp-storybook-v1' || !node.data.storybookJson) {
+          return [];
+        }
+        try {
+          const storybook = parseRpStorybookJson(node.data.storybookJson);
+          return [[node.id, storybook] as const];
+        } catch {
+          return [];
+        }
+      }),
+    );
+  }, [nodeViewNodes]);
+  const {
+    chatPanelView,
+    selectChatPanelView,
+    selectedCharacterId,
+    setSelectedCharacterId,
+    selectedCharacter,
+    narratorSelected,
+    storyCharacters,
+    phoneCharacters,
+    characterColors,
+    viewedPhoneCharacter,
+    phoneGalleryImages,
+    selectChatCharacter,
+    rememberChatCharacter,
+    openPhoneConversation,
+    phoneContacts,
+    selectedPhoneContact,
+    openPhoneContact,
+    switchActivePlayer,
+    selectedPhoneConversation,
+    selectedPhoneDividerAfterId,
+    eventManagerAvailable,
+    upcomingEvents,
+    selectedEvent,
+    selectedEventId,
+    setSelectedEventId,
+    closeEvent,
+    cancelEvent,
+    highlightedEventIds,
+    unreadPhoneConversations,
+    unreadPhoneCount,
+    unreadPhoneSwitchName,
+    openUnreadPhoneConversation,
+    openEmbeddedPhoneMessage,
+    unreadEventCount,
+    unreadChatCount,
+    phoneAuthorBadgesEnabled,
+    changePhoneAuthorBadgesEnabled,
+    autoTurnDisabled,
+    autoTurnTitle,
+    switchPlayerDisabled,
+    switchPlayerTitle,
+    highlightedPhoneMessage,
+    phoneSeenByConversation,
+    setPhoneSeenByConversation,
+    phoneDividerAfterByConversation,
+    setPhoneDividerAfterByConversation,
+    openedPhoneConversationKey,
+    setOpenedPhoneConversationKey,
+    phoneReplyToMessage,
+    selectPhoneReply,
+    clearPhoneReply,
+    phoneDraft,
+    setPhoneDraft,
+    phoneDraftCommands,
+    setPhoneDraftCommands,
+    phoneImages,
+    setPhoneImages,
+    showPhoneEmojiPicker,
+    setShowPhoneEmojiPicker,
+    recentlyUsedEmojis,
+    setRecentlyUsedEmojis,
+    setRecentChatCharacterIds,
+    chatThreadRef,
+    phoneImageInputRef,
+    phoneEmojiPickerRef,
+    phoneThreadRef,
+    scrollPhoneThreadToBottom,
+    scrollChatThreadToBottomIfFollowing,
+    selectPhoneReplyFromComposer,
+    selectPhoneGalleryImageFromComposer,
+    selectPhoneEmoji,
+  } = useRoleplayPanelRuntime({
+    nodeViewNodes,
+    nodesRef,
+    messages,
+    turns,
+    storybooksByNodeId,
+    characterStorybookNodeCount: characterStorybookNodes.length,
+    imageUploadVisionEnabled,
+    englishProcessingEnabled,
+    smoothChatAutoScrollEnabled,
+    smoothChatAutoScrollMinSpeed,
+    isRunning,
+    commitNodes,
+    notifySystem: (level, message) => notifySystemRef.current(level, message),
+  });
+  const usedStorybookImageIds = useMemo(
+    () => storybookImageIdsUsedByMessages(messages),
+    [messages],
+  );
+  const {
+    contextualImageIds: contextualReferenceImageIds,
+    selectedImageIds: selectedReferenceImageIds,
+    nextTurnOptions: nextTurnReferenceImageOptions,
+    optionsForRun: referenceImageOptionsForRun,
+    toggleSelectedImage: toggleReferenceImage,
+    retainMessageImages: retainReplyReferenceImages,
+    clearSelectedImages: clearTemporaryReferenceImages,
+  } = useNextTurnReferenceImages({
+    messages,
+    nodes: nodeViewNodes,
+    options: referenceImageOptions,
+    replyToMessage: phoneReplyToMessage,
+  });
+  const pendingViewport = useRef<WorkflowFile['viewport']>(undefined);
+  const pendingFitView = useRef(false);
+  const uniqueId = () => crypto.randomUUID();
+  const {
+    systemLog,
+    systemLogCounts,
+    systemLogBadgeCount,
+    visibleLogEntry,
+    showSystemLog,
+    setShowSystemLog,
+    notifySystem,
+    clearSystemLog,
+    resetSystemLog,
+  } = useSystemLog();
+  useEffect(() => {
+    notifySystemRef.current = notifySystem;
+  }, [notifySystem]);
+  const replaceCurrentChatWithOpeningHistoryRef = useRef(false);
+  const {
+    updateRuntimeNode,
+    updateLlmNodeActive,
+    recordNodeLlmCall,
+    clearAllRunActiveTimers,
+  } = useRuntimeNodePatching({
+    nodesRef,
+    commitNodes,
+    setNodes,
+    activeRunRef,
+    activeRunLlmReportRef,
+    setRunLlmReport,
+    openingHistorySignature: storybookOpeningHistorySignature,
+    onStorybookOpeningHistoryChanged: syncOpeningHistoryFromNodes,
+    replaceCurrentChatWithOpeningHistoryRef,
+  });
+  const {
+    showConnections,
+    comfyPreview,
+    setComfyPreview,
+    editingConnection,
+    connectionDraftPending,
+    availableConnectionModels,
+    availableComfyModels,
+    comfyWorkflowInspection,
+    connectionStatus,
+    providerHealthById,
+    comfyProviderActionActive,
+    lmStudioModelActionActive,
+    ollamaModelActionActive,
+    editingConnectionCapabilities,
+    comfyWorkflowRepairStatus,
+    comfyWorkflowRepairReady,
+    comfyWorkflowRepairInspection,
+    modelCapabilitiesSourceLabel,
+    openConnectionManager,
+    closeConnectionManager,
+    selectConnection,
+    newConnection,
+    applyProviderPreset,
+    editConnection,
+    loadConnectionModels,
+    deleteConnection,
+    checkConnectionModels,
+    loadComfyModelLists,
+    connectionFromEditingConnection,
+    selectComfyWorkflow,
+    repairComfyWorkflow,
+    applyComfyWorkflowRepair,
+    generateComfyTestImage,
+    unloadComfyModels,
+    loadLmStudioModel,
+    unloadLmStudioModels,
+    loadOllamaModel,
+    unloadOllamaModels,
+    applyConnectionToAllNodes,
+    checkProviderConnectionById,
+    checkProviderConnections,
+    loadCharacterComfyLoras,
+    generateCharacterComfyPreview,
+    unloadCharacterComfyModels,
+    resolveConnection,
+  } = useProviderConnections({
+    connections,
+    setConnections,
+    defaultConnectionId,
+    setDefaultConnectionId,
+    settingsLoadComplete,
+    nodesRef,
+    setNodes,
+    notifySystem,
+  });
+  const {
+    showFiles,
+    setShowFiles,
+    savedFiles,
+    selectedFile,
+    setSelectedFile,
+    workflowNameDraft,
+    setWorkflowNameDraft,
+    storybookNameDraft,
+    setStorybookNameDraft,
+    fileStorageStatus,
+    setFileStorageStatus,
+    workflowOverwritePending,
+    setWorkflowOverwritePending,
+    activeSessionFileName,
+    setActiveSessionFileName,
+    activeSessionSavedTurn,
+    setActiveSessionSavedTurn,
+    activeSessionPathRef,
+    activeSessionProtection,
+    setActiveSessionProtection,
+    activeSessionPasswordRef,
+    sessionName,
+    setSessionName,
+    sessionPassword,
+    setSessionPassword,
+    sessionPasswordAction,
+    setSessionPasswordAction,
+    fileProtection,
+    setFileProtection,
+    workflowSaveScope,
+    setWorkflowSaveScope,
+    sessionOverwritePending,
+    setSessionOverwritePending,
+    chooseSaveLocation,
+    setChooseSaveLocation,
+    returnToFilesAfterSaveRef,
+    pendingSessionFilePath,
+    setPendingSessionFilePath,
+    setPendingStorybookLoad,
+    activeWorkflowPath,
+    activeWorkflowFileName,
+    activeWorkflowResetSnapshotRef,
+    activateWorkflowPath,
+    refreshFiles,
+    openFiles,
+    saveNamedWorkflow,
+    requestExportWorkflow,
+    requestSaveStorybook,
+    openStoredFile,
+    deleteStoredFile,
+    requestSaveSession,
+    requestOpenFile,
+    saveSession,
+    saveStorybook,
+    unlockStorybookFile,
+    unlockOpenFilePath,
+    unlockStoredFile,
+    saveCurrentSession,
+    loadStartupWorkflow,
+    restoreDefaultWorkflow,
+    resetWorkflow,
+    saveCurrentWorkflow,
+  } = useRpgraphFiles({
+    currentWorkflowForSave,
+    currentSession,
+    currentStorybookForSave,
+    latestSessionTurnNumber,
+    suggestedWorkflowName,
+    suggestedSessionName,
+    applyLoadedRpgraphFile,
+    applyLoadedWorkflow,
+    applyStorybookToNode: (...args) => applyStorybookToNode(...args),
+    updateRuntimeNode,
+    notifySystem,
+    errorMessage,
+    workflowFileMissing,
+    setActiveWorkflowProtection,
+    setActiveStorybookProtection,
+    clearWorkspaceForLockedStartup,
+  });
+  const nodeLlm = useNodeLlmApi({
+    resolveConnection,
+    recordCall: recordNodeLlmCall,
+  });
+  const {
+    storybookCreatorNodeId,
+    setStorybookCreatorNodeId,
+    storybookCreatorMessages,
+    storybookCreatorSubmitting,
+    openStorybookCreator,
+    submitStorybookCreatorMessage,
+    updateStorybook,
+    applyStorybookToNode,
+    importCurrentChatAsOpeningHistory,
+    clearStorybookOpeningHistory,
+    resetStorybook,
+    importSillyTavernCharacter,
+    loadStorybookFile,
+  } = useStorybookActions({
+    nodesRef,
+    turnsRef,
+    turnCheckpointsRef,
+    replaceCurrentChatWithOpeningHistoryRef,
+    nodeLlm,
+    updateRuntimeNode,
+    errorMessage,
+    refreshFiles,
+    setPendingStorybookLoad,
+    setPendingSessionFilePath,
+    setSessionPassword,
+    setFileStorageStatus,
+    setSessionPasswordAction,
+    setActiveStorybookProtection,
+    notifySystem,
+    usedStorybookImageIds,
+  });
+  async function describeStorybookCharacterImage(
+    node: WorkflowNode,
+    characterContext: string,
+    image: RpStorybookCharacterImage,
+    descriptionPrompt: string,
+  ) {
+    if (node.data.nodeType !== 'rp-storybook-v1') {
+      throw new Error('Storybook image descriptions require an RP Storybook node.');
+    }
+    const prompt = [
+      descriptionPrompt.trim() || defaultRpStorybookImageDescriptionPrompt,
+      '',
+      'Character context:',
+      characterContext.trim() || 'Name: selected character',
+    ].join('\n');
+    const visionEnabled = await nodeLlm.supportsVision(
+      node.data.connectionId,
+      'Storybook image description',
+    );
+    if (!visionEnabled) {
+      throw new Error('Storybook image descriptions require a provider with Activate vision features enabled.');
+    }
+    const completion = await nodeLlm.complete({
+      connectionId: node.data.connectionId,
+      nodeId: node.id,
+      label: 'Storybook Image Description',
+      prompt,
+      images: [image],
+      maxTokens: 120,
+      temperature: 0.2,
+    });
+    return completion.text.trim().replace(/^["']|["']$/g, '');
+  }
+  const {
+    addDraftImages,
+    addPhoneImages,
+    selectDraftImages,
+    selectPhoneImages,
+  } = useImageAttachments({
+    createId: () => `image-${uniqueId()}`,
+    setDraftImages,
+    setPhoneImages,
+    draftImageInputRef: imageInputRef,
+    phoneImageInputRef,
+    onError: (error) => notifySystem('error', error instanceof Error ? error.message : String(error)),
+  });
+  const copiedSelection = useRef<CopiedGraphSelection | null>(null);
+  const deletedNodeRestoreStack = useRef<DeletedGraphRestoreAction[]>([]);
+  const pasteCount = useRef(0);
+  const chatWidthRef = useRef(chatWidth);
+  const edgesRef = useRef(edges);
+  const commitEdges = useCallback((nextEdges: Edge[]) => {
+    edgesRef.current = nextEdges;
+    setEdges(nextEdges);
+  }, [setEdges]);
+  useEffect(() => {
+    edgesRef.current = edges;
+  }, [edges]);
+  const nodeTypes = useMemo(() => ({ workflow: WorkflowNodeRenderer }), []);
+  const edgeTypes = useMemo<EdgeTypes>(() => ({ [workflowEdgeType]: WorkflowEdge }), []);
+  const openingSituation = useMemo(
+    () => storybookOpeningSituation(nodeViewNodes),
+    [nodeViewNodes],
+  );
+  const {
+    groupedNodePaletteItems,
+    nodeMenu,
+    setNodeMenu,
+    favoriteNodeTypeSet,
+    favoriteNodeItems,
+    splitWireLink,
+    connectNodes,
+    reconnectNodes,
+    startReconnect,
+    finishReconnect,
+    openNodeMenu,
+    nodeTypeUnavailable,
+    addNode,
+    toggleFavoriteNodeType,
+    startNodeDrag,
+    allowNodeDrop,
+    dropNode,
+  } = useNodePalette({
+    nodes,
+    nodesRef,
+    edgesRef,
+    setNodes,
+    setEdges,
+    flowInstance,
+    defaultConnectionId,
+    messages,
+    rpDateTimeFormat,
+    rpWeekdayLanguage,
+    settingsValueDefinitions,
+    createId: uniqueId,
+    notifySystem,
+  });
+
+  useEffect(() => {
+    chatWidthRef.current = chatWidth;
+  }, [chatWidth]);
+
+  useEffect(() => {
+    if (assistantConnectionId) {
+      window.localStorage.setItem(assistantConnectionStorageKey, assistantConnectionId);
+    } else {
+      window.localStorage.removeItem(assistantConnectionStorageKey);
+    }
+  }, [assistantConnectionId]);
+
+  useEffect(() => {
+    function primeSounds() {
+      primePhoneMessageSounds();
+    }
+    window.addEventListener('pointerdown', primeSounds, { once: true });
+    window.addEventListener('keydown', primeSounds, { once: true });
+    return () => {
+      window.removeEventListener('pointerdown', primeSounds);
+      window.removeEventListener('keydown', primeSounds);
+    };
+  }, []);
+
+  useEffect(() => {
+    if (!showPhoneEmojiPicker) {
+      return;
+    }
+    const closePhoneEmojiPicker = (event: PointerEvent) => {
+      if (
+        event.target instanceof Node &&
+        !phoneEmojiPickerRef.current?.contains(event.target)
+      ) {
+        setShowPhoneEmojiPicker(false);
+      }
+    };
+    document.addEventListener('pointerdown', closePhoneEmojiPicker);
+    return () => document.removeEventListener('pointerdown', closePhoneEmojiPicker);
+  }, [phoneEmojiPickerRef, setShowPhoneEmojiPicker, showPhoneEmojiPicker]);
+
+  useEffect(() => {
+    if (!characterDropdownOpen) {
+      return;
+    }
+    const closeCharacterDropdown = (event: PointerEvent) => {
+      if (
+        event.target instanceof Node &&
+        !characterDropdownRef.current?.contains(event.target)
+      ) {
+        setCharacterDropdownOpen(false);
+      }
+    };
+    document.addEventListener('pointerdown', closeCharacterDropdown);
+    return () => document.removeEventListener('pointerdown', closeCharacterDropdown);
+  }, [characterDropdownOpen]);
+
+  useEffect(() => {
+    let active = true;
+    queueMicrotask(() => {
+      if (!active) {
+        return;
+      }
+      const fallbackLlmConnection = connections.find(isLlmConnection) ?? defaultConnection;
+      if (!connections.some((connection) => connection.id === defaultConnectionId && isLlmConnection(connection))) {
+        setDefaultConnectionId(fallbackLlmConnection.id);
+      }
+      if (settingsLoadComplete) {
+        setAssistantConnectionId((current) =>
+          current && connections.some((connection) => connection.id === current && isLlmConnection(connection))
+            ? current
+            : undefined,
+        );
+      }
+      setNodes((currentNodes) =>
+        currentNodes.map((node) =>
+          (node.data.nodeType === 'llm-prompt' ||
+            node.data.nodeType === 'llm-prompt-switch' ||
+            node.data.nodeType === 'input' ||
+            node.data.nodeType === 'history' ||
+            node.data.nodeType === 'output' ||
+            node.data.nodeType === 'rp-storybook-v1' ||
+            node.data.nodeType === 'character-stats' ||
+            node.data.nodeType === 'context-compression') &&
+          !connections.some((connection) => connection.id === node.data.connectionId && isLlmConnection(connection))
+            ? {
+                ...node,
+                data: {
+                  ...node.data,
+                  connectionId: fallbackLlmConnection.id,
+                } as WorkflowNodeData,
+              }
+            : node,
+        ),
+      );
+    });
+    return () => {
+      active = false;
+    };
+  }, [connections, defaultConnectionId, settingsLoadComplete, setDefaultConnectionId, setNodes]);
+
+  useEffect(() => {
+    setMessages((currentMessages) => {
+      const hasStartedConversation = currentMessages.some(
+        (message) => !message.isOpening && message.role !== 'error' && message.channel !== 'phone',
+      );
+      if (hasStartedConversation) {
+        messagesRef.current = currentMessages;
+        return currentMessages;
+      }
+
+      const existingOpening = currentMessages.find((message) =>
+        message.isOpening &&
+        message.speakerName === 'Opening' &&
+        !message.turnId
+      );
+      if (!openingSituation) {
+        const nextMessages = existingOpening
+          ? currentMessages.filter((message) => message.id !== existingOpening.id)
+          : currentMessages;
+        messagesRef.current = nextMessages;
+        return nextMessages;
+      }
+
+      if (existingOpening) {
+        if (existingOpening.originalText === openingSituation) {
+          messagesRef.current = currentMessages;
+          return currentMessages;
+        }
+        const nextMessages = currentMessages.map((message) =>
+          message.id === existingOpening.id ? { ...message, originalText: openingSituation } : message,
+        );
+        messagesRef.current = nextMessages;
+        return nextMessages;
+      }
+
+      const id = nextMessageIdRef.current;
+      nextMessageIdRef.current += 1;
+      const openingMessage: MessageRecord = {
+        id,
+        role: 'output',
+        originalText: openingSituation,
+        includeInHistory: true,
+        isOpening: true,
+        speakerName: 'Opening',
+        speakerNames: ['Opening'],
+      };
+      const nextMessages = [
+        openingMessage,
+        ...currentMessages,
+      ];
+      messagesRef.current = nextMessages;
+      return nextMessages;
+    });
+  }, [messagesRef, nextMessageIdRef, openingSituation, setMessages]);
+
+  useEffect(() => {
+    setNodes((currentNodes) =>
+      currentNodes.map((node) =>
+        node.data.displayTokenBytesPerToken === activeTokenEstimateBytesPerToken
+          ? node
+          : {
+              ...node,
+              data: {
+                ...node.data,
+                displayTokenBytesPerToken: activeTokenEstimateBytesPerToken,
+              },
+            },
+      ),
+    );
+  }, [activeTokenEstimateBytesPerToken, setNodes]);
+
+  useEffect(() => {
+    const rawHistory = JSON.stringify(messages, null, 2);
+    const originalHistory = formatChatHistory(
+      messages,
+      false,
+      rpDateTimeFormat,
+      rpWeekdayLanguage,
+    );
+    const translatedHistory = formatChatHistory(
+      messages,
+      true,
+      rpDateTimeFormat,
+      rpWeekdayLanguage,
+    );
+    const latestHistoryMessage = [...messages].reverse().find(
+      (message) =>
+        message.includeInHistory !== false &&
+        (message.role === 'user' || message.role === 'output'),
+    );
+    const latestTurnHasVisibleInput =
+      !!latestHistoryMessage?.turnId &&
+      messages.some(
+        (message) =>
+          message.turnId === latestHistoryMessage.turnId &&
+          message.turnPart === 'input' &&
+          message.role === 'user' &&
+          message.includeInHistory !== false,
+      );
+    const lastUserMessage =
+      latestHistoryMessage?.role === 'output' &&
+      latestHistoryMessage.turnId &&
+      !latestTurnHasVisibleInput
+        ? undefined
+        : lastMessage(messages, 'user');
+    const lastRpOutputMessage = lastMessage(messages, 'output');
+    setNodes((currentNodes) =>
+      currentNodes.map((node) =>
+        node.data.nodeType === 'history'
+          ? {
+              ...node,
+              data: {
+                ...node.data,
+                preview: originalHistory ? 'Conversation available' : 'No conversation yet',
+                rawHistory,
+                originalHistory,
+                translatedHistory,
+              },
+            }
+          : node.data.nodeType === 'last-user-input'
+            ? {
+                ...node,
+                data: {
+                  ...node.data,
+                  preview: lastUserMessage ? 'Last user input available' : 'No user input yet',
+                  fullText: lastMessageNodeText(
+                    lastUserMessage,
+                    node.data.includeRpDateTime,
+                    rpDateTimeFormat,
+                    rpWeekdayLanguage,
+                  ),
+                },
+              }
+          : node.data.nodeType === 'last-rp-output'
+            ? {
+                ...node,
+                data: {
+                  ...node.data,
+                  preview: lastRpOutputMessage ? 'Last RP output available' : 'No RP output yet',
+                  fullText: lastMessageNodeText(
+                    lastRpOutputMessage,
+                    node.data.includeRpDateTime,
+                    rpDateTimeFormat,
+                    rpWeekdayLanguage,
+                  ),
+                },
+              }
+          : node,
+      ),
+    );
+  }, [messages, rpDateTimeFormat, rpWeekdayLanguage, setNodes]);
+
+  useEffect(() => {
+    if (settingsLoadComplete) {
+      const maximum = Math.max(minChatPanelWidth, window.innerWidth - minGraphPanelWidth);
+      queueMicrotask(() => {
+        setChatWidth(Math.min(maximum, Math.max(minChatPanelWidth, storedChatPanelWidth)));
+      });
+    }
+  }, [settingsLoadComplete, storedChatPanelWidth]);
+
+  useEffect(() => {
+    if (!isResizing) {
+      return;
+    }
+
+    function resize(event: PointerEvent) {
+      const maximum = Math.max(minChatPanelWidth, window.innerWidth - minGraphPanelWidth);
+      const width = Math.min(maximum, Math.max(minChatPanelWidth, window.innerWidth - event.clientX));
+      chatWidthRef.current = width;
+      setChatWidth(width);
+    }
+
+    function stopResize() {
+      setIsResizing(false);
+      setStoredChatPanelWidth(chatWidthRef.current);
+    }
+
+    document.body.classList.add('resizing-panels');
+    window.addEventListener('pointermove', resize);
+    window.addEventListener('pointerup', stopResize);
+
+    return () => {
+      document.body.classList.remove('resizing-panels');
+      window.removeEventListener('pointermove', resize);
+      window.removeEventListener('pointerup', stopResize);
+    };
+  }, [isResizing, setStoredChatPanelWidth]);
+
+  useEffect(() => {
+    if (!previewImage) {
+      return;
+    }
+    function closePreview(event: KeyboardEvent) {
+      if (event.key === 'Escape') {
+        setPreviewImage(null);
+      }
+    }
+    window.addEventListener('keydown', closePreview);
+    return () => window.removeEventListener('keydown', closePreview);
+  }, [previewImage]);
+
+  function persistentDeletedNodeData(data: WorkflowNodeData) {
+    try {
+      return persistentNodeData(data);
+    } catch {
+      return structuredClone(data);
+    }
+  }
+
+  function updateDeletedNodeRestoreButton() {
+    setShowDeletedNodeRestoreButton(deletedNodeRestoreStack.current.length > 0);
+  }
+
+  function rememberDeletedNodes(deletedNodes: WorkflowNode[]) {
+    if (deletedNodes.length === 0) {
+      return;
+    }
+
+    const deletedNodeIds = new Set(deletedNodes.map((node) => node.id));
+    const connectedEdges = edgesRef.current.filter(
+      (edge) => deletedNodeIds.has(edge.source) || deletedNodeIds.has(edge.target),
+    );
+    deletedNodeRestoreStack.current.push(
+      {
+        nodes: deletedNodes.map((node) => {
+          const storedNode = structuredClone(node);
+          return {
+            ...storedNode,
+            selected: true,
+            dragging: false,
+            data: persistentDeletedNodeData(node.data),
+          };
+        }),
+        edges: connectedEdges.map((edge) => ({
+          ...structuredClone(edge),
+          selected: false,
+        })),
+      },
+    );
+    if (deletedNodeRestoreStack.current.length > maxDeletedNodeRestoreActions) {
+      deletedNodeRestoreStack.current.shift();
+    }
+    updateDeletedNodeRestoreButton();
+  }
+
+  function edgeTargetPortIsFree(edgesToCheck: Edge[], edge: Edge) {
+    return !edgesToCheck.some(
+      (candidate) =>
+        candidate.id !== edge.id &&
+        candidate.target === edge.target &&
+        (candidate.targetHandle ?? null) === (edge.targetHandle ?? null),
+    );
+  }
+
+  function restorableDeletedEdges(
+    deletedEdges: Edge[],
+    restoredNodes: WorkflowNode[],
+    currentEdges: Edge[],
+  ) {
+    const nextNodes = [...nodesRef.current, ...restoredNodes];
+    const existingNodeIds = new Set(nextNodes.map((node) => node.id));
+    const nextEdges = currentEdges.map((edge) => ({ ...edge, selected: false }));
+    const existingEdgeIds = new Set(nextEdges.map((edge) => edge.id));
+    const restoredEdges: Edge[] = [];
+
+    for (const edge of deletedEdges) {
+      if (
+        existingEdgeIds.has(edge.id) ||
+        !existingNodeIds.has(edge.source) ||
+        !existingNodeIds.has(edge.target) ||
+        !edgeTargetPortIsFree(nextEdges, edge)
+      ) {
+        continue;
+      }
+
+      const connection: Connection = {
+        source: edge.source,
+        sourceHandle: edge.sourceHandle ?? null,
+        target: edge.target,
+        targetHandle: edge.targetHandle ?? null,
+      };
+      const compatibility = validatePortConnection(
+        nextNodes,
+        nextEdges,
+        connection,
+        undefined,
+        settingsValueDefinitionsRef.current,
+      );
+      if (!compatibility.ok) {
+        continue;
+      }
+
+      const restoredEdge = { ...structuredClone(edge), selected: false };
+      restoredEdges.push(restoredEdge);
+      nextEdges.push(restoredEdge);
+      existingEdgeIds.add(restoredEdge.id);
+    }
+
+    return restoredEdges;
+  }
+
+  function restoreLastDeletedNodes() {
+    while (deletedNodeRestoreStack.current.length > 0) {
+      const deletedAction = deletedNodeRestoreStack.current.pop();
+      if (!deletedAction) {
+        continue;
+      }
+      const existingNodeIds = new Set(nodesRef.current.map((node) => node.id));
+      const existingSingletonTypes = new Set(
+        nodesRef.current
+          .filter((node) => node.data.kind === undefined && getRegisteredCoreNode(node.data.nodeType)?.singleton)
+          .map((node) => node.data.nodeType),
+      );
+      const restoredNodes = deletedAction.nodes.filter((node) => {
+        if (existingNodeIds.has(node.id)) {
+          return false;
+        }
+        return !getRegisteredCoreNode(node.data.nodeType)?.singleton ||
+          !existingSingletonTypes.has(node.data.nodeType);
+      });
+
+      if (restoredNodes.length === 0) {
+        continue;
+      }
+
+      const restoredEdges = restorableDeletedEdges(
+        deletedAction.edges,
+        restoredNodes,
+        edgesRef.current,
+      );
+      const nextNodes = [
+        ...nodesRef.current.map((node) => ({ ...node, selected: false })),
+        ...restoredNodes.map((node) => ({
+          ...structuredClone(node),
+          selected: true,
+          dragging: false,
+        })),
+      ];
+      commitNodes(nextNodes);
+      if (restoredEdges.length > 0) {
+        const nextEdges = [
+          ...edgesRef.current.map((edge) => ({ ...edge, selected: false })),
+          ...restoredEdges,
+        ];
+        commitEdges(nextEdges);
+      }
+      setNodeMenu(null);
+      updateDeletedNodeRestoreButton();
+      return true;
+    }
+
+    updateDeletedNodeRestoreButton();
+    return false;
+  }
+  const restoreLastDeletedNodesRef = useRef(restoreLastDeletedNodes);
+
+  useEffect(() => {
+    restoreLastDeletedNodesRef.current = restoreLastDeletedNodes;
+  });
+
+  useEffect(() => {
+    function onGraphKeyboardShortcut(event: KeyboardEvent) {
+      if (
+        (!event.ctrlKey && !event.metaKey) ||
+        event.altKey ||
+        isEditableKeyboardTarget(event.target)
+      ) {
+        return;
+      }
+
+      const key = event.key.toLocaleLowerCase();
+      if (key === 'z' && !event.shiftKey && !document.querySelector('[role="dialog"], .dialog-backdrop')) {
+        if (restoreLastDeletedNodesRef.current()) {
+          event.preventDefault();
+        }
+        return;
+      }
+
+      if (key === 'c') {
+        if (window.getSelection()?.toString()) {
+          return;
+        }
+        const selectedNodes = nodesRef.current.filter((node) => node.selected);
+        if (selectedNodes.length === 0) {
+          return;
+        }
+
+        const selectedIds = new Set(selectedNodes.map((node) => node.id));
+        copiedSelection.current = {
+          nodes: selectedNodes.map((node) => ({
+            ...node,
+            selected: false,
+            data: structuredClone(persistentNodeData(node.data)),
+          })),
+          edges: edgesRef.current
+            .filter((edge) => selectedIds.has(edge.source) && selectedIds.has(edge.target))
+            .map((edge) => ({ ...edge, selected: false })),
+        };
+        pasteCount.current = 0;
+        event.preventDefault();
+        return;
+      }
+
+      if (key !== 'v' || !copiedSelection.current) {
+        return;
+      }
+
+      const copied = copiedSelection.current;
+      const existingSingletons = new Set(
+        nodesRef.current
+          .filter((node) => getRegisteredCoreNode(node.data.nodeType)?.singleton)
+          .map((node) => node.data.nodeType),
+      );
+      const pasteableNodes = copied.nodes.filter(
+        (node) =>
+          !getRegisteredCoreNode(node.data.nodeType)?.singleton ||
+          !existingSingletons.has(node.data.nodeType),
+      );
+      if (pasteableNodes.length === 0) {
+        event.preventDefault();
+        return;
+      }
+
+      pasteCount.current += 1;
+      const offset = pastePositionOffset * pasteCount.current;
+      const idMap = new Map(
+        pasteableNodes.map((node) => [
+          node.id,
+          `${node.data.nodeType}-copy-${uniqueId()}`,
+        ]),
+      );
+      const pastedNodes = pasteableNodes.map((node) => {
+        const data = node.data.kind === 'incompatible-core-node'
+          ? structuredClone(node.data)
+          : structuredClone(persistentNodeData(node.data));
+        return {
+          ...node,
+          id: idMap.get(node.id)!,
+          position: { x: node.position.x + offset, y: node.position.y + offset },
+          selected: true,
+          data,
+        };
+      });
+      const pastedEdges = copied.edges.flatMap((edge) => {
+        const source = idMap.get(edge.source);
+        const target = idMap.get(edge.target);
+        return source && target
+          ? [{
+              ...edge,
+              id: `copied-edge-${uniqueId()}`,
+              source,
+              target,
+              selected: false,
+            }]
+          : [];
+      });
+
+      setNodes((currentNodes) => [
+        ...currentNodes.map((node) => ({ ...node, selected: false })),
+        ...pastedNodes,
+      ]);
+      setEdges((currentEdges) => [
+        ...currentEdges.map((edge) => ({ ...edge, selected: false })),
+        ...pastedEdges,
+      ]);
+      event.preventDefault();
+    }
+
+    window.addEventListener('keydown', onGraphKeyboardShortcut);
+    return () => window.removeEventListener('keydown', onGraphKeyboardShortcut);
+  }, [setEdges, setNodes]);
+
+  useEffect(() => {
+    function handleF1Key(event: KeyboardEvent) {
+      if (
+        event.key === 'F1' &&
+        !event.defaultPrevented &&
+        !isEditableKeyboardTarget(event.target) &&
+        !document.querySelector('[role="dialog"], .dialog-backdrop')
+      ) {
+        const selected = nodesRef.current.find((n) => n.selected);
+        if (selected) {
+          event.preventDefault();
+          setNodeAssistantNodeId(selected.id);
+        } else {
+          event.preventDefault();
+          setWorkflowAssistantOpen(true);
+        }
+      }
+    }
+    window.addEventListener('keydown', handleF1Key);
+    return () => window.removeEventListener('keydown', handleF1Key);
+  }, []);
+
+  useEffect(() => {
+    if (!settingsLoadComplete) {
+      return;
+    }
+    void loadStartupWorkflow();
+    // The last local workflow is loaded once settings are ready at app startup.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [settingsLoadComplete]);
+
+  function changeTokenEstimateBytesPerToken(value: number) {
+    setTokenEstimateBytesPerToken(validEstimatedTokenBytesPerToken(value));
+    setCalibratedTokenBytesPerToken(undefined);
+  }
+
+  function changeAutoCalibrateTokenEstimate(enabled: boolean) {
+    setAutoCalibrateTokenEstimate(enabled);
+    setCalibratedTokenBytesPerToken(undefined);
+  }
+
+  function changeWorkflowSettingsValue(optionKey: string, value: string) {
+    setWorkflowSettingsValues((currentValues) => ({
+      ...currentValues,
+      [optionKey]: value,
+    }));
+    workflowSettingsValuesRef.current = {
+      ...workflowSettingsValuesRef.current,
+      [optionKey]: value,
+    };
+  }
+
+  function setWorkflowVariablesFromCommands(commands: WorkflowVariableSetCommand[]) {
+    const nextValues = { ...workflowSettingsValuesRef.current };
+    const definitions = settingsValueDefinitionsRef.current;
+    commands.forEach((command) => {
+      const name = command.name.trim();
+      if (!name) {
+        return;
+      }
+      const normalizedName = name.toLocaleLowerCase();
+      const definition = definitions.find(
+        (entry) =>
+          entry.key.toLocaleLowerCase() === normalizedName ||
+          entry.label.toLocaleLowerCase() === normalizedName,
+      );
+      const existingCustomKey = Object.keys(nextValues).find(
+        (key) => key.toLocaleLowerCase() === normalizedName,
+      );
+      nextValues[definition?.key ?? existingCustomKey ?? name] = command.value;
+    });
+    replaceWorkflowSettingsValues(nextValues);
+  }
+
+  function addWorkflowSettingsValue() {
+    setWorkflowSettingsValues((currentValues) => {
+      let index = 1;
+      let key = `custom-variable-${index}`;
+      while (currentValues[key] !== undefined) {
+        index += 1;
+        key = `custom-variable-${index}`;
+      }
+      const nextValues = { ...currentValues, [key]: '' };
+      workflowSettingsValuesRef.current = nextValues;
+      return nextValues;
+    });
+  }
+
+  function renameWorkflowSettingsValue(optionKey: string, label: string) {
+    const normalizedLabel = label.trim();
+    if (!normalizedLabel || optionKey === contextLengthMaxOptionKey) {
+      return;
+    }
+    const definition = settingsValueDefinitions.find((entry) => entry.key === optionKey);
+    const duplicateDefinition = settingsValueDefinitions.some((entry) =>
+      entry.key !== optionKey &&
+      (entry.key.toLocaleLowerCase() === normalizedLabel.toLocaleLowerCase() ||
+        entry.label.toLocaleLowerCase() === normalizedLabel.toLocaleLowerCase()),
+    );
+    if (duplicateDefinition) {
+      return;
+    }
+    if (!definition?.builtIn && optionKey !== normalizedLabel) {
+      setWorkflowSettingsValues((currentValues) => {
+        if (currentValues[normalizedLabel] !== undefined) {
+          return currentValues;
+        }
+        const nextValues = { ...currentValues, [normalizedLabel]: currentValues[optionKey] ?? '' };
+        delete nextValues[optionKey];
+        workflowSettingsValuesRef.current = nextValues;
+        return nextValues;
+      });
+    }
+    setNodes((currentNodes) =>
+      currentNodes.map((node) =>
+        node.data.nodeType === 'settings-value'
+          ? {
+              ...node,
+              data: {
+                ...node.data,
+                settingsValueEntries: settingsValueEntries(node.data).map((entry) =>
+                  entry.optionKey === optionKey
+                    ? {
+                        ...entry,
+                        optionKey: definition?.builtIn ? entry.optionKey : normalizedLabel,
+                        label: normalizedLabel,
+                      }
+                    : entry,
+                ),
+              },
+            }
+          : node,
+      ),
+    );
+  }
+
+  function removeWorkflowSettingsValue(optionKey: string) {
+    const definition = settingsValueDefinitions.find((entry) => entry.key === optionKey);
+    if (definition?.builtIn || definition?.used) {
+      return;
+    }
+    setWorkflowSettingsValues((currentValues) => {
+      const nextValues = { ...currentValues };
+      delete nextValues[optionKey];
+      workflowSettingsValuesRef.current = nextValues;
+      return nextValues;
+    });
+  }
+
+  function changeEnglishProcessing(enabled: boolean) {
+    setEnglishProcessingEnabled(enabled);
+    if (enabled) {
+      setInputTranslationOnlyEnabled(false);
+    }
+  }
+
+  function changeInputTranslationOnly(enabled: boolean) {
+    setInputTranslationOnlyEnabled(enabled);
+    if (enabled) {
+      setEnglishProcessingEnabled(false);
+    }
+  }
+
+  function syncOpeningHistoryFromNodes(nextNodes: WorkflowNode[]) {
+    const currentMessages = messagesRef.current;
+    const currentTurns = turnsRef.current;
+    const replaceCurrentChat = replaceCurrentChatWithOpeningHistoryRef.current;
+    replaceCurrentChatWithOpeningHistoryRef.current = false;
+    const preservedOpeningSituationMessages = currentMessages.filter(
+      (message) => message.isOpening && !message.turnId && message.speakerName === 'Opening',
+    );
+    const currentOpeningMessageIds = new Set(
+      currentTurns
+        .filter((turn) => turn.openingHistory)
+        .flatMap((turn) => [...turn.input.messages, ...turn.output.messages])
+        .map((message) => message.id),
+    );
+    const nonOpeningMessages = replaceCurrentChat
+      ? []
+      : currentMessages.filter(
+          (message) => !message.isOpening && !currentOpeningMessageIds.has(message.id),
+        );
+    const highestPreservedMessageId = [...preservedOpeningSituationMessages, ...nonOpeningMessages].reduce(
+      (highest, message) => Math.max(highest, message.id),
+      0,
+    );
+    const { remappedTurns, nextId } = remapOpeningTurnMessageIds(
+      openingHistoryTurnsFromNodes(nextNodes),
+      highestPreservedMessageId + 1,
+    );
+    const openingMessages = flattenTurnMessages(remappedTurns);
+    const nextMessages = [
+      ...preservedOpeningSituationMessages,
+      ...openingMessages,
+      ...nonOpeningMessages,
+    ];
+    const nextTurns = [
+      ...remappedTurns,
+      ...(replaceCurrentChat ? [] : currentTurns.filter((turn) => !turn.openingHistory)),
+    ];
+    const openingCheckpoints = openingHistoryCheckpointsFromNodes(nextNodes);
+    const currentOpeningTurnIds = new Set(
+      currentTurns.filter((turn) => turn.openingHistory).map((turn) => turn.id),
+    );
+    const nextTurnCheckpoints = [
+      ...openingCheckpoints,
+      ...(replaceCurrentChat
+        ? []
+        : turnCheckpointsRef.current.filter(
+            (checkpoint) => !currentOpeningTurnIds.has(checkpoint.turnId),
+          )),
+    ];
+
+    messagesRef.current = nextMessages;
+    turnsRef.current = nextTurns;
+    turnCheckpointsRef.current = nextTurnCheckpoints;
+    nextMessageIdRef.current = Math.max(
+      nextId,
+      nextMessages.reduce((highest, message) => Math.max(highest, message.id), 0) + 1,
+    );
+    setMessages(nextMessages);
+    setTurns(nextTurns);
+    setTurnCheckpoints(nextTurnCheckpoints);
+    setPhoneSeenByConversation((current) =>
+      mergePhoneSeenStates(current, phoneSeenStateForLoadedMessages(openingMessages))
+    );
+
+    const openingEvents = openingHistoryEventsFromNodes(nextNodes);
+    if (openingEvents.length > 0) {
+      const nodesWithOpeningEvents = nextNodes.map((node) =>
+        node.data.kind === undefined && node.data.nodeType === 'event-manager'
+          ? {
+              ...node,
+              data: {
+                ...node.data,
+                eventAppointments: normalizedEventAppointments(openingEvents),
+                eventStatus: `Loaded ${openingEvents.length} opening history events`,
+              } as WorkflowNodeData,
+            }
+          : node,
+      );
+      commitNodes(nodesWithOpeningEvents);
+    }
+  }
+
+  function storybookOpeningHistorySignature(storybookJson?: string) {
+    if (!storybookJson) {
+      return '';
+    }
+    try {
+      return JSON.stringify(parseRpStorybookJson(storybookJson).openingHistory);
+    } catch {
+      return '';
+    }
+  }
+
+  function currentSessionState(name: string): SessionV2CurrentStateInput {
+    const openingMessages = messages.filter((message) => message.isOpening);
+    return {
+      name,
+      settings: {
+        englishProcessingEnabled,
+        inputTranslationOnlyEnabled,
+        displayLanguage,
+      },
+      workflowVariables: workflowSettingsValuesRef.current,
+      turns: turnsRef.current,
+      turnCheckpoints: turnCheckpointsRef.current,
+      openingMessages,
+      phoneSeenByConversation,
+      phoneDividerAfterByConversation,
+      recentlyUsedEmojis,
+    };
+  }
+
+  async function currentSession(name: string): Promise<RpgraphSessionV2> {
+    const savedAt = new Date().toISOString();
+    return sessionV2FromCurrentState(
+      currentSessionState(name),
+      await currentWorkflowForSave(),
+      nodesRef.current,
+      savedAt,
+    );
+  }
+
+  function latestSessionTurnNumber(session: RpgraphSessionV2) {
+    return latestSessionV2TurnNumber(session);
+  }
+
+  function suggestedSessionName() {
+    return suggestedSessionNameFromCharacters(storyCharactersFromNodes(nodesRef.current));
+  }
+
+  function suggestedWorkflowName() {
+    return suggestedWorkflowNameFromPath(activeWorkflowPath);
+  }
+
+  function currentStorybookForSave() {
+    const storybookNode =
+      nodesRef.current.find((node) => node.id === storybookCreatorNodeId && node.data.nodeType === 'rp-storybook-v1') ??
+      nodesRef.current.find((node) => node.data.nodeType === 'rp-storybook-v1');
+    if (!storybookNode || storybookNode.data.nodeType !== 'rp-storybook-v1') {
+      throw new Error('Add an RP Storybook V1 node before saving a storybook file.');
+    }
+    const storybook = storybookNode.data.storybookJson
+      ? parseRpStorybookJson(storybookNode.data.storybookJson)
+      : emptyRpStorybookV1;
+    return {
+      storybook,
+      name: storybookNode.data.storybookFileName
+        ? storybookNode.data.storybookFileName.replace(/(\.rpgraph-storybook)?\.json$/i, '')
+        : storybook.title || 'storybook',
+      nodeId: storybookNode.id,
+    };
+  }
+
+  function clearCurrentSession() {
+    clearTemporaryReferenceImages();
+    clearTurnTraces();
+    messagesRef.current = [];
+    setMessages([]);
+    turnsRef.current = [];
+    setTurns([]);
+    setTurnCheckpoints([]);
+    setPhoneSeenByConversation({});
+    setPhoneDividerAfterByConversation({});
+    setOpenedPhoneConversationKey('');
+    setRecentlyUsedEmojis([]);
+    setRecentChatCharacterIds([]);
+    resetSystemLog();
+    setActiveSessionFileName(null);
+    setActiveSessionSavedTurn(null);
+    activeSessionPathRef.current = null;
+    setActiveSessionProtection('plain');
+    activeSessionPasswordRef.current = '';
+    setActiveWorkflowProtection('plain');
+    setActiveStorybookProtection('plain');
+    setSessionName('');
+    setDraft('');
+    nextMessageIdRef.current = 1;
+  }
+
+  function clearWorkspaceForLockedStartup() {
+    clearCurrentSession();
+    commitNodes([]);
+    commitEdges([]);
+    pendingViewport.current = undefined;
+    pendingFitView.current = false;
+    setNodeMenu(null);
+    setTextDialogNodeId(null);
+    setJsonDialogNodeId(null);
+    activeWorkflowResetSnapshotRef.current = null;
+    activateWorkflowPath(null);
+  }
+
+  function applyLoadedRpgraphFile(
+    result: {
+      fileName: string;
+      name: string;
+      filePath: string;
+      type: SavedFileSummary['type'];
+      protection: SavedFileSummary['protection'];
+      value: unknown;
+    },
+    password = '',
+  ) {
+    if (result.type === 'workflow') {
+      clearCurrentSession();
+      setActiveWorkflowProtection(result.protection === 'encrypted' ? 'encrypted' : 'plain');
+      applyLoadedWorkflow(
+        result.value,
+        result.protection === 'plain' ? result.filePath : null,
+        'Loaded workflow',
+        result.fileName,
+        result.protection === 'encrypted' ? result.fileName : undefined,
+      );
+      setWorkflowNameDraft(result.name);
+      setSelectedFile(result.fileName);
+      setWorkflowOverwritePending(false);
+      setFileStorageStatus(`Started new session from workflow: ${result.name}`);
+      setSessionPasswordAction(null);
+      setShowFiles(false);
+      return;
+    }
+    if (result.type === 'storybook') {
+      const storybookNode =
+        nodesRef.current.find((node) => node.id === storybookCreatorNodeId && node.data.nodeType === 'rp-storybook-v1') ??
+        nodesRef.current.find((node) => node.data.nodeType === 'rp-storybook-v1');
+      if (!storybookNode) {
+        throw new Error('Add an RP Storybook V1 node before opening a storybook file.');
+      }
+      const applied = applyStorybookToNode(
+        storybookNode.id,
+        result.value,
+        result.fileName,
+        result.filePath,
+        result.protection === 'encrypted' ? 'Loaded encrypted storybook' : 'Loaded storybook',
+      );
+      if (!applied) {
+        setFileStorageStatus('Cannot load storybook: an image is used in chat history.');
+        return;
+      }
+      setActiveStorybookProtection(result.protection === 'encrypted' ? 'encrypted' : 'plain');
+      setSelectedFile(result.fileName);
+      setFileStorageStatus(`Loaded storybook: ${result.name}`);
+      setSessionPasswordAction(null);
+      setShowFiles(false);
+      return;
+    }
+    if (!isRpgraphSessionV2(result.value)) {
+      throw new Error('The selected file does not contain a valid RPGraph file.');
+    }
+    setActiveWorkflowProtection('plain');
+    setActiveStorybookProtection('plain');
+    applySessionFile(
+      result.fileName,
+      result.name,
+      result.filePath,
+      result.protection,
+      result.value,
+      result.protection === 'encrypted' ? password : '',
+    );
+  }
+
+  function applySessionFile(
+    fileName: string,
+    name: string,
+    filePath: string,
+    protection: SavedFileSummary['protection'],
+    session: RpgraphSessionV2,
+    password: string,
+  ) {
+    clearTurnTraces();
+    setActiveWorkflowProtection(protection === 'encrypted' ? 'encrypted' : 'plain');
+    applyLoadedWorkflow(
+      workflowV2ToWorkflowFile(session.workflow),
+      null,
+      'Loaded session workflow',
+      'embedded workflow',
+      'embedded workflow',
+      false,
+    );
+    const sessionState = appStateFromSessionV2(session);
+    const openingMessages = sessionState.openingMessages;
+    const loadedTurns = sessionState.turns;
+    const loadedMessages = [
+      ...openingMessages,
+      ...flattenTurnMessages(loadedTurns),
+    ];
+    messagesRef.current = loadedMessages;
+    setMessages(loadedMessages);
+    turnsRef.current = loadedTurns;
+    setTurns(loadedTurns);
+    setTurnCheckpoints(sessionState.turnCheckpoints);
+    setPhoneSeenByConversation(
+      mergePhoneSeenStates(
+        sessionState.phoneSeenByConversation,
+        phoneSeenStateForLoadedMessages(loadedMessages),
+      ),
+    );
+    setPhoneDividerAfterByConversation(sessionState.phoneDividerAfterByConversation);
+    setRecentlyUsedEmojis(sessionState.recentlyUsedEmojis ?? []);
+    setRecentChatCharacterIds([]);
+    setOpenedPhoneConversationKey('');
+    resetSystemLog();
+    setEnglishProcessingEnabled(sessionState.settings.englishProcessingEnabled);
+    setInputTranslationOnlyEnabled(sessionState.settings.inputTranslationOnlyEnabled ?? false);
+    setDisplayLanguage(sessionState.settings.displayLanguage);
+    replaceWorkflowSettingsValues(sessionState.workflowVariables);
+    const resetNodes = nodesRef.current.map((node) =>
+        node.data.nodeType === 'character-stats'
+          ? {
+              ...node,
+              data: { ...node.data, ...resetCharacterStatsRuntimeData() } as WorkflowNodeData,
+            }
+          : node,
+    );
+    const canonicalAppointments = normalizedEventAppointments(
+      appointmentsFromEventEntities(session.entities.events),
+    );
+    const loadedRuntimeNodes = restoreTurnRuntime(resetNodes, sessionState.currentRuntime).map((node) =>
+      node.data.kind === undefined && node.data.nodeType === 'event-manager'
+        ? {
+            ...node,
+            data: {
+              ...node.data,
+              eventAppointments: canonicalAppointments,
+              eventStatus: canonicalAppointments.length
+                ? `Loaded ${canonicalAppointments.length} RP save events`
+                : node.data.eventStatus,
+            } as WorkflowNodeData,
+          }
+        : node,
+    );
+    commitNodes(loadedRuntimeNodes);
+    setActiveSessionFileName(fileName);
+    setActiveSessionSavedTurn(latestSessionTurnNumber(session));
+    activeSessionPathRef.current = filePath;
+    setActiveSessionProtection(protection === 'encrypted' ? 'encrypted' : 'plain');
+    activeSessionPasswordRef.current = protection === 'encrypted' ? password : '';
+    setSessionName(name);
+    setDraft('');
+    nextMessageIdRef.current =
+      loadedMessages.reduce(
+        (highest, message) => Math.max(highest, message.id),
+        0,
+      ) + 1;
+    setSessionPassword('');
+    setSessionOverwritePending(false);
+    setPendingSessionFilePath(null);
+    setFileStorageStatus(`Loaded session: ${name}`);
+    setSessionPasswordAction(null);
+    setShowFiles(false);
+  }
+
+  function currentWorkflow(includeStorybook = true): WorkflowFile {
+    return workflowSnapshotFromGraph({
+      nodes: nodesRef.current,
+      edges: edgesRef.current,
+      viewport: flowInstanceRef.current?.getViewport(),
+      includeStorybook,
+    });
+  }
+
+  async function currentWorkflowForSave(includeStorybook = true) {
+    return currentWorkflow(includeStorybook);
+  }
+
+  function applyLoadedWorkflow(
+    workflow: unknown,
+    filePath: string | null,
+    status: string,
+    fileName?: string | null,
+    resetSnapshotFileName?: string,
+    hydrateOpeningHistory = true,
+  ) {
+    clearTemporaryReferenceImages();
+    if (hydrateOpeningHistory) {
+      clearTurnTraces();
+    }
+    const hydratedWorkflow = hydrateLoadedWorkflow({
+      workflow,
+      defaultConnectionId: firstLlmConnection().id,
+      connectionIds: new Set(connections.filter(isLlmConnection).map((connection) => connection.id)),
+      hydrateOpeningHistory,
+    });
+    const loadedNodes = hydratedWorkflow.nodes;
+    const loadedEdges = hydratedWorkflow.edges;
+    commitNodes(loadedNodes);
+    commitEdges(loadedEdges);
+    if (hydrateOpeningHistory) {
+      const openingTurns = hydratedWorkflow.openingTurns;
+      const openingMessages = hydratedWorkflow.openingMessages;
+      const openingCheckpoints = hydratedWorkflow.openingCheckpoints;
+      messagesRef.current = openingMessages;
+      turnsRef.current = openingTurns;
+      turnCheckpointsRef.current = openingCheckpoints;
+      setTurnCheckpoints(openingCheckpoints);
+      setTurns(openingTurns);
+      setMessages(openingMessages);
+      setPhoneSeenByConversation(phoneSeenStateForLoadedMessages(openingMessages));
+      setPhoneDividerAfterByConversation({});
+      setOpenedPhoneConversationKey('');
+      nextMessageIdRef.current =
+        openingMessages.reduce(
+          (highest, message) => Math.max(highest, message.id),
+          0,
+        ) + 1;
+    }
+    setNodeMenu(null);
+    setTextDialogNodeId(null);
+    setTextDialogView('text');
+    setJsonDialogNodeId(null);
+    activeWorkflowResetSnapshotRef.current = resetSnapshotFileName
+      ? {
+        workflow: structuredClone(hydratedWorkflow.workflow),
+        fileName: resetSnapshotFileName,
+      }
+      : null;
+    activateWorkflowPath(filePath, fileName);
+    notifySystem('info', `${status}: ${fileName ?? (filePath ? workflowName(filePath) : 'embedded workflow')}`);
+    pendingViewport.current = hydratedWorkflow.workflow.viewport;
+    pendingFitView.current = !hydratedWorkflow.workflow.viewport;
+    const initializedFlow = flowInstanceRef.current;
+    if (initializedFlow) {
+      if (hydratedWorkflow.workflow.viewport) {
+        void initializedFlow.setViewport(hydratedWorkflow.workflow.viewport);
+      } else {
+        void initializedFlow.fitView({ padding: fitViewPadding });
+      }
+      pendingViewport.current = undefined;
+      pendingFitView.current = false;
+    }
+  }
+
+  function initializeFlow(instance: ReactFlowInstance<WorkflowNode>) {
+    flowInstanceRef.current = instance;
+    setFlowInstance(instance);
+    if (pendingViewport.current) {
+      void instance.setViewport(pendingViewport.current);
+      pendingViewport.current = undefined;
+    } else if (pendingFitView.current) {
+      void instance.fitView({ padding: fitViewPadding });
+      pendingFitView.current = false;
+    }
+  }
+
+  async function submitCustomNodeAssistantMessage(message: string, connectionId: string) {
+    const nodeId = customNodeAssistantNodeId;
+    const node = nodesRef.current.find((candidate) => candidate.id === nodeId);
+    if (!nodeId || !node || node.data.nodeType !== 'custom') {
+      return;
+    }
+    const previousAssistantMessages = customNodeAssistantHistories[nodeId] ?? [];
+    const assistantContext = previousAssistantMessages
+      .slice(-12)
+      .map((entry) => `${entry.role.toUpperCase()}: ${entry.text}`)
+      .join('\n\n');
+
+    setCustomNodeAssistantHistories((current) => ({
+      ...current,
+      [nodeId]: [...(current[nodeId] ?? []), { role: 'user', text: message }],
+    }));
+    updateRuntimeNode(nodeId, { preview: 'Custom Node Assistant thinking ...', llmCallStats: [] });
+
+    try {
+      const currentDefinition = customNodeDefinition(node.data.customNodeDefinition);
+      const completion = await nodeLlm.complete({
+        connectionId,
+        nodeId,
+        label: 'Custom Node Assistant',
+        purpose: 'Custom Node Assistant',
+        prompt: customNodeAssistantPrompt(currentDefinition, message, assistantContext),
+      });
+      const result = parseCustomNodeAssistantResult(completion.text, currentDefinition);
+      assertCompilableCustomNodeCode(result.definition.code);
+      updateRuntimeNode(nodeId, {
+        customNodeDefinition: result.definition,
+        connectionId,
+        preview: `Updated via ${completion.connection.label}`,
+      });
+      const changed = result.changedFields.length
+        ? `Changed: ${result.changedFields.slice(0, 5).join(', ')}. `
+        : '';
+      setCustomNodeAssistantHistories((current) => ({
+        ...current,
+        [nodeId]: [...(current[nodeId] ?? []), {
+          role: 'assistant',
+          text: `${changed}${result.reply}`,
+        }],
+      }));
+    } catch (error) {
+      const messageText = errorMessage(error);
+      updateRuntimeNode(nodeId, { preview: `Custom Node Assistant failed: ${messageText}` });
+      setCustomNodeAssistantHistories((current) => ({
+        ...current,
+        [nodeId]: [...(current[nodeId] ?? []), {
+          role: 'error',
+          text: [
+            'Assistant output could not be applied.',
+            messageText,
+            'Ask me to fix it, and I will use this error plus the current definition as context.',
+          ].join('\n'),
+        }],
+      }));
+    }
+  }
+
+  function appendCustomNodeAssistantMessage(nodeId: string, message: CustomNodeAssistantMessage) {
+    setCustomNodeAssistantHistories((current) => ({
+      ...current,
+      [nodeId]: [
+        ...(current[nodeId] ?? []),
+        message,
+      ],
+    }));
+  }
+
+  function applyCustomNodeDefinitionText(nodeId: string, text: string) {
+    const node = nodesRef.current.find((candidate) => candidate.id === nodeId);
+    if (!node || node.data.nodeType !== 'custom') {
+      return;
+    }
+    try {
+      const currentDefinition = customNodeDefinition(node.data.customNodeDefinition);
+      const parsed = JSON.parse(text) as unknown;
+      const definition = isCustomNodeDefinition(parsed)
+        ? parsed
+        : parseCustomNodeAssistantResult(text, currentDefinition).definition;
+      assertCompilableCustomNodeCode(definition.code);
+      updateRuntimeNode(nodeId, {
+        customNodeDefinition: definition,
+        preview: 'Custom Node definition pasted',
+      });
+      appendCustomNodeAssistantMessage(nodeId, {
+        role: 'assistant',
+        text: 'Pasted Custom Node definition applied.',
+      });
+    } catch (error) {
+      appendCustomNodeAssistantMessage(nodeId, {
+        role: 'error',
+        text: `Paste failed: ${errorMessage(error)}`,
+      });
+    }
+  }
+
+  function resetCustomNodeDefinition(nodeId: string) {
+    const node = nodesRef.current.find((candidate) => candidate.id === nodeId);
+    if (!node || node.data.nodeType !== 'custom') {
+      return;
+    }
+    updateRuntimeNode(nodeId, {
+      customNodeDefinition: defaultCustomNodeDefinition(),
+      customNodeRuntimeDisplays: {},
+      runtimePortValues: {},
+      preview: 'Custom Node reset',
+    });
+    appendCustomNodeAssistantMessage(nodeId, {
+      role: 'assistant',
+      text: 'Custom Node reset to the default empty definition.',
+    });
+  }
+
+  function checkCustomNodeStructure(nodeId: string) {
+    const node = nodesRef.current.find((candidate) => candidate.id === nodeId);
+    if (!node || node.data.nodeType !== 'custom') {
+      return;
+    }
+    const definition = customNodeDefinition(node.data.customNodeDefinition);
+    const response = (() => {
+      try {
+        const issues: string[] = [];
+        if (!definition.code.trim()) {
+          issues.push('No runtime code is defined yet.');
+        } else {
+          assertCompilableCustomNodeCode(definition.code);
+        }
+        const duplicateGroups = [
+          ['inputs', definition.inputs.map((port) => port.id)],
+          ['outputs', definition.outputs.map((port) => port.id)],
+          ['controls', definition.controls.map((control) => control.id)],
+          ['displays', definition.displays.map((display) => display.id)],
+        ] as const;
+        duplicateGroups.forEach(([label, ids]) => {
+          const seen = new Set<string>();
+          ids.forEach((entry) => {
+            if (seen.has(entry)) {
+              issues.push(`Duplicate ${label} id: ${entry}`);
+            }
+            seen.add(entry);
+          });
+        });
+        definition.outputs.forEach((port) => {
+          if (!definition.code.includes(port.id)) {
+            issues.push(`Output "${port.id}" is defined, but the code does not visibly reference that id.`);
+          }
+        });
+        definition.displays.forEach((display) => {
+          if (display.id !== 'about' && definition.code.trim() && !definition.code.includes(display.id)) {
+            issues.push(`Display "${display.id}" is defined, but the code does not visibly reference that id.`);
+          }
+        });
+        definition.controls.forEach((control) => {
+          if (control.action && control.action !== 'run-code' && !control.stateKey) {
+            issues.push(`Button "${control.id}" uses ${control.action} but has no stateKey.`);
+          }
+          if ((control.type === 'select' || control.type === 'radio') && (!control.options || control.options.length === 0)) {
+            issues.push(`${control.type} "${control.id}" has no options.`);
+          }
+        });
+        return issues.length
+          ? `Structure check found possible issues:\n${issues.map((issue) => `- ${issue}`).join('\n')}`
+          : 'Structure check passed. The definition shape is valid and the runtime code compiles.';
+      } catch (error) {
+        return `Structure check failed: ${errorMessage(error)}`;
+      }
+    })();
+    appendCustomNodeAssistantMessage(nodeId, { role: response.includes('failed') || response.includes('issues') ? 'error' : 'assistant', text: response });
+  }
+
+  async function checkCustomNodeSecurity(nodeId: string, connectionId: string) {
+    const node = nodesRef.current.find((candidate) => candidate.id === nodeId);
+    if (!node || node.data.nodeType !== 'custom') {
+      return;
+    }
+    const definition = customNodeDefinition(node.data.customNodeDefinition);
+    const localReport = (() => {
+      try {
+        assertAllowedCustomNodeCode(definition.code);
+        return definition.code.trim()
+          ? 'Local blocked-API scan passed.'
+          : 'Local blocked-API scan passed. There is no runtime code yet.';
+      } catch (error) {
+        return `Local blocked-API scan failed: ${errorMessage(error)}`;
+      }
+    })();
+    appendCustomNodeAssistantMessage(nodeId, {
+      role: localReport.includes('failed') ? 'error' : 'assistant',
+      text: `Security review started.\n${localReport}`,
+    });
+    try {
+      const completion = await nodeLlm.complete({
+        connectionId,
+        nodeId,
+        label: 'Custom Node Security Review',
+        purpose: 'Custom Node Security Review',
+        prompt: [
+          'You are reviewing a user-generated RPGraph Custom Node definition for security.',
+          'Return a concise security report for the user.',
+          'Focus on exfiltration, network access, filesystem/browser access, dynamic code execution, prompt injection risks inside LLM prompts, suspicious obfuscation, infinite loops, and unwanted state/output behavior.',
+          'The runtime already blocks imports, require, fetch, window, document, globalThis, self, process, eval, Function, XMLHttpRequest, WebSocket, and EventSource, but you should still mention any suspicious pattern.',
+          'Do not rewrite the code. Do not execute it.',
+          'Use this shape:',
+          'Verdict: Safe | Needs changes | Unsafe',
+          'Findings:',
+          '- ...',
+          'Suggested fix:',
+          '- ...',
+          '',
+          JSON.stringify(definition, null, 2),
+        ].join('\n'),
+      });
+      appendCustomNodeAssistantMessage(nodeId, {
+        role: customNodeSecurityReviewRole(completion.text),
+        text: completion.text,
+      });
+    } catch (error) {
+      appendCustomNodeAssistantMessage(nodeId, {
+        role: 'error',
+        text: `Security review failed: ${errorMessage(error)}`,
+      });
+    }
+  }
+
+  async function runCustomNodeButton(nodeId: string, label: string) {
+    const node = nodesRef.current.find((candidate) => candidate.id === nodeId);
+    if (!node || node.data.nodeType !== 'custom') {
+      return;
+    }
+    const definition = customNodeDefinition(node.data.customNodeDefinition);
+    updateRuntimeNode(nodeId, { preview: `${label} running ...`, llmCallStats: [] });
+    try {
+      const currentInputImages = Array.from(
+        new Map([...draftImages, ...phoneImages].map((image) => [image.id, image])).values(),
+      );
+      const imageInputs = customNodeImageInputsFromGraph(definition, node, {
+        nodes: nodesRef.current,
+        edges,
+        inputImages: currentInputImages,
+      });
+      const result = await runCustomNodeDefinition(
+        definition,
+        {
+          ...inputValuesFromRuntimePorts(definition, node.data.runtimePortValues),
+          ...customNodeImageInputMetadata(imageInputs),
+        },
+        {
+          llm: async (request) => {
+            const prompt = typeof request === 'string' ? request : request.prompt;
+            const requestedImages = typeof request === 'string' ? undefined : request.images;
+            const completion = await nodeLlm.complete({
+              connectionId: node.data.connectionId,
+              nodeId,
+              label: typeof request === 'string' ? label : request.label ?? label,
+              purpose: 'Custom Node LLM',
+              prompt,
+              images: customNodeImagesForRequest(requestedImages, imageInputs),
+              maxTokens: typeof request === 'string' ? undefined : request.maxTokens,
+              temperature: typeof request === 'string' ? undefined : request.temperature,
+              contributesToTokenCalibration: true,
+            });
+            return completion.text;
+          },
+        },
+      );
+      updateRuntimeNode(nodeId, {
+        preview: `${label} ran`,
+        customNodeRuntimeDisplays: result.displays,
+        runtimePortValues: outputRuntimePortValues(result.outputs, node.data.runtimePortValues),
+        customNodeDefinition: {
+          ...definition,
+          state: result.state,
+        },
+      });
+    } catch (error) {
+      updateRuntimeNode(nodeId, {
+        preview: `${label} failed: ${errorMessage(error)}`,
+      });
+    }
+  }
+
+  function openCustomNodeAssistant(nodeId: string) {
+    setCustomNodeAssistantNodeId(nodeId);
+    setCustomNodeAssistantHistories((current) => ({
+      ...current,
+      [nodeId]: current[nodeId] ?? [],
+    }));
+  }
+
+  const { nodeActions } = useNodeActionsController({
+    nodesRef,
+    edges,
+    setNodes,
+    setEdges,
+    setDefaultConnectionId,
+    settingsValueDefinitions,
+    settingsValueDefinitionsRef,
+    createId: uniqueId,
+    updateRuntimeNode,
+    messages,
+    messagesRef,
+    setMessages,
+    turnsRef,
+    setTurns,
+    turnCheckpointsRef,
+    setTurnCheckpoints,
+    draft,
+    nodeLlm,
+    activeTokenEstimateBytesPerToken,
+    connections,
+    promptActionSettings,
+    updateWorkflowComfyGenerationActive,
+    workflowSettingsValuesForGraph,
+    setWorkflowVariablesFromCommands,
+    rpDateTimeFormat,
+    rpWeekdayLanguage,
+    nextTurnReferenceImageOptions,
+    setTextDialogView,
+    setTextDialogNodeId,
+    setJsonDialogNodeId,
+    setOutputFormatHelpKind,
+    openStorybookCreator,
+    openCustomNodeAssistant,
+    runCustomNodeButton,
+    loadStorybookFile,
+    importSillyTavernCharacter,
+  });
+
+  function stringValue(value: unknown) {
+    return typeof value === 'string' ? value.trim() : '';
+  }
+
+  async function analyzeDisplayedOutput(
+    text: string,
+    outputNode: WorkflowNode,
+    cast: StorybookCharacter[],
+    highlightingContext: string,
+    signal?: AbortSignal,
+    onFormatResult?: (result: ExecuteTraceFormatResult) => void,
+  ): Promise<OutputAttribution> {
+    if (!outputNode.data.speakerAnalysisEnabled) {
+      return { speakerNames: [], dialogue: [] };
+    }
+
+    const highlightDialogue = outputNode.data.dialogueHighlightEnabled ?? false;
+    const extractedQuotes = highlightDialogue ? extractDialogueQuotes(text) : [];
+    const speakerReferences = cast.map((character, index) => ({
+      speakerId: index + 1,
+      name: character.name,
+    }));
+    const speakerFormat = outputSpeakerResponseFormat(outputNode.data.outputSpeakerResponseFormat);
+    const numberedQuotedPassages = extractedQuotes.map((quote) => ({
+      quoteId: quote.index + 1,
+      text: quote.text,
+    }));
+    const analysisShapeObject = highlightDialogue
+      ? { dialogue: [{ quoteId: 1, speakerId: 1 }] }
+      : { speakers: [1] };
+    const analysisShape = speakerFormat === 'json'
+      ? JSON.stringify(analysisShapeObject, null, 2)
+      : encode(analysisShapeObject);
+    const highlightingInputToon = encode({
+      speakerReferences,
+      ...(highlightingContext.trim() ? { highlightingContext: highlightingContext.trim() } : {}),
+      ...(highlightDialogue
+        ? {
+            numberedQuotedPassages: extractedQuotes.map((quote) => ({
+              quoteId: quote.index + 1,
+              text: quote.text,
+            })),
+          }
+        : {}),
+      dialogueHighlightEnabled: highlightDialogue,
+    });
+    if (highlightDialogue && extractedQuotes.length === 0) {
+      const attribution = { speakerNames: [], dialogue: [] };
+      updateRuntimeNode(outputNode.id, {
+        outputHighlightingInputToon: highlightingInputToon,
+        outputHighlightingResponseToon: '',
+        outputHighlightingResultToon: encode({
+          speakerMap: speakerReferences.map(({ speakerId, name }) => ({ speakerId, name })),
+          speakers: [],
+          markedQuotes: [],
+          highlightedDialogue: [],
+          skipped: 'No quoted passages found in response text.',
+        }),
+      });
+      return attribution;
+    }
+    const prompt = buildOutputSpeakerPrompt(outputNode.data.outputSpeakerPrompt, {
+      OutputFormatInstructions: outputSpeakerFormatInstructions(
+        speakerFormat,
+        highlightDialogue,
+        analysisShape,
+      ),
+      KnownSpeakers: speakerDataForFormat(speakerFormat, speakerReferences),
+      HighlightingContext: highlightingContext.trim()
+        ? `HIGHLIGHTING CONTEXT:\n${highlightingContext.trim()}\n`
+        : '',
+      NumberedQuotedPassages: highlightDialogue
+        ? `NUMBERED QUOTED PASSAGES:\n${speakerDataForFormat(speakerFormat, numberedQuotedPassages)}\n`
+        : '',
+      ResponseText: text,
+      ExpectedShape: analysisShape,
+    });
+    let lastResponseText = '';
+    const attemptSpeakerAnalysis = async () => {
+      updateLlmNodeActive(outputNode.id, true);
+      let completion: Awaited<ReturnType<NodeLlmApi['complete']>>;
+      try {
+        completion = await nodeLlm.withAbortSignal(signal).complete({
+          connectionId: outputNode.data.connectionId,
+          purpose: 'RP Output speaker analysis',
+          nodeId: outputNode.id,
+          label: 'Speakers',
+          prompt,
+        });
+      } finally {
+        updateLlmNodeActive(outputNode.id, false);
+      }
+      lastResponseText = completion.text;
+      updateRuntimeNode(outputNode.id, {
+        outputHighlightingInputToon: highlightingInputToon,
+        outputHighlightingResponseToon: completion.text.trim(),
+        outputHighlightingResultToon: '',
+      });
+      return parseOutputSpeakerResponse(completion.text, speakerFormat);
+    };
+    const maxAttempts = retryFormatErrorsEnabled ? 2 : 1;
+    let result!: ReturnType<typeof parseOutputSpeakerResponse>;
+    for (let attempt = 1; attempt <= maxAttempts; attempt += 1) {
+      try {
+        result = await attemptSpeakerAnalysis();
+        onFormatResult?.({
+          name: `Speaker ${speakerFormat.toUpperCase()}`,
+          status: 'ok',
+          detail: attempt > 1
+            ? 'Speaker analysis response parsed after retry.'
+            : 'Speaker analysis response parsed.',
+        });
+        break;
+      } catch (error) {
+        if (attempt < maxAttempts && !signal?.aborted) {
+          continue;
+        }
+        onFormatResult?.({
+          name: `Speaker ${speakerFormat.toUpperCase()}`,
+          status: 'error',
+          detail: error instanceof Error ? error.message : String(error),
+          preview: lastResponseText,
+        });
+        throw error;
+      }
+    }
+    const speakerNameById = new Map(
+      speakerReferences.map((speaker) => [speaker.speakerId, speaker.name]),
+    );
+    const canonicalNameById = (value: unknown) => {
+      const speakerId = typeof value === 'number' ? Math.floor(value) : Number(value);
+      return speakerId > 0 ? speakerNameById.get(speakerId) : undefined;
+    };
+    const canonicalName = (name: string) => {
+      const normalizedName = name.toLocaleLowerCase();
+      const exactMatch = cast.find((character) => character.name.toLocaleLowerCase() === normalizedName);
+      if (exactMatch) {
+        return exactMatch.name;
+      }
+
+      const firstNameMatches = cast.filter(
+        (character) => character.name.trim().split(/\s+/)[0]?.toLocaleLowerCase() === normalizedName,
+      );
+      return firstNameMatches.length === 1 ? firstNameMatches[0].name : undefined;
+    };
+    const explicitSpeakers = Array.isArray(result.speakers)
+      ? result.speakers
+          .map((value) => canonicalNameById(value) ?? canonicalName(stringValue(value)))
+          .filter((value): value is string => !!value)
+      : [];
+    const dialogueEntries = outputNode.data.dialogueHighlightEnabled && Array.isArray(result.dialogue)
+      ? result.dialogue.flatMap((entry) => {
+          if (!entry || typeof entry !== 'object') {
+            return [];
+          }
+          const values = entry as Record<string, unknown>;
+          const quoteId =
+            values.quoteId !== undefined
+              ? (typeof values.quoteId === 'number' ? Math.floor(values.quoteId) : Number(values.quoteId))
+              : (typeof values.quoteIndex === 'number'
+                  ? Math.floor(values.quoteIndex) + 1
+                  : Number(values.quoteIndex) + 1);
+          const speakerId =
+            values.speakerId !== undefined
+              ? (typeof values.speakerId === 'number'
+                  ? Math.floor(values.speakerId)
+                  : Number(values.speakerId))
+              : Number.NaN;
+          return [{ quoteId, speakerId, speakerName: stringValue(values.speakerName) }];
+        })
+      : [];
+    const looksSwapped =
+      dialogueEntries.length > 0 &&
+      dialogueEntries.some((entry) => !speakerNameById.has(entry.speakerId)) &&
+      dialogueEntries.every(
+        (entry) =>
+          entry.speakerId >= 1 &&
+          entry.speakerId <= extractedQuotes.length &&
+          entry.quoteId >= 0 &&
+          entry.quoteId <= speakerReferences.length,
+      );
+    const usedQuoteIds = new Set<number>();
+    const dialogue = dialogueEntries.flatMap((entry) => {
+      const quoteId = looksSwapped ? entry.speakerId : entry.quoteId;
+      const speakerId = looksSwapped ? entry.quoteId : entry.speakerId;
+      const speakerName = canonicalNameById(speakerId) ?? canonicalName(entry.speakerName);
+      const quote = extractedQuotes.find((entryQuote) => entryQuote.index + 1 === quoteId);
+      if (!speakerName || !quote || usedQuoteIds.has(quoteId)) {
+        return [];
+      }
+      usedQuoteIds.add(quoteId);
+      return [{ speakerName, text: quote.text }];
+    });
+    const attribution = {
+      speakerNames: Array.from(
+        new Set([...explicitSpeakers, ...dialogue.map((quote) => quote.speakerName)]),
+      ),
+      dialogue,
+    };
+    updateRuntimeNode(outputNode.id, {
+      outputHighlightingResultToon: encode({
+        speakerMap: speakerReferences.map(({ speakerId, name }) => ({ speakerId, name })),
+        speakers: attribution.speakerNames.flatMap((speakerName) => {
+          const speaker = speakerReferences.find((entry) => entry.name === speakerName);
+          return speaker ? [speaker.speakerId] : [];
+        }),
+        markedQuotes: attribution.dialogue.flatMap((quote) => {
+          const speaker = speakerReferences.find((entry) => entry.name === quote.speakerName);
+          const extractedQuote = extractedQuotes.find((entry) => entry.text === quote.text);
+          return speaker && extractedQuote
+            ? [{ speakerId: speaker.speakerId, quoteId: extractedQuote.index + 1 }]
+            : [];
+        }),
+        highlightedDialogue: attribution.dialogue.map((quote) => ({
+          speakerName: quote.speakerName,
+          text: quote.text,
+        })),
+      }),
+    });
+    return attribution;
+  }
+
+  async function translateText(
+    text: string,
+    direction: 'to-english' | 'to-display',
+    connectionId: string,
+    nodeId: string,
+    onChunk?: (text: string) => void,
+    displayLanguageOverride = displayLanguage,
+    signal?: AbortSignal,
+    recentHistoryContext = '',
+    label = 'Translate',
+  ) {
+    const language = displayLanguageOverride.trim() || 'German';
+    const prompt = translationPrompt({
+      text,
+      direction,
+      displayLanguage: language,
+      recentHistoryContext,
+    });
+    updateLlmNodeActive(nodeId, true);
+    try {
+      const completion = await nodeLlm.withAbortSignal(signal).complete({
+        connectionId,
+        purpose: 'translation',
+        nodeId,
+        label,
+        prompt,
+        onChunk,
+      });
+      const translated = completion.text.trim();
+      if (!translated) {
+        if (direction === 'to-english') {
+          return '';
+        }
+        throw new Error('The translator returned empty text.');
+      }
+      return translated;
+    } finally {
+      updateLlmNodeActive(nodeId, false);
+    }
+  }
+
+  async function directInputText(
+    text: string,
+    connectionId: string,
+    nodeId: string,
+    recentHistoryContext: string,
+    channel: 'rp' | 'phone',
+    displayLanguageOverride = displayLanguage,
+    signal?: AbortSignal,
+  ) {
+    const language = displayLanguageOverride.trim() || 'German';
+    const prompt = directInputPrompt({
+      text,
+      displayLanguage: language,
+      channel,
+      recentHistoryContext,
+    });
+    updateLlmNodeActive(nodeId, true);
+    try {
+      const completion = await nodeLlm.withAbortSignal(signal).complete({
+        connectionId,
+        purpose: 'input direction',
+        nodeId,
+        label: channel === 'phone' ? 'Act Phone' : 'Act RP',
+        prompt,
+      });
+      const directed = completion.text.trim();
+      if (!directed) {
+        throw new Error('The input director returned empty text.');
+      }
+      return directed;
+    } finally {
+      updateLlmNodeActive(nodeId, false);
+    }
+  }
+
+  const storybookImageDescriptionById = useMemo(
+    () => storybookImageDescriptions(storybooksByNodeId.values()),
+    [storybooksByNodeId],
+  );
+  function currentStorybookImageSourceById(imageId: string) {
+    const normalizedImageId = imageId.trim();
+    if (!normalizedImageId) {
+      return undefined;
+    }
+    for (const node of nodesRef.current) {
+      if (node.data.kind !== undefined || node.data.nodeType !== 'rp-storybook-v1' || !node.data.storybookJson) {
+        continue;
+      }
+      try {
+        const source = storybookImageSourceById(
+          [parseRpStorybookJson(node.data.storybookJson)],
+          normalizedImageId,
+        );
+        if (source) {
+          return source;
+        }
+      } catch {
+        // Ignore invalid storybook JSON here; validation paths surface those errors elsewhere.
+      }
+    }
+    return undefined;
+  }
+  const storybookImageDescriptionSignature = JSON.stringify(
+    [...storybookImageDescriptionById].sort(([left], [right]) => left.localeCompare(right)),
+  );
+  const storybookImageDescriptionByIdRef = useRef(storybookImageDescriptionById);
+  const updatePhoneImageDescriptionsRef = useRef(updatePhoneImageDescriptions);
+  useEffect(() => {
+    storybookImageDescriptionByIdRef.current = storybookImageDescriptionById;
+  }, [storybookImageDescriptionById]);
+  useEffect(() => {
+    updatePhoneImageDescriptionsRef.current = updatePhoneImageDescriptions;
+  }, [updatePhoneImageDescriptions]);
+  const phoneImageCaptionChangesById = useMemo(() => {
+    const changes = new Map<string, ImageCaptionChange[]>();
+    messages.forEach((message) => {
+      const change = message.phoneImageCaptionChange;
+      const imageId = change?.imageId.trim();
+      if (!change || !imageId) {
+        return;
+      }
+      changes.set(imageId, [...(changes.get(imageId) ?? []), change]);
+    });
+    return changes;
+  }, [messages]);
+  useEffect(() => {
+    updatePhoneImageDescriptionsRef.current(storybookImageDescriptionByIdRef.current);
+  }, [storybookImageDescriptionSignature]);
+  const rpTimeTrackingEnabled = !!nodeViewNodes.find(
+    (node) => node.data.kind === undefined && node.data.nodeType === 'history',
+  )?.data.historyTimeTrackingEnabled;
+  function createDebugSnapshot() {
+    const currentNodes = nodesRef.current;
+    const currentEdges = edgesRef.current;
+    const currentTurns = turnsRef.current;
+    const currentEventManagerNode = currentNodes.find(
+      (node) => node.data.kind === undefined && node.data.nodeType === 'event-manager',
+    );
+    const currentEventEntities = eventEntitiesFromNodes(currentNodes);
+    const promptSwitchNodes = currentNodes.filter(
+      (node) => node.data.kind === undefined && node.data.nodeType === 'llm-prompt-switch',
+    );
+    const textMetrics = new TextMetricsApi(activeTokenEstimateBytesPerToken);
+    const promptSwitchDebug = promptSwitchNodes.map((node) => ({
+      id: node.id,
+      label: node.data.label,
+      selectedOutputChannel: node.data.llmPromptSwitchSelectedOutputChannel,
+      selectedPromptSlot: node.data.llmPromptSwitchSelectedPromptSlot,
+      runtimeDebug: node.data.llmPromptSwitchDebug,
+      preview: node.data.preview,
+      fullText: compactDebugValue(node.data.fullText, textMetrics),
+      generatedText: node.data.generatedText,
+      runtimePortValues: compactDebugValue(node.data.runtimePortValues, textMetrics),
+      runPrepared: node.data.runPrepared,
+      runCompleted: node.data.runCompleted,
+    }));
+    const eventManagerDebug = currentEventManagerNode
+      ? {
+          id: currentEventManagerNode.id,
+          label: currentEventManagerNode.data.label,
+          events: appointmentsFromEventEntities(currentEventEntities),
+          eventEntities: currentEventEntities,
+          selectedEvent,
+          preview: currentEventManagerNode.data.preview,
+          fullText: compactDebugValue(currentEventManagerNode.data.fullText, textMetrics),
+          status: currentEventManagerNode.data.eventStatus,
+          runtimePortValues: compactDebugValue(currentEventManagerNode.data.runtimePortValues, textMetrics),
+          runPrepared: currentEventManagerNode.data.runPrepared,
+          runCompleted: currentEventManagerNode.data.runCompleted,
+          eventLastPrompt: compactDebugValue(currentEventManagerNode.data.eventLastPrompt, textMetrics),
+          eventLastResponse: currentEventManagerNode.data.eventLastResponse,
+        }
+      : {};
+
+    return sanitizeDebugSnapshotValue({
+      schema: 'rpgraph-debug-snapshot',
+      version: 1,
+      createdAt: new Date().toISOString(),
+      selectedSections: [],
+      appState: {
+        currentTab: chatPanelView,
+        selectedCharacter: selectedCharacter
+          ? { id: selectedCharacter.id, name: selectedCharacter.name }
+          : undefined,
+        selectedCharacterId,
+        narratorSelected,
+        narratorSelectedName: narratorSelected ? narratorSpeakerName : undefined,
+        selectedEvent,
+        selectedEventId,
+        selectedPhone: {
+          viewedCharacter: viewedPhoneCharacter
+            ? { id: viewedPhoneCharacter.id, name: viewedPhoneCharacter.name }
+            : undefined,
+          selectedContact: selectedPhoneContact
+            ? {
+                character: {
+                  id: selectedPhoneContact.character.id,
+                  name: selectedPhoneContact.character.name,
+                },
+                conversationKey: selectedPhoneContact.conversationKey,
+                latestPhoneId: selectedPhoneContact.latestPhoneId,
+                unreadCount: selectedPhoneContact.unreadCount,
+              }
+            : undefined,
+          openedPhoneConversationKey,
+          selectedPhoneConversation,
+          selectedPhoneDividerAfterId,
+          phoneDraft,
+          phoneImages,
+          phoneSeenByConversation,
+          phoneDividerAfterByConversation,
+        },
+        isRunning,
+        turnNumber: currentTurns[currentTurns.length - 1]?.number ?? 0,
+        activeRunId: activeRunRef.current?.id,
+        rpTimeTrackingEnabled,
+        englishProcessingEnabled,
+        inputTranslationOnlyEnabled,
+        displayLanguage,
+      },
+      lastRun: lastRunDebugRef.current ?? {},
+      recentTurns: recentTurnDebugSummaries(
+        turnsRef.current,
+        nodesRef.current,
+        turnCheckpointsRef.current,
+        textMetrics,
+        2,
+      ),
+      promptSwitch: {
+        nodes: promptSwitchDebug,
+      },
+      eventManager: eventManagerDebug,
+      nodes: currentNodes.map((node) => compactDebugNode(node, textMetrics)),
+      edges: currentEdges,
+      systemLog,
+    }) as {
+      schema: 'rpgraph-debug-snapshot';
+      version: number;
+      createdAt: string;
+      selectedSections: string[];
+      appState: Record<string, unknown>;
+      lastRun: Record<string, unknown>;
+      recentTurns: unknown[];
+      promptSwitch: Record<string, unknown>;
+      eventManager: Record<string, unknown>;
+      nodes: unknown[];
+      edges: unknown[];
+      systemLog: unknown[];
+    };
+  }
+
+  function createAssistantDebugSnapshotSections(): DebugSnapshotAssistantSection[] {
+    const snapshot = createDebugSnapshot();
+    const debugSessionState = currentSessionState(sessionName || suggestedSessionName());
+    const dataManagementSession = sessionV2FromCurrentState(
+      debugSessionState,
+      currentWorkflow(false),
+      nodesRef.current,
+      snapshot.createdAt,
+    );
+    const sectionDefinitions: Array<{
+      id: string;
+      label: string;
+      description: string;
+      value: unknown;
+      json?: string;
+    }> = [
+      {
+        id: 'v2-timeline',
+        label: 'V2 Timeline',
+        description: 'Canonical data-management timeline view for recent RP, phone, opening, and event-input messages.',
+        value: null,
+        json: formatTimelineContext(dataManagementSession, {
+          encoding: 'json-compact',
+          maxEntries: 24,
+        }),
+      },
+      {
+        id: 'v2-events',
+        label: 'V2 Events',
+        description: 'Canonical data-management event entities, separated from Event Manager node runtime.',
+        value: null,
+        json: formatEventsContext(dataManagementSession, {
+          encoding: 'json-compact',
+          maxEntries: 40,
+        }),
+      },
+      {
+        id: 'v2-phone',
+        label: 'V2 Phone',
+        description: 'Canonical data-management phone timeline entries with normalized participants and linked RP metadata.',
+        value: null,
+        json: formatPhoneContext(dataManagementSession, {
+          encoding: 'json-compact',
+          maxEntries: 40,
+        }),
+      },
+      {
+        id: 'v2-debug-overview',
+        label: 'V2 Debug Overview',
+        description: 'Compact data-management session overview with bounded timeline, events, runtime ids, and checkpoint count.',
+        value: null,
+        json: formatDataManagementDebugSnapshot(dataManagementSession, {
+          encoding: 'json-compact',
+          maxEntries: 12,
+          includeDebug: false,
+        }),
+      },
+      {
+        id: 'app-state',
+        label: 'App State',
+        description: 'Current tab, selected character/event/phone state, running state, settings, and turn number.',
+        value: snapshot.appState,
+      },
+      {
+        id: 'workflow-nodes',
+        label: 'Workflow Nodes (Compact Runtime)',
+        description: 'Current workflow nodes with compact status, preview, runtime, and debug fields, including Chat History RP Time prompt/response when present.',
+        value: snapshot.nodes,
+      },
+      {
+        id: 'workflow-edges',
+        label: 'Workflow Connections',
+        description: 'Current workflow graph connections between node handles.',
+        value: snapshot.edges,
+      },
+      {
+        id: 'last-run-debug',
+        label: 'Last Run Debug',
+        description: 'Last run mode, prompt slot, original/visible input, history strings, phone/event flags, and last RP output.',
+        value: snapshot.lastRun,
+      },
+      {
+        id: 'recent-turns',
+        label: 'Recent Turns (last two turns)',
+        description: 'Last two complete RP turns with input/output graph text, message ids/counts, and V2 checkpoint summary.',
+        value: snapshot.recentTurns,
+      },
+      {
+        id: 'prompt-switch-debug',
+        label: 'Prompt Switch Debug',
+        description: 'LLM Prompt Switch input values, selected output/prompt slot, prompt pieces, combined prompt, and generated text.',
+        value: snapshot.promptSwitch,
+      },
+      {
+        id: 'event-manager-debug',
+        label: 'Event Manager Debug',
+        description: 'Event list, selected event, Event Manager status, compact context, prompt, and response data.',
+        value: snapshot.eventManager,
+      },
+      {
+        id: 'system-log',
+        label: 'System Log',
+        description: 'Current System Log entries, including info, warning, and error entries.',
+        value: snapshot.systemLog,
+      },
+    ];
+    const textMetrics = new TextMetricsApi(activeTokenEstimateBytesPerToken);
+    return sectionDefinitions.map((section) => {
+      const json = section.json ?? JSON.stringify(section.value, null, 2);
+      return {
+        id: section.id,
+        label: section.label,
+        description: section.description,
+        tokenEstimate: textMetrics.measure(json).tokens,
+        json,
+      };
+    });
+  }
+
+  const currentSessionTurn = lastSessionTurn(turns);
+  const undoTurnTitle = isRunning
+    ? 'Cancel the running turn'
+    : currentSessionTurn
+      ? 'Undo the complete last turn'
+      : 'No turn to undo';
+  const undoTurnDisabled = !isRunning && !currentSessionTurn;
+
+  function allowStorybookPhoneContactPair(fromName: string, toName: string) {
+    const fromCharacter = storyCharacters.find((character) => phoneNamesMatch(character.name, fromName));
+    const toCharacter = storyCharacters.find((character) => phoneNamesMatch(character.name, toName));
+    if (
+      !fromCharacter ||
+      !toCharacter ||
+      fromCharacter.storybookNodeId !== toCharacter.storybookNodeId
+    ) {
+      return;
+    }
+    const storybookNode = nodesRef.current.find(
+      (node) => node.id === fromCharacter.storybookNodeId && node.data.nodeType === 'rp-storybook-v1',
+    );
+    if (!storybookNode?.data.storybookJson) {
+      return;
+    }
+    const storybook = parseRpStorybookJson(storybookNode.data.storybookJson);
+    const nextStorybook = withRpStorybookPhoneContactPairAllowed(
+      storybook,
+      fromCharacter.sourceId,
+      toCharacter.sourceId,
+    );
+    const nextJson = rpStorybookJsonText(nextStorybook);
+    if (nextJson === storybookNode.data.storybookJson) {
+      return;
+    }
+    updateRuntimeNode(storybookNode.id, {
+      storybookJson: nextJson,
+      storybookStatus: `Phone contact added: ${fromCharacter.name} <-> ${toCharacter.name}`,
+    });
+  }
+
+  function storybookCharacterByPhoneName(name: string) {
+    return storyCharacters.find((character) => phoneNamesMatch(character.name, name));
+  }
+
+  function openImagePreview(image: ChatImageAttachment) {
+    setPreviewImage({ image });
+  }
+
+  function openImageCaptionChangePreview(change: ImageCaptionChange) {
+    const source = currentStorybookImageSourceById(change.imageId);
+    if (!source) {
+      notifySystem('warning', `Phone image ${change.imageId} was not found in the Storybook image libraries.`);
+      return;
+    }
+    setPreviewImage({
+      image: chatAttachmentFromStorybookImage(source.image),
+    });
+  }
+
+  function imageIdsFromAttachments(images: ChatImageAttachment[] | undefined) {
+    const imageIds = images
+      ?.map((image) => image.id.trim())
+      .filter(Boolean) ?? [];
+    return imageIds.length ? imageIds : undefined;
+  }
+
+  function imageDescriptionFromAttachments(images: ChatImageAttachment[] | undefined) {
+    return images
+      ?.map((image) => image.description?.trim())
+      .find(Boolean);
+  }
+
+  function ensureImagesForStorybookCharacter(
+    character: StorybookCharacter | undefined,
+    images: ChatImageAttachment[] | undefined,
+    description: string | undefined,
+    status: (addedCount: number, updatedCount: number) => string,
+    options?: StorybookImageLibraryEnsureOptions,
+  ) {
+    if (!character || !images?.length) {
+      return undefined;
+    }
+    const storybookNode = nodesRef.current.find(
+      (node) => node.id === character.storybookNodeId && node.data.nodeType === 'rp-storybook-v1',
+    );
+    if (!storybookNode?.data.storybookJson) {
+      return undefined;
+    }
+    const storybook = parseRpStorybookJson(storybookNode.data.storybookJson);
+    const result = withImagesEnsuredForStorybookCharacter(
+      storybook,
+      character.sourceId,
+      images,
+      description ?? '',
+      options,
+    );
+    const changedCount = result.addedCount + result.updatedCount;
+    if (changedCount > 0) {
+      updateRuntimeNode(storybookNode.id, {
+        storybookJson: rpStorybookJsonText(result.storybook),
+        storybookStatus: status(result.addedCount, result.updatedCount),
+      });
+      syncStorybookImageContextRules(nodesRef.current, storybookNode.id, result.storybook, updateRuntimeNode);
+    }
+    return result.images.map(chatAttachmentFromStorybookImage);
+  }
+
+  function updateStorybookImageDescriptionEverywhere(
+    image: ChatImageAttachment | undefined,
+    description: string,
+  ) {
+    if (!image || !description.trim()) {
+      return;
+    }
+    nodesRef.current.forEach((node) => {
+      if (node.data.kind !== undefined || node.data.nodeType !== 'rp-storybook-v1' || !node.data.storybookJson) {
+        return;
+      }
+      const storybook = parseRpStorybookJson(node.data.storybookJson);
+      const result = withStorybookImageDescriptionUpdated(
+        storybook,
+        image.id,
+        image.dataUrl,
+        description.trim(),
+      );
+      if (result.updatedCount === 0) {
+        return;
+      }
+      updateRuntimeNode(node.id, {
+        storybookJson: rpStorybookJsonText(result.storybook),
+        storybookStatus: `Updated ${image.id} description.`,
+      });
+      syncStorybookImageContextRules(nodesRef.current, node.id, result.storybook, updateRuntimeNode);
+    });
+  }
+
+  function updateStorybookImageDescriptionById(
+    imageId: string,
+    description: string,
+  ): ImageCaptionChange | undefined {
+    const normalizedImageId = imageId.trim();
+    const normalizedDescription = description.trim();
+    if (!normalizedImageId || normalizedImageId === 'new_image' || !normalizedDescription) {
+      return undefined;
+    }
+    const beforeCaption = storybookImageDescriptionById.get(normalizedImageId)?.trim() || undefined;
+    let updated = false;
+    nodesRef.current.forEach((node) => {
+      if (node.data.kind !== undefined || node.data.nodeType !== 'rp-storybook-v1' || !node.data.storybookJson) {
+        return;
+      }
+      const storybook = parseRpStorybookJson(node.data.storybookJson);
+      const result = withStorybookImageDescriptionUpdated(
+        storybook,
+        normalizedImageId,
+        '',
+        normalizedDescription,
+      );
+      if (result.updatedCount === 0) {
+        return;
+      }
+      updated = true;
+      updateRuntimeNode(node.id, {
+        storybookJson: rpStorybookJsonText(result.storybook),
+        storybookStatus: `Updated ${normalizedImageId} description.`,
+      });
+      syncStorybookImageContextRules(nodesRef.current, node.id, result.storybook, updateRuntimeNode);
+    });
+    if (updated) {
+      const immediateDescriptions = new Map(storybookImageDescriptionById);
+      immediateDescriptions.set(normalizedImageId, normalizedDescription);
+      updatePhoneImageDescriptions(immediateDescriptions);
+    }
+    return updated
+      ? {
+          imageId: normalizedImageId,
+          beforeCaption,
+          afterCaption: normalizedDescription,
+        }
+      : undefined;
+  }
+
+  function changeImageCaptionUpdate(change: ImageCaptionChange, caption: string) {
+    const normalizedCaption = caption.trim();
+    const normalizedImageId = change.imageId.trim();
+    if (!normalizedCaption || !normalizedImageId) {
+      return;
+    }
+    let targetMessage = messagesRef.current.find((message) => message.phoneImageCaptionChange === change);
+    if (!targetMessage) {
+      for (let index = messagesRef.current.length - 1; index >= 0; index -= 1) {
+        const message = messagesRef.current[index];
+        const currentChange = message.phoneImageCaptionChange;
+        if (
+          currentChange?.imageId.trim() === normalizedImageId &&
+          (currentChange.beforeCaption ?? '') === (change.beforeCaption ?? '')
+        ) {
+          targetMessage = message;
+          break;
+        }
+      }
+    }
+    if (!targetMessage?.phoneImageCaptionChange) {
+      notifySystem('warning', `Caption update for ${normalizedImageId} was not found.`);
+      return;
+    }
+    if (targetMessage.phoneImageCaptionChange.afterCaption === normalizedCaption) {
+      updateStorybookImageDescriptionById(normalizedImageId, normalizedCaption);
+      return;
+    }
+    updateStorybookImageDescriptionById(normalizedImageId, normalizedCaption);
+    updateMessage(targetMessage.id, {
+      phoneImageCaptionChange: {
+        ...targetMessage.phoneImageCaptionChange,
+        afterCaption: normalizedCaption,
+      },
+    });
+    notifySystem('info', `Changed caption update for ${normalizedImageId}.`);
+  }
+
+  function pruneStorybookExternalImagesForMessages(activeMessages = messagesRef.current) {
+    nodesRef.current.forEach((node) => {
+      if (node.data.kind !== undefined || node.data.nodeType !== 'rp-storybook-v1' || !node.data.storybookJson) {
+        return;
+      }
+      const storybook = parseRpStorybookJson(node.data.storybookJson);
+      const result = withStorybookExternalImagesPruned(storybook, activeMessages);
+      if (result.removedCount === 0) {
+        return;
+      }
+      updateRuntimeNode(node.id, {
+        storybookJson: rpStorybookJsonText(result.storybook),
+        storybookStatus: `Removed ${result.removedCount} inactive received image${result.removedCount === 1 ? '' : 's'}.`,
+      });
+      syncStorybookImageContextRules(nodesRef.current, node.id, result.storybook, updateRuntimeNode);
+    });
+  }
+
+  function addPhoneImagesToRecipientStorybook(
+    fromName: string,
+    toName: string,
+    images: ChatImageAttachment[] | undefined,
+    description?: string,
+  ) {
+    const sender = storybookCharacterByPhoneName(fromName);
+    const recipient = storybookCharacterByPhoneName(toName);
+    if (
+      !sender ||
+      !recipient ||
+      sender.id === recipient.id ||
+      sender.storybookNodeId !== recipient.storybookNodeId
+    ) {
+      return;
+    }
+    ensureImagesForStorybookCharacter(
+      recipient,
+      images,
+      description,
+      (addedCount, updatedCount) =>
+        addedCount > 0
+          ? `Added ${addedCount} phone image${addedCount === 1 ? '' : 's'} to ${recipient.name} from ${sender.name}.`
+          : `Updated ${updatedCount} phone image description${updatedCount === 1 ? '' : 's'} for ${recipient.name}.`,
+      { receivedFrom: sender.name },
+    );
+  }
+
+  function ensurePhoneImagesInStorybooks(
+    fromName: string,
+    toName: string,
+    images: ChatImageAttachment[] | undefined,
+    description?: string,
+    sourceOwnerName?: string,
+  ) {
+    if (!images?.length) {
+      return undefined;
+    }
+    const sender = storybookCharacterByPhoneName(fromName);
+    const imagesAlreadyStored = images.every((image) => {
+      const storedImage = currentStorybookImageSourceById(image.id)?.image;
+      return storedImage?.dataUrl === image.dataUrl;
+    });
+    const senderNeedsImageAccess = !!sender && !!sourceOwnerName && !phoneNamesMatch(sender.name, sourceOwnerName);
+    const senderAttachments = imagesAlreadyStored && !senderNeedsImageAccess
+      ? images
+      : ensureImagesForStorybookCharacter(
+          sender,
+          images,
+          description,
+            (addedCount, updatedCount) =>
+              addedCount > 0
+              ? `Added ${addedCount} phone image${addedCount === 1 ? '' : 's'} for ${sender?.name ?? 'Storybook character'}${senderNeedsImageAccess ? ' with Image Access' : ''}.`
+              : `Updated ${updatedCount} phone image description${updatedCount === 1 ? '' : 's'} for ${sender?.name ?? 'Storybook character'}.`,
+          senderNeedsImageAccess ? { imageAccess: true } : undefined,
+        );
+    const ensuredAttachments = senderAttachments?.length ? senderAttachments : images;
+    addPhoneImagesToRecipientStorybook(fromName, toName, ensuredAttachments, description);
+    return ensuredAttachments;
+  }
+
+  function updatePhoneImageDescriptionFromLlm(
+    message: MessageRecord,
+    description: string,
+  ): ImageCaptionChange | undefined {
+    const trimmedDescription = description.trim();
+    if (!trimmedDescription || !message.imageAttachments?.length) {
+      return undefined;
+    }
+    const beforeCaption =
+      message.phoneImageDescription?.trim() ||
+      message.phoneImageIds
+        ?.map((imageId) => storybookImageDescriptionById.get(imageId)?.trim())
+        .find(Boolean) ||
+      undefined;
+    const storybookAttachments = ensurePhoneImagesInStorybooks(
+      message.phoneFrom ?? '',
+      message.phoneTo ?? '',
+      message.imageAttachments,
+      trimmedDescription,
+    );
+    const imageAttachments = storybookAttachments?.length
+      ? storybookAttachments
+      : message.imageAttachments;
+    const phoneImageIds = imageIdsFromAttachments(imageAttachments) ?? message.phoneImageIds;
+    updateStorybookImageDescriptionEverywhere(
+      imageAttachments[0],
+      trimmedDescription,
+    );
+    if (phoneImageIds?.length) {
+      const immediateDescriptions = new Map(storybookImageDescriptionById);
+      phoneImageIds.forEach((imageId) => immediateDescriptions.set(imageId, trimmedDescription));
+      updatePhoneImageDescriptions(immediateDescriptions);
+    }
+    updateMessage(message.id, {
+      phoneImageDescription: trimmedDescription,
+      ...(phoneImageIds?.length ? { phoneImageIds } : {}),
+      ...(storybookAttachments?.length ? { imageAttachments: storybookAttachments } : {}),
+    });
+    const imageId = phoneImageIds?.[0]?.trim() || imageAttachments[0]?.id.trim();
+    return imageId
+      ? {
+          imageId,
+          beforeCaption,
+          afterCaption: trimmedDescription,
+        }
+      : undefined;
+  }
+
+  function latestIncomingPhoneImageMessage(phoneReplyTo?: MessageRecord) {
+    const describedInput = activeTurnCollectorRef.current?.inputMessages.find(
+      (message) =>
+        message.channel === 'phone' &&
+        !!message.imageAttachments?.length,
+    );
+    return describedInput ?? (
+      phoneReplyTo?.imageAttachments?.length ? phoneReplyTo : undefined
+    );
+  }
+
+  function applyPhoneImageActionFromLlm(
+    action: ParsedPhoneImageAction,
+    phoneReplyTo?: MessageRecord,
+  ): ImageCaptionChange | undefined {
+    if (action.imageAction === 'no_change') {
+      return undefined;
+    }
+    const describedMessage = latestIncomingPhoneImageMessage(phoneReplyTo);
+    if (describedMessage && phoneImageActionMatchesMessage(describedMessage, action)) {
+      if (action.caption) {
+        return updatePhoneImageDescriptionFromLlm(describedMessage, action.caption);
+      }
+      return undefined;
+    }
+    if (!describedMessage) {
+      notifySystem(
+        'warning',
+        `RP Output returned a phone image action for ${action.imageId}, but no matching phone image was found.`,
+      );
+      return undefined;
+    }
+    notifySystem(
+      'warning',
+      `RP Output returned a phone image action for ${action.imageId}, but the latest phone input uses a different image.`,
+    );
+    return undefined;
+  }
+
+  function storybookPhoneImageAttachment(message: Pick<ParsedPhoneMessage, 'from' | 'imageId'>) {
+    const imageId = message.imageId?.trim();
+    if (!imageId) {
+      return undefined;
+    }
+    const source = currentStorybookImageSourceById(imageId);
+    if (!source) {
+      notifySystem('warning', `Phone image ${imageId} was not found in the Storybook image libraries.`);
+      return undefined;
+    }
+    return {
+      attachment: chatAttachmentFromStorybookImage(source.image),
+      description: source.image.description.trim() || undefined,
+      ownerName: source.ownerName,
+    };
+  }
+
+  function appendPhoneMessage(
+    message: ParsedPhoneMessage,
+    sound?: PhoneMessageSound,
+    role: Extract<MessageRecord['role'], 'user' | 'output'> = 'user',
+    phoneAutoTurnSource?: MessageRecord['phoneAutoTurnSource'],
+    workflowVariableSetCommands?: WorkflowVariableSetCommand[],
+    inputMetadata: Pick<MessageRecord, 'inputMessageFormat' | 'inputPromptSlot' | 'replyToMessageId'> = {},
+  ) {
+    const canonicalMessage = {
+      ...message,
+      from: canonicalPhoneName(phoneCharacters, message.from),
+      to: canonicalPhoneName(phoneCharacters, message.to),
+    };
+    const storybookImage = storybookPhoneImageAttachment(canonicalMessage);
+    const sourceImageAttachments = canonicalMessage.imageAttachments?.length
+      ? canonicalMessage.imageAttachments
+      : storybookImage
+        ? [storybookImage.attachment]
+        : undefined;
+    const imageDescription =
+      canonicalMessage.imageDescription ??
+      storybookImage?.description ??
+      imageDescriptionFromAttachments(sourceImageAttachments);
+    const imageAttachments = ensurePhoneImagesInStorybooks(
+      canonicalMessage.from,
+      canonicalMessage.to,
+      sourceImageAttachments,
+      imageDescription,
+      storybookImage?.ownerName,
+    ) ?? sourceImageAttachments;
+    const phoneImageIds = imageIdsFromAttachments(imageAttachments);
+    allowStorybookPhoneContactPair(canonicalMessage.from, canonicalMessage.to);
+    const id = appendMessage({
+      role,
+      originalText: canonicalMessage.message,
+      translatedText: canonicalMessage.translatedMessage,
+      imageAttachments,
+      includeInHistory: true,
+      channel: 'phone',
+      phoneMessage: true,
+      phoneFrom: canonicalMessage.from,
+      phoneTo: canonicalMessage.to,
+      phoneAutoTurnSource,
+      phoneImageIds,
+      phoneImageDescription: imageDescription,
+      phoneImageCaptionChange: canonicalMessage.phoneImageCaptionChange,
+      replyToMessageId: inputMetadata.replyToMessageId,
+      inputMessageFormat: inputMetadata.inputMessageFormat,
+      inputPromptSlot: inputMetadata.inputPromptSlot,
+      speakerName: canonicalMessage.from,
+      speakerNames: [canonicalMessage.from],
+      turnContext: canonicalMessage.turnContext,
+      workflowVariableSetCommands,
+    });
+    if (sound) {
+      playPhoneMessageSound(sound);
+    }
+    const conversationKey = phoneConversationKey(canonicalMessage.from, canonicalMessage.to);
+    const conversationIsVisible =
+      chatPanelView === 'chat' ||
+      (
+        chatPanelView === 'phone' &&
+        (
+          openedPhoneConversationKey === conversationKey ||
+          selectedPhoneContact?.conversationKey === conversationKey
+        )
+      );
+    if (conversationIsVisible) {
+      setPhoneSeenByConversation((current) =>
+        id > (current[conversationKey] ?? 0)
+          ? { ...current, [conversationKey]: id }
+          : current
+      );
+    } else {
+      setPhoneSeenByConversation((current) => ({
+        ...current,
+        [conversationKey]: Math.min(current[conversationKey] ?? 0, id - 1),
+      }));
+    }
+    return id;
+  }
+
+  function setOutputActionChoicesHiddenByTurn(turnId: string, hidden: boolean) {
+    const shouldPatch = (message: MessageRecord) =>
+      ((message.outputActionChoices?.length ?? 0) > 0 ||
+        (message.outputActionInfoBoxes?.length ?? 0) > 0 ||
+        (message.outputActionProgressBars?.length ?? 0) > 0 ||
+        (message.outputActionContextCapacityBars?.length ?? 0) > 0) &&
+      (hidden
+        ? !message.outputActionsHidden
+        : message.outputActionsHidden && message.outputActionsHiddenByTurnId === turnId);
+    const patchMessage = (message: MessageRecord): MessageRecord => {
+      if (!shouldPatch(message)) {
+        return message;
+      }
+      return hidden
+        ? { ...message, outputActionsHidden: true, outputActionsHiddenByTurnId: turnId }
+        : { ...message, outputActionsHidden: false, outputActionsHiddenByTurnId: undefined };
+    };
+    if (!messagesRef.current.some(shouldPatch)) {
+      return;
+    }
+
+    messagesRef.current = messagesRef.current.map(patchMessage);
+    turnsRef.current = turnsRef.current.map((turn) => ({
+      ...turn,
+      input: { ...turn.input, messages: turn.input.messages.map(patchMessage) },
+      output: { ...turn.output, messages: turn.output.messages.map(patchMessage) },
+    }));
+    setMessages(messagesRef.current);
+    setTurns(turnsRef.current);
+  }
+
+  function resolveOutputActionContextCapacityBars(
+    requests: OutputActionContextCapacityRequest[],
+  ): OutputActionContextCapacityBar[] {
+    return requests.flatMap((request) => {
+      const compressionNodes = nodesRef.current.filter(
+        (node) => node.data.nodeType === 'context-compression',
+      );
+      const compressionNode = compressionNodes[request.source.index - 1];
+      if (!compressionNode) {
+        notifySystem(
+          'warning',
+          `Output Actions contextCapacity could not find Context Compression node #${request.source.index}.`,
+        );
+        return [];
+      }
+      const segments = contextCompressionCapacitySegments(
+        compressionNode,
+        activeTokenEstimateBytesPerToken,
+      );
+      return [{
+        id: request.id,
+        title: request.title ?? 'Context Capacity',
+        label: request.label,
+        nodeLabel: compressionNode.data.label,
+        showLegend: request.showLegend ?? true,
+        ...segments,
+      }];
+    });
+  }
+  const { runGraph } = useGraphRun({
+    messages,
+    setMessages,
+    messagesRef,
+    turnsRef,
+    activeTurnCollectorRef,
+    appendMessage,
+    updateMessage,
+    updateHistoryMessageTimes,
+    removeMessage,
+    applyTurnRuntime,
+    applyTurnCheckpointRuntime,
+    commitCollectedTurn,
+    recordTurnTrace,
+    referenceImageOptionsForRun,
+    clearTemporaryReferenceImages,
+    selectPhoneReply,
+    nodesRef,
+    setNodes,
+    edges,
+    connections,
+    defaultConnectionId,
+    isLlmConnection,
+    nodeHasVision,
+    checkProviderConnections,
+    notifySystem,
+    updateRuntimeNode,
+    clearAllRunActiveTimers,
+    updateWorkflowComfyGenerationActive,
+    setOutputActionChoicesHiddenByTurn,
+    setWorkflowVariablesFromCommands,
+    workflowSettingsValuesForGraph,
+    settingsValueDefinitionsRef,
+    promptActionSettings,
+    workflowSettingsValuesRef,
+    characterStorybookNodes,
+    storyCharacters,
+    phoneCharacters,
+    selectedCharacter,
+    selectedPhoneContact,
+    storybooksByNodeId,
+    characterColors,
+    englishProcessingEnabled,
+    inputTranslationOnlyEnabled,
+    displayLanguage,
+    rpDateTimeFormat,
+    rpWeekdayLanguage,
+    retryFormatErrorsEnabled,
+    nodeLlm,
+    activeTokenEstimateBytesPerToken,
+    autoCalibrateTokenEstimate,
+    setCalibratedTokenBytesPerToken,
+    lastRunDebugRef,
+    translateText,
+    directInputText,
+    analyzeDisplayedOutput,
+    appendPhoneMessage,
+    ensurePhoneImagesInStorybooks,
+    imageDescriptionFromAttachments,
+    applyPhoneImageActionFromLlm,
+    resolveOutputActionContextCapacityBars,
+    pruneStorybookExternalImagesForMessages,
+    selectChatPanelView,
+    selectChatCharacter,
+    setSelectedCharacterId,
+    setDraft,
+    setDraftCommands,
+    setDraftImages,
+    setPhoneDraft,
+    setPhoneDraftCommands,
+    setPhoneImages,
+    activeRun: activeRunRef,
+    setActiveRunId,
+    setIsRunning,
+    setRunDurationMs,
+    runStartTimeRef,
+    runEndTimeRef,
+    pendingRunRestart: pendingRunRestartRef,
+    runLlmReport,
+    runDurationMs,
+    setRunHistory,
+    activeRunLlmReport: activeRunLlmReportRef,
+    setRunLlmReport,
+    activeRunCancelReason: activeRunCancelReasonRef,
+  });
+
+  function regenerateLastOutput() {
+    if (isRunning) {
+      const retry = activeRunRef.current?.retry;
+      if (retry) {
+        pendingRunRestartRef.current = retry;
+        cancelCurrentRun('restart');
+      }
+      return;
+    }
+    const turn = lastSessionTurn(turnsRef.current);
+    const inputMessage = turn?.input.messages[0];
+    if (!turn) {
+      return;
+    }
+    const allTurnMessageIds = turnMessageIds(turn);
+    const replacedMessageIds = new Set(turn.output.messages.map((message) => message.id));
+    const isAutoTurn =
+      turn.mode === 'auto-turn' ||
+      turn.input.graphText.includes('[AUTO TURN]') ||
+      turn.input.graphText.includes('[AUTO PHONE TURN]');
+    if (turn.messageFormat === 2) {
+      applyTurnCheckpointRuntime(turn, 'before');
+      void runGraph(
+        turn.input.graphText,
+        inputMessage?.imageAttachments ?? [],
+        undefined,
+        messagesRef.current.filter((message) => !allTurnMessageIds.has(message.id)),
+        replacedMessageIds,
+        turn.mode === 'narrator' ? undefined : selectedCharacter,
+        false,
+        undefined,
+        { turn, replaceInput: false },
+        turn.mode ?? 'user',
+        inputMessage?.eventDisplayText,
+        undefined,
+        undefined,
+        false,
+        turn.messageFormat,
+        turn.promptSlot,
+      );
+      return;
+    }
+    if (isAutoTurn) {
+      const phoneInput = parsePhoneGraphInput(turn.input.graphText);
+      const phoneAutoTurn = !!phoneInput;
+      const inputCharacter = phoneInput
+        ? phoneCharacters.find((character) => phoneNamesMatch(character.name, phoneInput.from)) ?? selectedCharacter
+        : selectedCharacter;
+      const phoneRecipient = phoneInput
+        ? phoneCharacters.find((character) => phoneNamesMatch(character.name, phoneInput.to))
+        : undefined;
+      applyTurnCheckpointRuntime(turn, 'before');
+      void runGraph(
+        storedAutoTurnInputText(turn.input.graphText),
+        [],
+        undefined,
+        messagesRef.current.filter((message) => !allTurnMessageIds.has(message.id)),
+        replacedMessageIds,
+        inputCharacter,
+        phoneAutoTurn,
+        phoneRecipient,
+        { turn, replaceInput: false },
+        'auto-turn',
+        inputMessage?.eventDisplayText,
+      );
+      return;
+    }
+    if (turn.mode === 'narrator') {
+      applyTurnCheckpointRuntime(turn, 'before');
+      void runGraph(
+        storedNarratorInputText(turn.input.graphText),
+        inputMessage?.imageAttachments ?? [],
+        inputMessage,
+        messagesRef.current.filter((message) => !allTurnMessageIds.has(message.id)),
+        replacedMessageIds,
+        undefined,
+        false,
+        undefined,
+        { turn, replaceInput: false },
+        'narrator',
+      );
+      return;
+    }
+    if (!inputMessage) {
+      return;
+    }
+    const inputCharacter = inputMessage.speakerName
+      ? phoneCharacters.find((character) => phoneNamesMatch(character.name, inputMessage.speakerName ?? ''))
+      : selectedCharacter;
+    applyTurnCheckpointRuntime(turn, 'before');
+    void runGraph(
+      inputMessage.translatedText ?? inputMessage.originalText,
+      inputMessage.imageAttachments ?? [],
+      inputMessage,
+      messagesRef.current.filter((message) => !allTurnMessageIds.has(message.id)),
+      replacedMessageIds,
+      inputCharacter,
+      inputMessage.phoneMessage,
+      inputMessage.phoneTo
+        ? phoneCharacters.find((character) => phoneNamesMatch(character.name, inputMessage.phoneTo ?? ''))
+        : undefined,
+      { turn, replaceInput: false },
+    );
+  }
+
+  function cancelEditMessage() {
+    setEditingMessageId(null);
+    setEditingDraft('');
+  }
+
+  function undoLastTurn() {
+    const turnIndex = lastSessionTurnIndex(turnsRef.current);
+    const turn = turnIndex >= 0 ? turnsRef.current[turnIndex] : undefined;
+    if (isRunning) {
+      return;
+    }
+    if (!turn) {
+      return;
+    }
+    const removedIds = turnMessageIds(turn);
+    const nextTurns = turnsRef.current.filter((_, index) => index !== turnIndex);
+    turnsRef.current = nextTurns;
+    setTurns(nextTurns);
+    messagesRef.current = messagesRef.current.filter((message) => !removedIds.has(message.id));
+    setMessages(messagesRef.current);
+    applyTurnCheckpointRuntime(turn, 'before');
+    pruneStorybookExternalImagesForMessages();
+    setOutputActionChoicesHiddenByTurn(turn.id, false);
+    removeTurnCheckpoint(turn.id);
+    removeTurnTracesForTurn(turn.id);
+    cancelEditMessage();
+  }
+
+  function cancelRunOrUndoLastTurn() {
+    if (isRunning) {
+      cancelCurrentRun('cancel');
+      return;
+    }
+    undoLastTurn();
+  }
+
+  function beginEditMessage(message: MessageRecord, visibleText: string) {
+    if (isRunning) {
+      return;
+    }
+    setEditingMessageId(message.id);
+    setEditingDraft(visibleText);
+  }
+
+  function applyInputTimeCommands(commands: StructuredInputCommand[]) {
+    const timeCommandResult = applyTimeCommandsToWorkflowNodes(nodesRef.current, commands);
+    if (timeCommandResult.error) {
+      notifySystem('warning', timeCommandResult.error);
+      return false;
+    }
+    if (timeCommandResult.appliedDateTime) {
+      commitNodes(timeCommandResult.nodes);
+      notifySystem('info', `RP Time set to ${timeCommandResult.appliedDateTime}.`);
+    }
+    return true;
+  }
+
+  function regenerateEditedMessage() {
+    if (editingMessageId === null) {
+      return;
+    }
+    if (isRunning) {
+      const retry = activeRunRef.current?.retry;
+      if (retry) {
+        pendingRunRestartRef.current = retry;
+        cancelCurrentRun('restart');
+      }
+      return;
+    }
+    const editedText = editingDraft.trim();
+    if (!editedText) {
+      return;
+    }
+    const inputIndex = messagesRef.current.findIndex((message) => message.id === editingMessageId);
+    const inputMessage = messagesRef.current[inputIndex];
+    if (inputIndex < 0 || inputMessage?.role !== 'user') {
+      cancelEditMessage();
+      return;
+    }
+    const inputCharacter = inputMessage.speakerName
+      ? phoneCharacters.find((character) => phoneNamesMatch(character.name, inputMessage.speakerName ?? ''))
+      : selectedCharacter;
+    const turn =
+      turnsRef.current.find((entry) => entry.id === inputMessage.turnId) ??
+      turnsRef.current[turnsRef.current.length - 1];
+    if (!turn || turn.id !== turnsRef.current[turnsRef.current.length - 1]?.id) {
+      cancelEditMessage();
+      return;
+    }
+    const replacedMessageIds = turnMessageIds(turn);
+    cancelEditMessage();
+    applyTurnCheckpointRuntime(turn, 'before');
+    void runGraph(
+      editedText,
+      inputMessage.imageAttachments ?? [],
+      undefined,
+      messagesRef.current.filter((message) => !replacedMessageIds.has(message.id)),
+      replacedMessageIds,
+      inputCharacter,
+      inputMessage.phoneMessage,
+      inputMessage.phoneTo
+        ? phoneCharacters.find((character) => phoneNamesMatch(character.name, inputMessage.phoneTo ?? ''))
+        : undefined,
+      { turn, replaceInput: true },
+      inputMessage.speakerName === narratorSpeakerName ? 'narrator' : 'user',
+    );
+  }
+
+  function submitMessage(event: FormEvent<HTMLFormElement>) {
+    event.preventDefault();
+    if (isRunning) {
+      cancelCurrentRun('cancel');
+      return;
+    }
+    const message = draft.trim();
+    const inputPayload = structuredInputPayload(draftCommands, message);
+    if (!message && draftImages.length === 0) {
+      if (inputPayload.commands.some((command) => command.type === 'time')) {
+        if (applyInputTimeCommands(inputPayload.commands)) {
+          setDraft('');
+          setDraftCommands([]);
+        }
+      }
+      return;
+    }
+    const commandCheck = applyTimeCommandsToWorkflowNodes(nodesRef.current, inputPayload.commands);
+    if (commandCheck.error) {
+      notifySystem('warning', commandCheck.error);
+      return;
+    }
+    setDraft('');
+    setDraftCommands([]);
+    setDraftImages([]);
+    if (!narratorSelected && selectedCharacter) {
+      rememberChatCharacter(selectedCharacter.id);
+    }
+    void runGraph(
+      message || 'Attached image.',
+      draftImages,
+      undefined,
+      messagesRef.current,
+      undefined,
+      narratorSelected ? undefined : selectedCharacter,
+      false,
+      undefined,
+      undefined,
+      narratorSelected ? 'narrator' : 'user',
+      undefined,
+      undefined,
+      undefined,
+      false,
+      undefined,
+      undefined,
+      undefined,
+      inputPayload,
+    );
+  }
+
+  function submitOutputActionChoice(selection: InputActionSelection) {
+    if (isRunning) {
+      return;
+    }
+    if (selection.mode === 'state') {
+      notifySystem('info', 'State Output Actions are not implemented yet.');
+      return;
+    }
+    const actionText = selection.text ?? selection.value ?? selection.label;
+    const requestedPlayer = selection.player?.trim();
+    const requestedPlayerKey = requestedPlayer?.toLocaleLowerCase();
+    let runNarratorSelected = narratorSelected;
+    let runSelectedCharacter = selectedCharacter;
+
+    if (requestedPlayer && requestedPlayerKey !== 'current') {
+      if (phoneNamesMatch(requestedPlayer, narratorSpeakerName)) {
+        runNarratorSelected = true;
+        runSelectedCharacter = undefined;
+      } else {
+        const targetCharacter = storyCharacters.find(
+          (character) => character.id === requestedPlayer || phoneNamesMatch(character.name, requestedPlayer),
+        );
+        if (targetCharacter) {
+          runNarratorSelected = false;
+          runSelectedCharacter = targetCharacter;
+        } else {
+          runNarratorSelected = true;
+          runSelectedCharacter = undefined;
+          notifySystem('warning', `Output Actions could not find player "${requestedPlayer}". Falling back to Narrator.`);
+        }
+      }
+    }
+
+    if (!runNarratorSelected && runSelectedCharacter) {
+      rememberChatCharacter(runSelectedCharacter.id);
+    }
+    void runGraph(
+      actionText,
+      [],
+      undefined,
+      messagesRef.current,
+      undefined,
+      runNarratorSelected ? undefined : runSelectedCharacter,
+      false,
+      undefined,
+      undefined,
+      runNarratorSelected ? 'narrator' : 'user',
+      undefined,
+      undefined,
+      undefined,
+      false,
+      selection.messageFormat,
+      selection.turnMode,
+    );
+  }
+
+  function selectPhoneImagesFromComposer() {
+    void selectPhoneImages();
+  }
+
+  function addPhoneImagesFromComposer(files: FileList | null) {
+    void addPhoneImages(files);
+  }
+
+  function submitPhoneMessage(event: FormEvent<HTMLFormElement>) {
+    event.preventDefault();
+    if (isRunning) {
+      cancelCurrentRun('cancel');
+      return;
+    }
+    const message = phoneDraft.trim();
+    const inputPayload = structuredInputPayload(phoneDraftCommands, message);
+    if (!message && phoneImages.length === 0) {
+      if (inputPayload.commands.some((command) => command.type === 'time')) {
+        if (applyInputTimeCommands(inputPayload.commands)) {
+          setPhoneDraft('');
+          setPhoneDraftCommands([]);
+        }
+      }
+      return;
+    }
+    const commandCheck = applyTimeCommandsToWorkflowNodes(nodesRef.current, inputPayload.commands);
+    if (commandCheck.error) {
+      notifySystem('warning', commandCheck.error);
+      return;
+    }
+    if (narratorSelected) {
+      notifySystem('warning', 'Narrator cannot send phone messages from the Phone tab. Use the Chat tab.');
+      return;
+    }
+    if (!selectedPhoneContact) {
+      notifySystem('warning', 'Select a phone contact first.');
+      return;
+    }
+    if (selectedCharacter) {
+      openPhoneConversation(selectedPhoneContact.conversationKey, selectedPhoneContact.latestPhoneId, {
+        speakerId: selectedCharacter.id,
+        contactId: selectedPhoneContact.character.id,
+      });
+    }
+    const images = phoneImages;
+    const replyTo = phoneReplyToMessage;
+    retainReplyReferenceImages(replyTo);
+    setPhoneDraft('');
+    setPhoneDraftCommands([]);
+    setPhoneImages([]);
+    clearPhoneReply();
+    setShowPhoneEmojiPicker(false);
+    void runGraph(
+      message || 'Attached image.',
+      images,
+      undefined,
+      messagesRef.current,
+      undefined,
+      selectedCharacter,
+      true,
+      selectedPhoneContact.character,
+      undefined,
+      'user',
+      undefined,
+      undefined,
+      undefined,
+      false,
+      undefined,
+      undefined,
+      replyTo,
+      inputPayload,
+    );
+  }
+
+  async function runSelectedEvent() {
+    if (isRunning || !eventManagerAvailable || !selectedEvent) {
+      return;
+    }
+    const eventToRun = selectedEvent;
+    const completeEvent = () => closeEvent(eventToRun.id, 'completed');
+    if (eventToRun.channel === 'phone') {
+      const senderName = eventToRun.phoneFrom ?? eventToRun.assignedTo;
+      const recipientName = eventToRun.phoneTo ?? eventToRun.requestedBy;
+      const sender =
+        senderName
+          ? phoneCharacters.find((character) => phoneNamesMatch(character.name, senderName))
+          : selectedCharacter;
+      const recipient =
+        recipientName
+          ? phoneCharacters.find((character) => phoneNamesMatch(character.name, recipientName))
+          : undefined;
+      if (!sender || !recipient) {
+        notifySystem('warning', 'Phone event needs a sender and recipient character.');
+        return;
+      }
+      const eventGraphText = eventGraphInputText(eventToRun);
+      const eventNarratorText = eventChatDisplayText(
+        eventToRun,
+        rpDateTimeFormat,
+        rpWeekdayLanguage,
+      );
+      await runGraph(
+        eventGraphText,
+        [],
+        undefined,
+        messagesRef.current,
+        undefined,
+        sender,
+        true,
+        recipient,
+        undefined,
+        'auto-turn',
+        eventNarratorText,
+        completeEvent,
+        'received',
+      );
+      return;
+    }
+    const eventSpeaker = eventStoryCharacter(eventToRun, storyCharacters);
+    if (!eventSpeaker) {
+      notifySystem('warning', 'Event needs at least one playable character.');
+      return;
+    }
+    const eventGraphText = eventGraphInputText(eventToRun);
+    const eventNarratorText = eventChatDisplayText(
+      eventToRun,
+      rpDateTimeFormat,
+      rpWeekdayLanguage,
+    );
+    await runGraph(
+      eventGraphText,
+      [],
+      undefined,
+      messagesRef.current,
+      undefined,
+      eventSpeaker,
+      undefined,
+      undefined,
+      undefined,
+      'auto-turn',
+      eventNarratorText,
+      completeEvent,
+    );
+  }
+
+  function triggerAutoTurn() {
+    if (autoTurnDisabled) {
+      return;
+    }
+    const inputNode = nodesRef.current.find((node) => node.data.nodeType === 'input');
+    const autoTurnInstructions = autoTurnInstructionSettings(inputNode?.data.autoTurnInstructions);
+    if (chatPanelView === 'events') {
+      runSelectedEvent();
+      return;
+    }
+    if (chatPanelView === 'phone') {
+      if (narratorSelected) {
+        void runGraph(
+          autoTurnNarratorPhoneInstruction(autoTurnInstructions),
+          [],
+          undefined,
+          messagesRef.current,
+          undefined,
+          undefined,
+          true,
+          undefined,
+          undefined,
+          'narrator',
+          undefined,
+          undefined,
+          undefined,
+          true,
+        );
+        return;
+      }
+      if (!selectedCharacter || !selectedPhoneContact) {
+        notifySystem('warning', 'Select a phone contact first.');
+        return;
+      }
+      void runGraph(
+        autoTurnPhoneInstruction(
+          selectedCharacter.name,
+          selectedPhoneContact.character.name,
+          autoTurnInstructions,
+        ),
+        [],
+        undefined,
+        messagesRef.current,
+        undefined,
+        selectedCharacter,
+        true,
+        selectedPhoneContact.character,
+        undefined,
+        'auto-turn',
+      );
+      return;
+    }
+    if (!selectedCharacter && !narratorSelected) {
+      notifySystem('warning', 'Select a Storybook character first.');
+      return;
+    }
+    void runGraph(
+      narratorSelected
+        ? autoTurnNarratorInstruction(autoTurnInstructions)
+        : autoTurnRpInstruction(selectedCharacter!.name, autoTurnInstructions),
+      [],
+      undefined,
+      messagesRef.current,
+      undefined,
+      narratorSelected ? undefined : selectedCharacter,
+      false,
+      undefined,
+      undefined,
+      narratorSelected ? 'narrator' : 'auto-turn',
+      undefined,
+      undefined,
+      undefined,
+      narratorSelected,
+    );
+  }
+
+  const displayedWorkflowName = activeWorkflowFileName
+    ? activeWorkflowFileName === 'embedded workflow'
+      ? 'embedded in RP'
+      : activeWorkflowFileName
+    : 'not saved';
+  const displayedSessionSavedTurn =
+    activeSessionFileName && activeSessionSavedTurn !== null
+      ? `Turn ${activeSessionSavedTurn} Saved`
+      : null;
+  const headerStorybookNode = nodeViewNodes.find(
+    (node) => node.data.kind === undefined && node.data.nodeType === 'rp-storybook-v1',
+  );
+  const headerStorybookFileName = headerStorybookNode?.data.storybookFileName;
+  const headerStorybookJson = headerStorybookNode?.data.storybookJson;
+  const displayedStorybookName = displayStorybookName(
+    headerStorybookFileName,
+    headerStorybookJson,
+    activeSessionFileName,
+  );
+
+  const formatEncryptedFileName = (fileName: string | null | undefined) => {
+    if (!fileName) return '';
+    return /\.json$/i.test(fileName) ? fileName : `${fileName}.json`;
+  };
+
+  const isSessionEncrypted = activeSessionProtection === 'encrypted';
+  const displayedSessionFileName = isSessionEncrypted && activeSessionFileName
+    ? formatEncryptedFileName(activeSessionFileName)
+    : (activeSessionFileName ?? 'not saved');
+
+  const isWorkflowEncrypted = activeWorkflowProtection === 'encrypted' && !!activeWorkflowFileName;
+  const displayedWorkflowNameFormatted = isWorkflowEncrypted
+    ? activeWorkflowFileName === 'embedded workflow'
+      ? displayedWorkflowName
+      : formatEncryptedFileName(activeWorkflowFileName)
+    : displayedWorkflowName;
+
+  const isStorybookEncrypted =
+    (activeStorybookProtection === 'encrypted' && !!headerStorybookNode?.data.storybookFileName) ||
+    (isSessionEncrypted && !headerStorybookNode?.data.storybookFileName && !!headerStorybookNode?.data.storybookJson) ||
+    (activeWorkflowProtection === 'encrypted' && !headerStorybookNode?.data.storybookFileName && !!headerStorybookNode?.data.storybookJson);
+  const displayedStorybookNameFormatted = isStorybookEncrypted
+    ? headerStorybookNode?.data.storybookFileName
+      ? formatEncryptedFileName(headerStorybookNode.data.storybookFileName)
+      : displayedStorybookName
+    : displayedStorybookName;
+
+  const headerLockIcon = (
+    <svg
+      width="11"
+      height="11"
+      viewBox="0 0 24 24"
+      fill="none"
+      stroke="currentColor"
+      strokeWidth="2.5"
+      strokeLinecap="round"
+      strokeLinejoin="round"
+      style={{ marginLeft: '4px', verticalAlign: 'middle', opacity: 0.9, color: 'var(--success)' }}
+      aria-hidden="true"
+    >
+      <rect x="3" y="11" width="18" height="11" rx="2" ry="2" />
+      <path d="M7 11V7a5 5 0 0 1 10 0v4" />
+    </svg>
+  );
+
+  const textDialogSourceNode = nodes.find((node) => node.id === textDialogNodeId);
+  const textDialogNode = textDialogSourceNode;
+  const jsonDialogNode = nodes.find((node) => node.id === jsonDialogNodeId);
+  const storybookCreatorNode = nodeViewNodes.find((node) => node.id === storybookCreatorNodeId);
+  const customNodeAssistantNode = nodeViewNodes.find((node) => node.id === customNodeAssistantNodeId);
+  const customNodeAssistantMessages = customNodeAssistantNodeId
+    ? (customNodeAssistantHistories[customNodeAssistantNodeId] || [])
+    : [];
+  const nodeAssistantNode = nodeViewNodes.find((node) => node.id === nodeAssistantNodeId);
+  const nodeAssistantMessages = nodeAssistantNodeId ? (nodeAssistantHistories[nodeAssistantNodeId] || []) : [];
+  const workflowAssistantSnapshotJson = useMemo(
+    () => JSON.stringify(createWorkflowAssistantSnapshot(nodeViewNodes, edges), null, 2),
+    [edges, nodeViewNodes],
+  );
+  const [assistantDebugSnapshotSections, setAssistantDebugSnapshotSections] =
+    useState<DebugSnapshotAssistantSection[]>([]);
+  useEffect(
+    () => {
+      // Building the debug snapshot reads refs and serializes large parts of the app
+      // state, so it must not run during render; recompute only when the serialized
+      // inputs change instead of on every render.
+      // eslint-disable-next-line react-hooks/set-state-in-effect
+      setAssistantDebugSnapshotSections(
+        nodeAssistantNode || workflowAssistantOpen ? createAssistantDebugSnapshotSections() : [],
+      );
+    },
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+    [
+      activeTokenEstimateBytesPerToken,
+      edges,
+      messages,
+      nodeAssistantNode,
+      nodeViewNodes,
+      sessionName,
+      systemLog,
+      workflowAssistantOpen,
+    ],
+  );
+  const setNodeAssistantMessages = (
+    newMessages: React.SetStateAction<AssistantChatMessage[]>
+  ) => {
+    if (!nodeAssistantNodeId) return;
+    setNodeAssistantHistories((prev) => {
+      const current = prev[nodeAssistantNodeId] || [];
+      const next = typeof newMessages === 'function'
+        ? (newMessages as (prev: AssistantChatMessage[]) => AssistantChatMessage[])(current)
+        : newMessages;
+      return {
+        ...prev,
+        [nodeAssistantNodeId]: next,
+      };
+    });
+  };
+  const outputNode = nodeViewNodes.find(
+    (node) => node.data.kind === undefined && node.data.nodeType === 'output',
+  );
+  const dialogueColorsEnabled = outputNode?.data.dialogueHighlightEnabled ?? false;
+  let editableUserMessageId: number | undefined;
+  for (let index = messages.length - 1; index >= 0; index -= 1) {
+    const message = messages[index];
+    if (message.role === 'user' && message.includeInHistory !== false) {
+      editableUserMessageId = message.id;
+      break;
+    }
+  }
+  const nodeViewValues = useMemo<NodeViewValues>(() => ({
+    connections,
+    providerHealthById,
+    onCheckProviderConnection: (connectionId) => {
+      void checkProviderConnectionById(connectionId);
+    },
+    estimatedTokenBytesPerToken: activeTokenEstimateBytesPerToken,
+    settingsValueDefinitions,
+    settingsValues: resolvedWorkflowSettingsValues,
+    promptActionCustomPresets,
+    setPromptActionCustomPresets,
+    promptActionSettings,
+    setPromptActionSettings,
+    promptTextCustomPresets,
+    setPromptTextCustomPresets,
+    nodes: nodeViewNodes,
+    edges,
+  }), [
+    activeTokenEstimateBytesPerToken,
+    checkProviderConnectionById,
+    connections,
+    edges,
+    nodeViewNodes,
+    providerHealthById,
+    promptActionCustomPresets,
+    promptActionSettings,
+    promptTextCustomPresets,
+    resolvedWorkflowSettingsValues,
+    setPromptActionCustomPresets,
+    setPromptActionSettings,
+    setPromptTextCustomPresets,
+    settingsValueDefinitions,
+  ]);
+  const renderedEdges = useMemo(
+    () => withSourceNodeStatusConnectionColors(edges, nodeViewNodes),
+    [edges, nodeViewNodes],
+  );
+  const workflowCapabilityIndicators = useMemo<WorkflowCapabilityIndicator[]>(() => {
+    const llmConnectionIds = new Set<string>();
+    const visionConnectionIds = new Set<string>();
+    const explicitComfyProviderIds = new Set<string>();
+    let usesVision = false;
+    let usesImage = false;
+
+    const connectionIdForNode = (node: WorkflowNode) => {
+      const connectionId = typeof node.data.connectionId === 'string' && node.data.connectionId.trim()
+        ? node.data.connectionId
+        : defaultConnectionId;
+      const connection = connections.find((entry) => entry.id === connectionId);
+      return connection && isLlmConnection(connection) ? connection.id : connectionId;
+    };
+
+    for (const node of nodeViewNodes) {
+      if (node.data.kind !== undefined) {
+        continue;
+      }
+      if (Object.prototype.hasOwnProperty.call(node.data, 'connectionId')) {
+        llmConnectionIds.add(connectionIdForNode(node));
+      }
+      if (node.data.nodeType !== 'llm-prompt' && node.data.nodeType !== 'llm-prompt-switch') {
+        continue;
+      }
+      const actionConfigs = withPromptActionRuntimeSettingsList(
+        promptActionConfigs(node.data.llmPromptActions),
+        promptActionSettings,
+      );
+      const promptTexts = node.data.nodeType === 'llm-prompt'
+        ? [node.data.llmPromptBefore ?? '', node.data.llmPromptAfter ?? '']
+        : [
+            ...llmPromptSwitchPromptBeforesByOutput(node.data).flat(),
+            ...llmPromptSwitchPromptAftersByOutput(node.data).flat(),
+          ];
+      const usedActionConfigs = promptTexts
+        .flatMap((text) => parsePromptActionTokens(text))
+        .map((token) => configForPromptActionToken(actionConfigs, token.title));
+      if (usedActionConfigs.length === 0) {
+        continue;
+      }
+      const nodeConnectionId = connectionIdForNode(node);
+      for (const action of usedActionConfigs) {
+        if (
+          action.actionId === 'updatePhoneImageCaption' ||
+          action.actionId === 'describeInputImage' ||
+          (action.actionId === 'getImageId' && action.sendImagesToLlm)
+        ) {
+          usesVision = true;
+          visionConnectionIds.add(nodeConnectionId);
+        }
+        if (action.actionId === 'createImage') {
+          usesImage = true;
+          const comfyProviderId = action.comfyProviderId?.trim();
+          if (comfyProviderId) {
+            explicitComfyProviderIds.add(comfyProviderId);
+          }
+        }
+      }
+    }
+
+    const connectionIsOnline = (connectionId: string) =>
+      providerHealthById[connectionId]?.status === 'online';
+    const everyConnectionReady = (connectionIds: Set<string>, predicate: (connection: ConnectionPreset, id: string) => boolean) =>
+      connectionIds.size > 0 &&
+      [...connectionIds].every((connectionId) => {
+        const connection = connections.find((entry) => entry.id === connectionId);
+        return !!connection && predicate(connection, connectionId);
+      });
+    const textReady = everyConnectionReady(
+      llmConnectionIds,
+      (connection, connectionId) => isLlmConnection(connection) && connectionIsOnline(connectionId),
+    );
+    const anyTextConnected = connections.some((connection) =>
+      isLlmConnection(connection) && connectionIsOnline(connection.id),
+    );
+    const anyVisionConnected = connections.some((connection) =>
+      isLlmConnection(connection) && connection.vision === true && connectionIsOnline(connection.id),
+    );
+    const visionReady = everyConnectionReady(
+      visionConnectionIds,
+      (connection, connectionId) =>
+        isLlmConnection(connection) && connection.vision === true && connectionIsOnline(connectionId),
+    );
+    const comfyProviders = connections.filter((connection) => connection.kind === 'comfyui');
+    const anyImageConnected = comfyProviders.some((connection) => connectionIsOnline(connection.id));
+    const imageReady = usesImage && (
+      explicitComfyProviderIds.size > 0
+        ? [...explicitComfyProviderIds].every((providerId) =>
+            comfyProviders.some((connection) => connection.id === providerId && connectionIsOnline(connection.id)),
+          )
+        : anyImageConnected
+    );
+    const textActive = nodeViewNodes.some((node) =>
+      node.data.kind === undefined && node.data.runActive === true,
+    );
+    const visionActive = nodeViewNodes.some((node) =>
+      node.data.kind === undefined && node.data.runVisionActive === true,
+    );
+    const imageActive = workflowComfyGenerationActive || comfyProviderActionActive === 'generate';
+    const effectiveTextReady = llmConnectionIds.size > 0 ? textReady : anyTextConnected;
+
+    const indicators: WorkflowCapabilityIndicator[] = [{
+      kind: 'text',
+      tone: (effectiveTextReady || textActive) ? 'ready' : 'missing',
+      active: textActive,
+      label: (effectiveTextReady || textActive)
+        ? 'Text: required and connected'
+        : 'Text: required, but no used LLM provider is connected',
+    }];
+    if (usesVision || anyVisionConnected || visionActive) {
+      const ready = usesVision ? visionReady : anyVisionConnected;
+      indicators.push({
+        kind: 'vision',
+        tone: (ready || visionActive) ? 'ready' : 'missing',
+        active: visionActive,
+        label: ready || visionActive
+          ? usesVision
+            ? 'Vision: required and available'
+            : 'Vision: connected'
+          : 'Vision: required, but the used LLM provider is not connected or has no vision',
+      });
+    }
+    if (usesImage || anyImageConnected || imageActive) {
+      const ready = usesImage ? imageReady : anyImageConnected;
+      indicators.push({
+        kind: 'image',
+        tone: (ready || imageActive) ? 'ready' : 'missing',
+        active: imageActive,
+        label: ready || imageActive
+          ? usesImage
+            ? 'Image generation: required and connected'
+            : 'Image generation: connected'
+          : 'Image generation: required, but the ComfyUI provider is not connected',
+      });
+    }
+    return indicators;
+  }, [
+    comfyProviderActionActive,
+    connections,
+    defaultConnectionId,
+    nodeViewNodes,
+    promptActionSettings,
+    providerHealthById,
+    workflowComfyGenerationActive,
+  ]);
+
+  return (
+    <div
+      className={`studio node-text-${nodeTextSize}${glassDesignEnabled ? ' glass-design-active' : ''}`}
+      style={{
+        '--glass-opacity': glassDesignOpacity,
+        '--glass-blur': glassDesignEnabled ? '1px' : '0px',
+      } as React.CSSProperties}
+    >
+      {showRunLlmReport && runLlmReport && (
+        <RunLlmReportDialog
+          currentReport={runLlmReport}
+          currentDurationMs={runDurationMs}
+          history={runHistory}
+          isRunning={isRunning && activeRunId === runLlmReport.runId}
+          onClose={() => setShowRunLlmReport(false)}
+        />
+      )}
+      <header className="topbar">
+        <div className="brand">
+          <h1>
+            <span className="brand-name"><span className="brand-name-rp">RP</span>graph Studio</span>
+            <span className="app-version">v0.4.3 Beta</span>
+          </h1>
+          <div className="header-brand-actions">
+            <button
+              className="connection-button"
+              type="button"
+              onClick={() => setShowWelcome(true)}
+              title="Show first-run welcome and onboarding guide"
+            >
+              Welcome
+            </button>
+            <button className="connection-button" type="button" onClick={() => setShowOptions(true)}>
+              Options
+            </button>
+            <button className="connection-button" type="button" onClick={openConnectionManager}>
+              Providers
+            </button>
+            <button
+              className="connection-button"
+              type="button"
+              onClick={() => {
+                setNodeAssistantNodeId(null);
+                setWorkflowAssistantOpen(true);
+              }}
+              title="Open workflow assistant. You can also press F1, or select a node and press F1 for node-specific help."
+            >
+              Assistant
+            </button>
+            <button
+              className={`connection-button log-button ${systemLogBadgeCount ? 'has-log' : ''}`}
+              type="button"
+              onClick={() => setShowSystemLog(true)}
+              title="Open system log"
+            >
+              Log
+              {systemLogBadgeCount > 0 && <span key={systemLogBadgeCount}>{systemLogBadgeCount}</span>}
+            </button>
+            <button className="connection-button" type="button" onClick={() => void openFiles()}>
+              Files
+            </button>
+          </div>
+        </div>
+        <div className="header-actions">
+          {settingsStatus && <span className="workflow-status">{settingsStatus}</span>}
+          <div className="topbar-file-status" aria-label="Active RP files">
+            <div className="status-badge">
+              <span className="session-label">RP save:</span>
+              <span className="session-file">
+                {displayedSessionFileName}
+                {isSessionEncrypted && headerLockIcon}
+              </span>
+              {displayedSessionSavedTurn && (
+                <span className="session-turn">{displayedSessionSavedTurn}</span>
+              )}
+            </div>
+            <div className="status-badge">
+              <span className="session-label">workflow:</span>
+              <span className="session-file">
+                {displayedWorkflowNameFormatted}
+                {isWorkflowEncrypted && headerLockIcon}
+              </span>
+            </div>
+            <div className="status-badge">
+              <span className="session-label">storybook:</span>
+              <span className="session-file">
+                {displayedStorybookNameFormatted}
+                {isStorybookEncrypted && headerLockIcon}
+              </span>
+            </div>
+          </div>
+          <div className="window-controls" aria-label="Window controls">
+            <button
+              className="window-control"
+              type="button"
+              onClick={() => void window.rpgraph.minimizeWindow()}
+              aria-label="Minimize window"
+              title="Minimize"
+            >
+              <span className="window-control-icon minimize" aria-hidden="true" />
+            </button>
+            <button
+              className="window-control"
+              type="button"
+              onClick={() => void window.rpgraph.toggleFullScreenWindow()}
+              aria-label="Toggle full screen"
+              title="Full screen (F11)"
+            >
+              <span className="window-control-icon full-screen" aria-hidden="true" />
+            </button>
+            <button
+              className="window-control"
+              type="button"
+              onClick={() => void window.rpgraph.toggleMaximizeWindow()}
+              aria-label="Maximize or restore window"
+              title="Maximize / Restore"
+            >
+              <span className="window-control-icon maximize" aria-hidden="true" />
+            </button>
+            <button
+              className="window-control close"
+              type="button"
+              onClick={() => void window.rpgraph.closeWindow()}
+              aria-label="Close window"
+              title="Close"
+            >
+              <span className="window-control-icon close" aria-hidden="true" />
+            </button>
+          </div>
+        </div>
+      </header>
+
+      <main
+        className={`workspace ${isResizing ? 'resizing' : ''}`}
+      >
+        <ErrorBoundary label="Graph Panel">
+        <section className="graph-panel" aria-label="Workflow Graph">
+          <div className="graph-toolbar">
+            <div className="panel-label">
+              <span>GRAPH</span>
+              <PromptPresetOverview
+                nodes={nodeViewNodes}
+                connections={connections}
+                providerHealthById={providerHealthById}
+                onCheckProviderConnection={(connectionId) => {
+                  void checkProviderConnectionById(connectionId);
+                }}
+                promptActionCustomPresets={promptActionCustomPresets}
+                setPromptActionCustomPresets={setPromptActionCustomPresets}
+                promptActionSettings={promptActionSettings}
+                setPromptActionSettings={setPromptActionSettings}
+                promptTextCustomPresets={promptTextCustomPresets}
+                setPromptTextCustomPresets={setPromptTextCustomPresets}
+                updateNodeData={updateRuntimeNode}
+              />
+              <button className="graph-reset" type="button" onClick={() => void resetWorkflow()}>
+                Reset Workflow
+              </button>
+              <button className="graph-reset" type="button" onClick={() => void saveCurrentWorkflow()}>
+                Save Workflow
+              </button>
+              <button className="graph-reset" type="button" onClick={() => void saveCurrentSession()}>
+                Save RP
+              </button>
+              <button
+                className="runtime-summary-button"
+                type="button"
+                onClick={() => setShowRunLlmReport(true)}
+                disabled={!runLlmReport}
+                title="Show LLM calls for the current or last run"
+              >
+                Runtime: {formatRuntimeSeconds(runDurationMs)} s
+              </button>
+              <WorkflowCapabilityStrip indicators={workflowCapabilityIndicators} />
+              {visibleLogEntry && (
+                <div
+                  key={visibleLogEntry.id}
+                  className={`graph-system-toast ${visibleLogEntry.level}`}
+                  role="status"
+                  aria-live="polite"
+                >
+                  <div className="graph-system-toast-content">
+                    <strong>{visibleLogEntry.level}</strong>
+                    <span>{visibleLogEntry.text}</span>
+                  </div>
+                </div>
+              )}
+            </div>
+            {showDeletedNodeRestoreButton && (
+              <button
+                className="graph-restore-deleted"
+                type="button"
+                onClick={restoreLastDeletedNodes}
+                title="Restore last deleted node"
+                aria-label="Restore last deleted node"
+              >
+                ↶
+              </button>
+            )}
+          </div>
+          <NodeActionsContext.Provider value={nodeActions}>
+            <NodeViewContext.Provider value={nodeViewValues}>
+              <ReactFlow
+                nodes={nodes}
+                edges={renderedEdges}
+                nodeTypes={nodeTypes}
+                edgeTypes={edgeTypes}
+                onInit={initializeFlow}
+                onDragOver={allowNodeDrop}
+                onDrop={dropNode}
+                onPaneContextMenu={openNodeMenu}
+                onPaneClick={() => {
+                  setNodeMenu(null);
+                  setIsChatPanelOpen(false);
+                }}
+                onNodeClick={() => {
+                  setIsChatPanelOpen(false);
+                }}
+                onNodeDoubleClick={(_event, node) => splitWireLink(node.id)}
+                onNodesChange={onNodesChange}
+                onNodesDelete={rememberDeletedNodes}
+                onEdgesChange={onEdgesChange}
+                onConnect={connectNodes}
+                onReconnect={reconnectNodes}
+                onReconnectStart={startReconnect}
+                onReconnectEnd={finishReconnect}
+                minZoom={0.25}
+                maxZoom={1.6}
+                nodesConnectable
+                edgesReconnectable
+                elementsSelectable
+                onlyRenderVisibleElements
+                deleteKeyCode={['Backspace', 'Delete']}
+                multiSelectionKeyCode="Control"
+                selectionKeyCode="Control"
+                connectionRadius={connectionRadius}
+                reconnectRadius={reconnectRadius}
+                zoomOnDoubleClick={false}
+                colorMode="dark"
+                proOptions={{ hideAttribution: true }}
+              >
+                <Background
+                  color="#273043"
+                  gap={24}
+                  size={1.5}
+                  variant={BackgroundVariant.Dots}
+                />
+                <Controls position="bottom-left" showInteractive={false} />
+                <ResourceMonitor />
+              </ReactFlow>
+            </NodeViewContext.Provider>
+          </NodeActionsContext.Provider>
+          <aside className="node-palette" aria-label="Available nodes">
+            <div className="node-palette-handle" aria-hidden="true">
+              NODES
+            </div>
+            <div className="node-palette-drawer">
+              <header>
+                <strong>Add Node</strong>
+                <small>Drag onto graph</small>
+              </header>
+              <div className="node-palette-items">
+                {groupedNodePaletteItems.map((group) => (
+                  <section className="node-palette-group" key={group.title}>
+                    <div className="node-palette-group-header">
+                      <strong>{group.title}</strong>
+                    </div>
+                    {group.items.map((item) => {
+                      const unavailable = nodeTypeUnavailable(item.type);
+                      const favorite = favoriteNodeTypeSet.has(item.type);
+                      return (
+                        <div className={`node-palette-item-row${favorite ? ' favorite' : ''}`} key={item.type}>
+                          <button
+                            className="node-favorite-button"
+                            type="button"
+                            aria-pressed={favorite}
+                            aria-label={favorite ? `Remove ${item.label} from quick add` : `Add ${item.label} to quick add`}
+                            title={favorite ? 'Remove from right-click quick add' : 'Add to right-click quick add'}
+                            onClick={() => toggleFavoriteNodeType(item.type)}
+                          >
+                            ★
+                          </button>
+                          <button
+                            className="node-palette-item"
+                            type="button"
+                            disabled={unavailable}
+                            draggable={!unavailable}
+                            onDragStart={(event) => startNodeDrag(event, item.type)}
+                          >
+                            <span className="node-menu-item-label">
+                              <span>{item.label}</span>
+                              <small className="node-menu-item-version">v{item.version}</small>
+                            </span>
+                            <small>{unavailable ? 'Already in graph' : item.description}</small>
+                          </button>
+                        </div>
+                      );
+                    })}
+                  </section>
+                ))}
+              </div>
+            </div>
+          </aside>
+          {nodeMenu && (
+            <div
+              className="node-menu"
+              style={{ left: nodeMenu.screen.x, top: nodeMenu.screen.y }}
+            >
+              <strong>Quick Add</strong>
+              {favoriteNodeItems.length ? favoriteNodeItems.map((item) => {
+                const unavailable = nodeTypeUnavailable(item.type);
+                return (
+                  <button
+                    type="button"
+                    key={item.type}
+                    disabled={unavailable}
+                    onClick={() => addNode(item.type)}
+                  >
+                    <span className="node-menu-item-label">
+                      <span>{item.label}</span>
+                      <small className="node-menu-item-version">v{item.version}</small>
+                    </span>
+                    <small>{unavailable ? 'Already in graph' : item.description}</small>
+                  </button>
+                );
+              }) : (
+                <p className="node-menu-empty">Mark nodes with ★ in the side panel.</p>
+              )}
+            </div>
+          )}
+        </section>
+        </ErrorBoundary>
+
+        <div
+          className={`chat-drawer ${isChatPanelOpen || isResizing ? 'open' : ''}`}
+          style={{ gridTemplateColumns: `7px ${chatWidth}px` }}
+          onMouseEnter={() => setIsChatPanelOpen(true)}
+        >
+          <div
+            className="panel-resizer"
+            role="separator"
+            aria-label="Resize chat panel"
+            aria-orientation="vertical"
+            onPointerDown={() => {
+              setIsChatPanelOpen(true);
+              setIsResizing(true);
+            }}
+          >
+            <span className="chat-drawer-handle" aria-hidden="true">CHAT</span>
+          </div>
+
+          <ErrorBoundary label="Chat Panel">
+          <aside className="chat-panel">
+          <div className="chat-header">
+            <div className="chat-header-primary">
+              <div className="chat-panel-tabs" role="tablist" aria-label="Chat views">
+                <button
+                  className={chatPanelView === 'chat' ? 'active' : ''}
+                  type="button"
+                  role="tab"
+                  aria-selected={chatPanelView === 'chat'}
+                  onClick={() => selectChatPanelView('chat')}
+	                >
+	                  Chat
+	                  {unreadChatCount > 0 && (
+	                    <span className="tab-badge">{unreadChatCount}</span>
+	                  )}
+	                </button>
+                <button
+                  className={chatPanelView === 'phone' ? 'active' : ''}
+                  type="button"
+                  role="tab"
+                  aria-selected={chatPanelView === 'phone'}
+                  onClick={() => selectChatPanelView('phone')}
+                >
+                  Phone
+                  {unreadPhoneCount > 0 && (
+                    <span className="tab-badge">{unreadPhoneCount}</span>
+                  )}
+                </button>
+                <button
+                  className={chatPanelView === 'events' ? 'active' : ''}
+                  type="button"
+                  role="tab"
+                  aria-selected={chatPanelView === 'events'}
+                  onClick={() => selectChatPanelView('events')}
+                >
+                  Events
+                  {unreadEventCount > 0 && (
+                    <span className="tab-badge">{unreadEventCount}</span>
+                  )}
+                </button>
+              </div>
+              <div className="speaker-picker-menu" ref={characterDropdownRef}>
+                <span className="speaker-picker-label">Play as</span>
+                <button
+                  type="button"
+                  className="speaker-picker-button nodrag"
+                  aria-expanded={characterDropdownOpen}
+                  onClick={() => setCharacterDropdownOpen((current) => !current)}
+                  style={
+                    narratorSelected
+                      ? {
+                          color: '#cbd5e1',
+                          textShadow: '0 0 8px rgba(203, 213, 225, 0.35)',
+                        }
+                      : selectedCharacter
+                      ? {
+                          color: characterColors.get(selectedCharacter.name),
+                          textShadow: `0 0 8px ${characterColors.get(selectedCharacter.name)}`,
+                        }
+                      : undefined
+                  }
+                >
+                  {narratorSelected ? narratorSpeakerName : selectedCharacter ? selectedCharacter.name : 'Select Character'} ▾
+                </button>
+                {characterDropdownOpen && (
+                  <div className="speaker-picker-popover" role="menu">
+                    <button
+                      type="button"
+                      role="menuitem"
+                      onClick={() => {
+                        setSelectedCharacterId(narratorCharacterId);
+                        setCharacterDropdownOpen(false);
+                      }}
+                      className="narrator-option"
+                    >
+                      {narratorSpeakerName}
+                    </button>
+                    {storyCharacters.map((character) => {
+                      const charColor = characterColors.get(character.name);
+                      return (
+                        <button
+                          type="button"
+                          key={character.id}
+                          role="menuitem"
+                          onClick={() => {
+                            selectChatCharacter(character.id);
+                            setCharacterDropdownOpen(false);
+                          }}
+                          style={charColor ? { color: charColor } : undefined}
+                        >
+                          {character.name}
+                        </button>
+                      );
+                    })}
+                  </div>
+                )}
+              </div>
+              <button
+                className="switch-player-button"
+                type="button"
+                onClick={switchActivePlayer}
+                disabled={switchPlayerDisabled}
+                title={switchPlayerTitle}
+              >
+                Switch
+              </button>
+              <div className="header-turn-actions">
+                <button
+                  className="auto-turn-button"
+                  type="button"
+                  onClick={triggerAutoTurn}
+                  disabled={autoTurnDisabled}
+                  title={autoTurnTitle}
+                >
+                  {chatPanelView === 'events' ? 'Run Event' : 'AutoTurn'}
+                </button>
+                <div className="turn-controls" aria-label="Turn actions">
+                  <button
+                    type="button"
+                    onClick={cancelRunOrUndoLastTurn}
+                    disabled={undoTurnDisabled}
+                    title={undoTurnTitle}
+                    aria-label={undoTurnTitle}
+                  >
+                    {isRunning ? 'x' : '←'}
+                  </button>
+                  <button
+                    type="button"
+                    onClick={regenerateLastOutput}
+                    disabled={!isRunning && !currentSessionTurn}
+                    title={isRunning ? 'Cancel and restart the running RP output' : 'Regenerate the last RP output'}
+                    aria-label={isRunning ? 'Cancel and restart the running RP output' : 'Regenerate the last RP output'}
+                  >
+                    ↶
+                  </button>
+                </div>
+                <span className="turn-counter">
+                  Turn {currentSessionTurn?.number ?? 0}
+                </span>
+              </div>
+            </div>
+          </div>
+          <div className="chat-lockable">
+          {chatPanelView === 'chat' ? (
+            <ChatConversationPanel
+              messages={messages}
+              storyCharacters={storyCharacters}
+              characterColors={characterColors}
+              selectedCharacter={selectedCharacter}
+              isNarratorSelected={narratorSelected}
+              draft={draft}
+              draftCommands={draftCommands}
+              draftImages={draftImages}
+              editingMessageId={editingMessageId}
+              editingDraft={editingDraft}
+              editableUserMessageId={editableUserMessageId}
+              isRunning={isRunning}
+              englishProcessingEnabled={englishProcessingEnabled}
+              dialogueHighlightEnabled={dialogueColorsEnabled}
+              rpTimeTrackingEnabled={rpTimeTrackingEnabled}
+              chatTextSize={chatTextSize}
+              onChatTextSizeChange={setChatTextSize}
+              phoneAuthorBadgesEnabled={phoneAuthorBadgesEnabled}
+              onPhoneAuthorBadgesEnabledChange={changePhoneAuthorBadgesEnabled}
+              thoughtTextStyle={thoughtTextStyle}
+              rpDateTimeFormat={rpDateTimeFormat}
+              rpWeekdayLanguage={rpWeekdayLanguage}
+              contextualReferenceImageIds={contextualReferenceImageIds}
+              selectedReferenceImageIds={selectedReferenceImageIds}
+              imageUploadEnabled={imageUploadVisionEnabled}
+              imageUploadDisabledReason="Attach Image requires a provider with Activate vision features enabled."
+              referenceImageContextEnabled={imageUploadVisionEnabled}
+              referenceImageContextDisabledReason="Not possible without vision capabilities."
+              canRunChat={
+                isRunning ||
+                draftCommands.some((command) => command.type === 'time') ||
+                (
+                  (!!draft.trim() || draftImages.length > 0) &&
+                  characterStorybookNodes.length > 0 &&
+                  (narratorSelected || !!selectedCharacter)
+                )
+              }
+              imageInputRef={imageInputRef}
+              chatThreadRef={chatThreadRef}
+              onBeginEditMessage={beginEditMessage}
+              onCancelEditMessage={cancelEditMessage}
+              onRegenerateEditedMessage={regenerateEditedMessage}
+              onEditingDraftChange={setEditingDraft}
+              onPreviewImage={openImagePreview}
+              onToggleReferenceImage={toggleReferenceImage}
+              onPreviewImageCaptionChange={openImageCaptionChangePreview}
+              onRemoveDraftImage={(imageId) =>
+                setDraftImages((current) => current.filter((entry) => entry.id !== imageId))
+              }
+              onOpenEmbeddedPhoneMessage={openEmbeddedPhoneMessage}
+              onOutputActionChoice={submitOutputActionChoice}
+              onSubmitMessage={submitMessage}
+              onDraftChange={setDraft}
+              onDraftCommandsChange={setDraftCommands}
+              onAddDraftImages={(files) => void addDraftImages(files)}
+              onSelectDraftImages={() => void selectDraftImages()}
+              onMessageContentLoaded={() => scrollChatThreadToBottomIfFollowing('auto')}
+            />
+          ) : chatPanelView === 'phone' ? (
+            <PhonePanel
+              phoneContacts={phoneContacts}
+              storyCharacters={storyCharacters}
+              characterColors={characterColors}
+              selectedPhoneContact={selectedPhoneContact}
+              selectedCharacter={viewedPhoneCharacter}
+              selectedCharacterPlayable={
+                !!viewedPhoneCharacter &&
+                storyCharacters.some((character) => character.id === viewedPhoneCharacter.id)
+              }
+              selectedPhoneConversation={selectedPhoneConversation}
+              selectedPhoneDividerAfterId={selectedPhoneDividerAfterId}
+              highlightedPhoneMessageId={highlightedPhoneMessage?.id}
+              highlightedPhoneMessagePulseKey={highlightedPhoneMessage?.pulseKey ?? 0}
+              unreadPhoneConversations={unreadPhoneConversations}
+              phoneImages={phoneImages}
+              phoneGalleryImages={phoneGalleryImages}
+              phoneDraft={phoneDraft}
+              phoneDraftCommands={phoneDraftCommands}
+              replyToMessage={phoneReplyToMessage}
+              showPhoneEmojiPicker={showPhoneEmojiPicker}
+              phoneEmojiOptions={phoneEmojiOptions}
+              isRunning={isRunning}
+              canSend={
+                isRunning ||
+                (
+                  phoneDraftCommands.some((command) => command.type === 'time') &&
+                  !narratorSelected
+                ) ||
+                (
+                  (!!phoneDraft.trim() || phoneImages.length > 0) &&
+                  characterStorybookNodes.length > 0 &&
+                  !narratorSelected &&
+                  !!selectedCharacter &&
+                  !!selectedPhoneContact
+                )
+              }
+              inputLocked={narratorSelected}
+              englishProcessingEnabled={englishProcessingEnabled}
+              rpTimeTrackingEnabled={rpTimeTrackingEnabled}
+              phoneAuthorBadgesEnabled={phoneAuthorBadgesEnabled}
+              phoneChatTextSize={phoneChatTextSize}
+              rpDateTimeFormat={rpDateTimeFormat}
+              rpWeekdayLanguage={rpWeekdayLanguage}
+              contextualReferenceImageIds={contextualReferenceImageIds}
+              selectedReferenceImageIds={selectedReferenceImageIds}
+              imageUploadEnabled={imageUploadVisionEnabled}
+              imageUploadDisabledReason="Upload from Computer requires a provider with Activate vision features enabled. Choose captioned images from the Phone Gallery instead."
+              referenceImageContextEnabled={imageUploadVisionEnabled}
+              referenceImageContextDisabledReason="Not possible without vision capabilities."
+              phoneThreadRef={phoneThreadRef}
+              phoneEmojiPickerRef={phoneEmojiPickerRef}
+              phoneImageInputRef={phoneImageInputRef}
+              onOpenPhoneContact={openPhoneContact}
+              onOpenUnreadPhoneConversation={openUnreadPhoneConversation}
+              unreadPhoneSwitchName={unreadPhoneSwitchName}
+              onSwitchToViewedCharacter={() => {
+                if (
+                  viewedPhoneCharacter &&
+                  storyCharacters.some((character) => character.id === viewedPhoneCharacter.id)
+                ) {
+                  selectChatCharacter(viewedPhoneCharacter.id);
+                }
+              }}
+              onPreviewImage={openImagePreview}
+              onToggleReferenceImage={toggleReferenceImage}
+              onPreviewImageCaptionChange={openImageCaptionChangePreview}
+              onScrollPhoneThreadToBottom={scrollPhoneThreadToBottom}
+              onRemovePhoneImage={(imageId) =>
+                setPhoneImages((current) => current.filter((entry) => entry.id !== imageId))
+              }
+              onPhoneDraftChange={setPhoneDraft}
+              onPhoneDraftCommandsChange={setPhoneDraftCommands}
+              onReplyToMessage={selectPhoneReplyFromComposer}
+              onCancelPhoneReply={clearPhoneReply}
+              onSubmitPhoneMessage={submitPhoneMessage}
+              onTogglePhoneEmojiPicker={() => setShowPhoneEmojiPicker((current) => !current)}
+              onSelectPhoneEmoji={selectPhoneEmoji}
+              recentlyUsedEmojis={recentlyUsedEmojis}
+              onSelectPhoneImages={selectPhoneImagesFromComposer}
+              onSelectPhoneGalleryImage={selectPhoneGalleryImageFromComposer}
+              onAddPhoneImages={addPhoneImagesFromComposer}
+            />
+          ) : (
+            <EventsPanel
+              upcomingEvents={upcomingEvents}
+              selectedEvent={selectedEvent}
+              highlightedEventIds={highlightedEventIds}
+              eventManagerAvailable={eventManagerAvailable}
+              runDisabled={
+                isRunning ||
+                !eventManagerAvailable ||
+                characterStorybookNodes.length === 0 ||
+                !selectedEvent
+              }
+              isRunning={isRunning}
+              rpDateTimeFormat={rpDateTimeFormat}
+              rpWeekdayLanguage={rpWeekdayLanguage}
+              onSelectEvent={setSelectedEventId}
+              onCancelEvent={cancelEvent}
+              onRunEvent={runSelectedEvent}
+            />
+          )}
+          </div>
+          </aside>
+          </ErrorBoundary>
+        </div>
+      </main>
+
+      {outputFormatHelpKind && (
+        <OutputFormatHelpDialog
+          kind={outputFormatHelpKind}
+          onClose={() => setOutputFormatHelpKind(null)}
+        />
+      )}
+
+
+      {storybookCreatorNode && storybookCreatorNode.data.nodeType === 'rp-storybook-v1' && (
+        <StorybookCreatorDialog
+          node={storybookCreatorNode}
+          workflowNodes={nodeViewNodes}
+          messages={storybookCreatorMessages}
+          isSubmitting={storybookCreatorSubmitting}
+          connections={connections}
+          providerHealthById={providerHealthById}
+          onSubmit={submitStorybookCreatorMessage}
+          onLoad={() => loadStorybookFile(storybookCreatorNode.id)}
+          onSaveStorybook={() => requestSaveStorybook(false)}
+          promptTextCustomPresets={promptTextCustomPresets}
+          setPromptTextCustomPresets={setPromptTextCustomPresets}
+          usedImageIds={usedStorybookImageIds}
+          imageCaptionChangesById={phoneImageCaptionChangesById}
+          onUpdateStorybook={(storybook: RpStorybookV1, status?: string) =>
+            updateStorybook(storybookCreatorNode.id, storybook, status)
+          }
+          onChangeImageCaptionUpdate={changeImageCaptionUpdate}
+          onUpdateFormattedTextSettings={(settings) => {
+            updateRuntimeNode(storybookCreatorNode.id, {
+              storybookFormattedTextSettings: settings,
+            });
+          }}
+          onDescribeCharacterImage={(characterContext, image, prompt) =>
+            describeStorybookCharacterImage(storybookCreatorNode, characterContext, image, prompt)
+          }
+          onLoadCharacterComfyLoras={loadCharacterComfyLoras}
+          onGenerateCharacterComfyPreview={generateCharacterComfyPreview}
+          onUnloadCharacterComfyModels={unloadCharacterComfyModels}
+          onImportOpeningHistory={() => importCurrentChatAsOpeningHistory(storybookCreatorNode.id)}
+          onClearOpeningHistory={() => clearStorybookOpeningHistory(storybookCreatorNode.id)}
+          onResetStorybook={() => resetStorybook(storybookCreatorNode.id)}
+          onImportSillyTavernCharacter={() => importSillyTavernCharacter(storybookCreatorNode.id)}
+          onClose={() => setStorybookCreatorNodeId(null)}
+        />
+      )}
+
+      {customNodeAssistantNode && customNodeAssistantNode.data.nodeType === 'custom' && (
+        <CustomNodeAssistantDialog
+          node={customNodeAssistantNode}
+          connections={connections}
+          defaultConnectionId={defaultConnectionId}
+          messages={customNodeAssistantMessages}
+          onSubmit={submitCustomNodeAssistantMessage}
+          onStructureCheck={() => checkCustomNodeStructure(customNodeAssistantNode.id)}
+          onSecurityCheck={(connectionId) => checkCustomNodeSecurity(customNodeAssistantNode.id, connectionId)}
+          onApplyDefinitionText={(text) => applyCustomNodeDefinitionText(customNodeAssistantNode.id, text)}
+          onReset={() => resetCustomNodeDefinition(customNodeAssistantNode.id)}
+          onClose={() => setCustomNodeAssistantNodeId(null)}
+        />
+      )}
+
+      {nodeAssistantNode && (
+        <AssistantDialog
+          key={nodeAssistantNode.id}
+          mode="node"
+          node={nodeAssistantNode}
+          debugSnapshotSections={assistantDebugSnapshotSections}
+          connections={connections}
+          providerHealthById={providerHealthById}
+          defaultConnectionId={defaultConnectionId}
+          preferredConnectionId={assistantConnectionId}
+          onPreferredConnectionChange={setAssistantConnectionId}
+          resolveConnection={resolveConnection}
+          messages={nodeAssistantMessages}
+          setMessages={setNodeAssistantMessages}
+          systemLog={systemLog}
+          estimatedTokenBytesPerToken={activeTokenEstimateBytesPerToken}
+          onClose={() => setNodeAssistantNodeId(null)}
+        />
+      )}
+
+      {workflowAssistantOpen && !nodeAssistantNode && (
+        <AssistantDialog
+          key="workflow"
+          mode="workflow"
+          workflowNodes={nodeViewNodes}
+          workflowSnapshotJson={workflowAssistantSnapshotJson}
+          debugSnapshotSections={assistantDebugSnapshotSections}
+          connections={connections}
+          providerHealthById={providerHealthById}
+          defaultConnectionId={defaultConnectionId}
+          preferredConnectionId={assistantConnectionId}
+          onPreferredConnectionChange={setAssistantConnectionId}
+          resolveConnection={resolveConnection}
+          messages={workflowAssistantMessages}
+          setMessages={setWorkflowAssistantMessages}
+          systemLog={systemLog}
+          estimatedTokenBytesPerToken={activeTokenEstimateBytesPerToken}
+          onClose={() => setWorkflowAssistantOpen(false)}
+        />
+      )}
+
+      <StudioDialogs
+        textDialogNode={textDialogNode}
+        nodes={nodeViewNodes}
+        textDialogView={textDialogView}
+        onCloseText={() => {
+          setTextDialogNodeId(null);
+          setTextDialogView('text');
+        }}
+        jsonDialogNode={jsonDialogNode}
+        onCloseJson={() => setJsonDialogNodeId(null)}
+        showOptions={showOptions}
+        englishProcessingEnabled={englishProcessingEnabled}
+        inputTranslationOnlyEnabled={inputTranslationOnlyEnabled}
+        displayLanguage={displayLanguage}
+        tokenEstimateBytesPerToken={tokenEstimateBytesPerToken}
+        autoCalibrateTokenEstimate={autoCalibrateTokenEstimate}
+        activeTokenEstimateBytesPerToken={activeTokenEstimateBytesPerToken}
+        settingsValueDefinitions={settingsValueDefinitions}
+        settingsValues={resolvedWorkflowSettingsValues}
+        chatTextSize={chatTextSize}
+        phoneChatTextSize={phoneChatTextSize}
+        smoothChatAutoScrollEnabled={smoothChatAutoScrollEnabled}
+        smoothChatAutoScrollMinSpeed={smoothChatAutoScrollMinSpeed}
+        thoughtTextStyle={thoughtTextStyle}
+        rpDateTimeFormat={rpDateTimeFormat}
+        rpWeekdayLanguage={rpWeekdayLanguage}
+        showReferenceImagesInContext={showReferenceImagesInContext}
+        referenceImageTurnLookback={referenceImageTurnLookback}
+        maxReferenceImages={maxReferenceImages}
+        glassDesignEnabled={glassDesignEnabled}
+        glassDesignOpacity={glassDesignOpacity}
+        nodeTextSize={nodeTextSize}
+        retryFormatErrorsEnabled={retryFormatErrorsEnabled}
+        uiScale={appliedUiScale}
+        minUiScale={minimumAllowedUiScale}
+        maxUiScale={allowedUiScale}
+        onCloseOptions={() => setShowOptions(false)}
+        onEnglishProcessingChange={changeEnglishProcessing}
+        onInputTranslationOnlyChange={changeInputTranslationOnly}
+        onDisplayLanguageChange={setDisplayLanguage}
+        onTokenEstimateBytesPerTokenChange={changeTokenEstimateBytesPerToken}
+        onAutoCalibrateTokenEstimateChange={changeAutoCalibrateTokenEstimate}
+        onSettingsValueAdd={addWorkflowSettingsValue}
+        onSettingsValueChange={changeWorkflowSettingsValue}
+        onSettingsValueRename={renameWorkflowSettingsValue}
+        onSettingsValueRemove={removeWorkflowSettingsValue}
+        onChatTextSizeChange={setChatTextSize}
+        onPhoneChatTextSizeChange={setPhoneChatTextSize}
+        onSmoothChatAutoScrollEnabledChange={setSmoothChatAutoScrollEnabled}
+        onSmoothChatAutoScrollMinSpeedChange={setSmoothChatAutoScrollMinSpeed}
+        onThoughtTextStyleChange={setThoughtTextStyle}
+        onRpDateTimeFormatChange={setRpDateTimeFormat}
+        onRpWeekdayLanguageChange={setRpWeekdayLanguage}
+        onShowReferenceImagesInContextChange={setShowReferenceImagesInContext}
+        onReferenceImageTurnLookbackChange={setReferenceImageTurnLookback}
+        onMaxReferenceImagesChange={setMaxReferenceImages}
+        onGlassDesignEnabledChange={setGlassDesignEnabled}
+        onGlassDesignOpacityChange={setGlassDesignOpacity}
+        onNodeTextSizeChange={setNodeTextSize}
+        onUiScaleChange={changeUiScale}
+        onRetryFormatErrorsChange={setRetryFormatErrorsEnabled}
+        showFiles={showFiles}
+        savedFiles={savedFiles}
+        selectedFile={selectedFile}
+        workflowName={workflowNameDraft}
+        storybookName={storybookNameDraft}
+        workflowFormatVersion={currentWorkflowFormatVersion}
+        rpSaveFormatVersion={currentSessionFormatVersion}
+        storybookFormatVersion={currentStorybookFormatVersion}
+        workflowOverwritePending={workflowOverwritePending}
+        fileStorageStatus={fileStorageStatus}
+        onCloseFiles={() => {
+          returnToFilesAfterSaveRef.current = false;
+          setShowFiles(false);
+          setWorkflowOverwritePending(false);
+          setSessionOverwritePending(false);
+          setSessionPasswordAction(null);
+          setSessionPassword('');
+          setPendingSessionFilePath(null);
+          setPendingStorybookLoad(null);
+        }}
+        onSelectFile={(file) => {
+          setSelectedFile(file.fileName);
+          if (file.type === 'workflow') {
+            setWorkflowNameDraft(file.name);
+          } else if (file.type === 'session') {
+            setSessionName(file.name);
+          } else if (file.type === 'storybook') {
+            setStorybookNameDraft(file.name);
+          }
+          setWorkflowOverwritePending(false);
+          setSessionOverwritePending(false);
+          setFileStorageStatus(
+            file.compatible
+              ? file.type === 'workflow'
+                ? `Workflow File Format ${file.workflowFormatVersion} is compatible.`
+                : file.type === 'session'
+                  ? `RP Save Format v${file.formatVersion} is compatible.`
+                  : file.type === 'storybook'
+                    ? `Storybook Format ${file.formatVersion} is compatible.`
+                    : 'This is not a supported RPGraph file.'
+              : file.type === 'workflow'
+                ? incompatibleWorkflowStatus(file)
+                : file.type === 'session'
+                  ? incompatibleSessionStatus(file)
+                  : file.type === 'storybook'
+                    ? incompatibleStorybookStatus(file)
+                    : 'This is not a supported RPGraph file.',
+          );
+        }}
+        onOpenFile={(file) => void openStoredFile(file)}
+        onDeleteFile={(file) => void deleteStoredFile(file)}
+        onRequestOpenFile={() => void requestOpenFile()}
+        onRestoreDefaultWorkflow={() => void restoreDefaultWorkflow()}
+        onRequestExportWorkflow={() => requestExportWorkflow(true)}
+        onRequestSaveStorybook={() => requestSaveStorybook(true)}
+        onWorkflowNameChange={(name) => {
+          setWorkflowNameDraft(name);
+          setWorkflowOverwritePending(false);
+        }}
+        onStorybookNameChange={(name) => {
+          setStorybookNameDraft(name);
+          setSessionOverwritePending(false);
+        }}
+        onRequestSaveSession={() => requestSaveSession(true)}
+        sessionPasswordAction={sessionPasswordAction}
+        sessionOverwritePending={sessionOverwritePending}
+        sessionName={sessionName}
+        sessionPassword={sessionPassword}
+        fileProtection={fileProtection}
+        workflowSaveScope={workflowSaveScope}
+        chooseSaveLocation={chooseSaveLocation}
+        onCloseSessionPassword={() => {
+          setShowFiles(
+            sessionPasswordAction === 'save-workflow' ||
+              sessionPasswordAction === 'save-session' ||
+              sessionPasswordAction === 'save-storybook'
+              ? returnToFilesAfterSaveRef.current
+              : sessionPasswordAction === 'load-storybook'
+                ? false
+              : true,
+          );
+          returnToFilesAfterSaveRef.current = false;
+          setSessionPasswordAction(null);
+          setSessionOverwritePending(false);
+          setSessionPassword('');
+          setChooseSaveLocation(false);
+          setPendingSessionFilePath(null);
+          setPendingStorybookLoad(null);
+        }}
+        onSessionNameChange={(name) => {
+          setSessionName(name);
+          setSessionOverwritePending(false);
+        }}
+        onSessionPasswordChange={setSessionPassword}
+        onFileProtectionChange={(protection) => {
+          setFileProtection(protection);
+          setSessionPassword('');
+        }}
+        onWorkflowSaveScopeChange={setWorkflowSaveScope}
+        onChooseSaveLocationChange={(enabled) => {
+          setChooseSaveLocation(enabled);
+          if (enabled) {
+            setWorkflowOverwritePending(false);
+            setSessionOverwritePending(false);
+          }
+        }}
+        onSubmitSessionPassword={() =>
+          void (
+            sessionPasswordAction === 'save-workflow'
+              ? saveNamedWorkflow()
+              : sessionPasswordAction === 'save-session'
+                ? saveSession()
+                : sessionPasswordAction === 'save-storybook'
+                  ? saveStorybook()
+                : sessionPasswordAction === 'open-file'
+                  ? pendingSessionFilePath
+                    ? unlockOpenFilePath(pendingSessionFilePath)
+                  : requestOpenFile()
+              : sessionPasswordAction === 'load-storybook'
+                ? unlockStorybookFile()
+                : unlockStoredFile()
+          )
+        }
+        showConnections={showConnections}
+        connections={connections}
+        editingConnection={editingConnection}
+        connectionDraftPending={connectionDraftPending}
+        editingConnectionCapabilities={editingConnectionCapabilities}
+        providerHealthById={providerHealthById}
+        availableConnectionModels={availableConnectionModels}
+        availableComfyModels={availableComfyModels}
+        comfyWorkflowInspection={comfyWorkflowInspection}
+        comfyWorkflowRepairStatus={comfyWorkflowRepairStatus}
+        comfyWorkflowRepairReady={comfyWorkflowRepairReady}
+        comfyWorkflowRepairInspection={comfyWorkflowRepairInspection}
+        connectionStatus={connectionStatus}
+        onCloseConnections={closeConnectionManager}
+        onSelectConnection={selectConnection}
+        onNewConnection={newConnection}
+        onApplyProviderPreset={applyProviderPreset}
+        onEditConnection={editConnection}
+        onRefreshConnectionModels={() => void loadConnectionModels(false)}
+        onDeleteConnection={deleteConnection}
+        onCheckConnectionModels={() => void checkConnectionModels()}
+        onConnectComfyProvider={() => void loadComfyModelLists(connectionFromEditingConnection())}
+        onSelectComfyWorkflow={() => void selectComfyWorkflow()}
+        onRepairComfyWorkflow={(llmConnectionId) => void repairComfyWorkflow(llmConnectionId)}
+        onApplyComfyWorkflowRepair={() => void applyComfyWorkflowRepair()}
+        onGenerateComfyTestImage={() => void generateComfyTestImage()}
+        onUnloadComfyModels={() => void unloadComfyModels()}
+        comfyProviderActionActive={comfyProviderActionActive}
+        lmStudioToolsAvailable={isLmStudioConnection(editingConnection)}
+        modelCapabilitiesSourceLabel={modelCapabilitiesSourceLabel}
+        lmStudioModelActionActive={lmStudioModelActionActive}
+        onLoadLmStudioModel={() => void loadLmStudioModel()}
+        onUnloadLmStudioModels={() => void unloadLmStudioModels()}
+        ollamaToolsAvailable={isOllamaConnection(editingConnection)}
+        ollamaModelActionActive={ollamaModelActionActive}
+        onLoadOllamaModel={() => void loadOllamaModel()}
+        onUnloadOllamaModels={() => void unloadOllamaModels()}
+        onApplyConnectionToAllNodes={applyConnectionToAllNodes}
+      />
+      {showSystemLog && (
+        <SystemLogDialog
+          entries={systemLog}
+          counts={systemLogCounts}
+          turnTraces={turnTraces}
+          estimatedTokenBytesPerToken={activeTokenEstimateBytesPerToken}
+          onCreateDebugSnapshot={createDebugSnapshot}
+          onClear={clearSystemLog}
+          onClose={() => setShowSystemLog(false)}
+        />
+      )}
+      {comfyPreview && (
+        <ComfyGeneratedImageDialog
+          promptId={comfyPreview.promptId}
+          images={comfyPreview.images}
+          onClose={() => setComfyPreview(null)}
+        />
+      )}
+      {previewImage && (
+        <ImagePreviewDialog
+          image={previewImage.image}
+          caption={storybookImageDescriptionById.get(previewImage.image.id)}
+          captionHistory={phoneImageCaptionChangesById.get(previewImage.image.id)}
+          onClose={() => setPreviewImage(null)}
+        />
+      )}
+      {showWelcome && (
+        <WelcomeDialog
+          onClose={() => {
+            window.localStorage.setItem('rpgraph.welcomeSeen', 'true');
+            setShowWelcome(false);
+          }}
+        />
+      )}
+    </div>
+  );
+}
+
+export default App;

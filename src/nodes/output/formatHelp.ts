@@ -1,0 +1,96 @@
+export type OutputFormatHelpKind = 'rp' | 'phone' | 'output-actions';
+
+export const rpOutputPrompt = `Normal RP is the main story output for the Chat tab.
+
+Use it for visible prose, dialogue, narration, and the normal RP response. This text becomes the chat bubble.
+
+If the RP response includes a final image description metadata object, RPGraph stores that image description in history and hides the metadata from the visible chat bubble.
+
+Normal RP can also contain a phoneMessages JSON object when the story beat truly includes a phone message. Those messages are added to the Phone tab and shown as linked phone activity inside the chat bubble.
+
+Use embedded phoneMessages only when it clearly belongs in the scene, such as a character sending a text, receiving a reply, ordering something, or getting a confirmation. Ordinary dialogue and narration should stay as normal RP prose.
+
+Embedded phone messages use this shape. sendImageId is optional and attaches an outgoing stored Storybook/phone-history image:
+{"phoneMessages":[{"from":"sender name","to":"recipient name","message":"message text","sendImageId":"name_image_01"}]}
+
+Use sendImageId only for outgoing stored image attachments. Do not use imageId for outgoing attachments; imageId is reserved for image action commands in the dedicated Phone Message channel.
+
+Output Actions UI commands such as buttons, info boxes, progress bars, context capacity bars, setTab, and setPlayer only work through the Output Actions input, not through Normal RP.`;
+
+export const phoneOutputPrompt = `Phone Message is the dedicated phone channel.
+
+Use it when the graph is generating one phone reply or one phone event instead of a normal RP scene.
+
+The first JSON object should be one small phone message object with from, to, and message fields. It may also include sendImageId when the replying character sends a stored Storybook/phone-history image as an outgoing attachment.
+
+Example without outgoing image:
+{"from":"Mia","to":"Alex","message":"I am outside. Want me to come up?"}
+
+Example with outgoing stored image:
+{"from":"Mia","to":"Alex","message":"I brought proof. Open the door?","sendImageId":"mia_image_01"}
+
+When the latest incoming phone message includes an attached image, the Phone Message output can include a second JSON object after the reply. That second object is an internal image action for the incoming image:
+{"imageId":"new_image","imageAction":"create","caption":"20 to 30 word RP image caption"}
+{"imageId":"existing_image_id","imageAction":"update","caption":"full replacement 20 to 30 word RP image caption"}
+{"imageId":"existing_image_id","imageAction":"no_change"}
+
+When no incoming image is present, the second object is optional and should only be used for updating an existing stored image when recent phone/chat context clearly establishes a new fact about it:
+{"imageId":"existing_image_id","imageAction":"update","caption":"full replacement 20 to 30 word RP image caption"}
+
+Keep these concepts separate: sendImageId is an outgoing attachment in the phone message object. imageId belongs only to image action objects. imageAction objects update/create/no-change captions and are not visible phone messages.
+
+The from field is the sender of the generated phone message. The to field is the recipient. Use exact Storybook or phone contact names when they exist. For event-like messages, an outside contact can also be used when sensible, such as a delivery service, ticket office, pizza place, hotel reception, or other named service.
+
+Phone Message is not for prose narration. It should produce the message payload that appears in the Phone tab.`;
+
+export const outputActionsPrompt = `Return Output Actions JSON only when the app should show extra UI or timeline actions.
+
+Return either {"actions":[...]} or an empty string if no extra action is needed.
+
+Supported actions:
+{"type":"phoneMessage","from":"Name","to":"Name","message":"text message"}
+{"type":"phoneMessage","from":"Name","to":"Name","message":"text message","sendImageId":"stored_image_id"}
+{"type":"chatMessage","speaker":"Name","text":"visible chat bubble text"}
+{"type":"setPlayer","name":"Narrator"}
+{"type":"buttons","id":"next_scene_choice","prompt":"How should the story continue?","columns":3,"options":[{"id":"ask","label":"Ask","value":"Ask what happened.","player":"Current"},{"id":"leave","label":"Leave","value":"Leave the road.","player":"Narrator"}]}
+{"type":"buttons","id":"offer_choices","prompt":"Generate three choices?","columns":1,"options":[{"id":"generate_choices","label":"Generate 3 choices","text":"","player":"Current","messageFormat":2,"turnMode":0}]}
+{"type":"infoBox","title":"Quest updated","text":"Find the spare key before midnight.","tone":"info"}
+{"type":"progressBar","title":"Trust","min":0,"max":100,"value":42,"text":"Lara is unsure but listening."}
+{"type":"contextCapacity","id":"capacity_1","source":{"type":"contextCompression","index":1},"title":"Context Capacity","showLegend":true}
+{"type":"setTab","tab":"chat"}
+{"type":"setPlayer","name":"Character Name"}
+
+Buttons start the next immediate run when clicked.
+Options may set text, player, messageFormat, and turnMode to control the next immediate run.
+For player, use "Narrator", "Current", or a character name/id. Unknown players fall back to Narrator.
+Phone messages created by Output Actions use the same outgoing image attachment field as other phone messages: sendImageId. It attaches an existing stored Storybook/phone-history image to the generated phone message. Do not use imageId for new prompts; imageId is kept only as an accepted legacy alias here.
+Output Actions can create phone messages, but they do not process imageAction caption update commands. Use imageAction only in the dedicated Phone Message output.
+Info boxes, progress bars, and context capacity bars are display-only for now; their values are reserved for later.
+For contextCapacity, source.index selects the first, second, etc. Context Compression node in the workflow.
+Always use valid JSON with double quotes.
+Do not wrap the JSON in markdown.`;
+
+export const outputFormatHelp = {
+  rp: {
+    title: 'RP Text Input Format',
+    description:
+      'Overview of what the Normal RP input accepts and how it is shown in the Chat tab.',
+    prompt: rpOutputPrompt,
+  },
+  phone: {
+    title: 'Phone Message Format',
+    description:
+      'Overview of what the dedicated Phone Message input accepts and how it is shown in the Phone tab.',
+    prompt: phoneOutputPrompt,
+  },
+  'output-actions': {
+    title: 'Output Actions Format',
+    description:
+      'Use this prompt in the Simple Prompt node that writes extra app actions. Phone and chat messages are added to the timeline; choices and UI items are displayed by the app.',
+    prompt: outputActionsPrompt,
+  },
+} satisfies Record<OutputFormatHelpKind, {
+  title: string;
+  description: string;
+  prompt: string;
+}>;

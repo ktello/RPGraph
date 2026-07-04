@@ -1,0 +1,2907 @@
+import currentWorkflow from '../../workflow.default.json';
+import { captureTurnRuntime } from '../chat/turns';
+import { currentSessionFormatVersion } from '../session/version';
+import type { MessageRecord, TurnRecord, WorkflowFile, WorkflowNode, WorkflowNodeData } from '../types';
+import { getRegisteredCoreNode, registerNode } from '../nodes/registry';
+import { currentCoreNodeVersions } from '../nodes/nodeVersion';
+import type { ExecuteContext, NodeCreationDefinition } from '../nodes/types';
+import {
+  emptyRpStorybookV1,
+  parseRpStorybookAssistantResult,
+  parseRpStorybookJson,
+  rpStorybookFormattedText,
+  rpStorybookEditPrompt,
+  rpStorybookJsonText,
+} from '../nodes/rp-storybook-v1/model';
+import {
+  storybookImageById,
+  storybookImageDescriptions,
+  storybookImageSourceById,
+  withChangedStorybookImageDescriptionsSynchronized,
+  withImagesEnsuredForStorybookCharacter,
+  withStorybookImageDescriptionUpdated,
+} from '../storybook/imageLibrary';
+import {
+  storybookImageIdsUsedByMessages,
+  usedStorybookImageIdsRemoved,
+  withStorybookImageDescriptions,
+} from '../storybook/imageUsage';
+import {
+  openingHistoryCheckpointsFromNodes,
+  openingHistoryTurnsFromNodes,
+  remapOpeningTurnMessageIds,
+} from '../storybook/openingHistoryRuntime';
+import {
+  appStateFromSessionV2,
+  latestSessionV2TurnNumber,
+  type SessionV2CurrentStateInput,
+  sessionV2FromCurrentState,
+} from '../data-management/sessionStore';
+import { formatPhoneContext } from '../data-management/formatters';
+import { isRpgraphSessionV2 } from '../data-management/validation';
+import { appointmentFromEventEntity, type TimelineMessageEntry } from '../data-management/types';
+import {
+  updateAppointmentStatus,
+  upcomingAppointments,
+} from '../data-management/eventStore';
+import {
+  buildHistoryOutputs,
+  boundedHistoryLastTurnsCount,
+} from '../data-management/historyStore';
+import { debugTurnSummaryFromTurnRecord } from '../data-management/debugContext';
+import { createTurnTrace, turnTraceCopyPayload } from '../app/turnTrace';
+import {
+  directPhoneTimelineEntries,
+  embeddedPhoneMessageCharacters,
+  matchingPhoneName,
+  phoneContactsForViewer,
+  phoneConversationInfoFromMessages,
+  phoneConversationKey,
+  phoneConversationMessageViews,
+  linkedPhoneMessageIds,
+  messageEffectiveRpDateTime,
+  phoneMessagesBetween,
+  phoneMessagesById,
+  selectedPhoneConversationMessages,
+  phoneSeenStateFromMessages,
+  phoneSwitchCharacters,
+  unreadPhoneConversationsForCharacters,
+  viewerHasUnreadPhoneMessages,
+  visibleMessageRecords,
+} from '../data-management/selectors';
+import {
+  canonicalPhoneName,
+  embeddedPhoneMessagesLivePreview,
+  parseEmbeddedPhoneMessagesFromRpOutput,
+  parsePhoneMessageOutput,
+  phoneImageActionMatchesMessage,
+} from '../chat/phoneMessages';
+import { parseOutputActions } from '../chat/outputActions';
+import { formatPhoneInput } from '../chat/phoneReplies';
+import {
+  collectRecentReferenceImages,
+  promptWithImageAttachmentMarkers,
+  promptWithReferenceImageMarkers,
+} from '../chat/referenceImages';
+import { storybookImageContextRuleSpecs } from '../nodes/dynamic-context-injection/storybookImageRules';
+import {
+  defaultPromptActionConfig,
+  countPromptActionUses,
+  knownPromptActionId,
+  parsePromptActionCall,
+  promptActionConfigs,
+  replacePromptActionTitle,
+  unwrapJsonCodeFence,
+} from '../nodes/shared/promptActions';
+import { promptImagePass } from '../nodes/shared/promptImagePass';
+import { runActionAwarePrompt } from '../nodes/shared/promptRun';
+import { applyTurnCheckpointToNodes } from '../data-management/checkpointStore';
+import {
+  hydrateNodeData,
+  persistentNodeData,
+  removeEdgesConnectedToIncompatibleNodes,
+} from './persistence';
+import { formatAppointments, formatChatHistory } from './textHelpers';
+import { isRpSaveFile, isWorkflowFile } from './validation';
+import { currentWorkflowFormatVersion } from './version';
+import {
+  extractWorkflowVariableSetCommands,
+  resolveWorkflowVariables,
+  workflowVariablePreviewValues,
+} from './variables';
+
+function assertFixture(condition: boolean, message: string) {
+  if (!condition) {
+    throw new Error(`Workflow validation fixture failed: ${message}`);
+  }
+}
+
+function assertThrowsFixture(action: () => void, message: string) {
+  try {
+    action();
+  } catch {
+    return;
+  }
+  throw new Error(`Workflow validation fixture failed: ${message}`);
+}
+
+export function verifyWorkflowValidationFixtures() {
+  const assistantStorybook = {
+    ...emptyRpStorybookV1,
+    title: 'Old title',
+    openingHistory: {
+      ...emptyRpStorybookV1.openingHistory,
+      summary: 'Imported opening context',
+    },
+    characters: [{
+      id: 'lara',
+      name: 'Lara',
+      description: 'Original description',
+      personality: '',
+      speechStyle: '',
+      role: '',
+      comfyConfig: { loraName: 'lara.safetensors', appearance: 'dark hair' },
+      profileImage: {
+        imageId: 'lara_image_01',
+        dataUrl: 'data:image/jpeg;base64,PROFILE',
+        crop: { x: 20, y: 20, size: 60 },
+      },
+      images: [{
+        id: 'lara_image_01',
+        name: 'Lara image',
+        mimeType: 'image/jpeg' as const,
+        size: 3,
+        dataUrl: 'data:image/jpeg;base64,IMAGE',
+        description: 'Portrait',
+      }],
+    }],
+  };
+  const assistantPatchResult = parseRpStorybookAssistantResult(JSON.stringify({
+    reply: 'Renamed.',
+    changedFields: ['characters'],
+    patch: [{ op: 'replace', path: '/characters/0/name', value: 'Mara' }],
+  }), assistantStorybook);
+  assertFixture(
+    assistantPatchResult.storybook.characters[0]?.name === 'Mara' &&
+      assistantPatchResult.storybook.characters[0]?.images[0]?.dataUrl === 'data:image/jpeg;base64,IMAGE' &&
+      assistantPatchResult.storybook.characters[0]?.profileImage?.dataUrl === 'data:image/jpeg;base64,PROFILE' &&
+      assistantPatchResult.storybook.characters[0]?.comfyConfig?.loraName === 'lara.safetensors' &&
+      assistantPatchResult.storybook.openingHistory.summary === 'Imported opening context',
+    'Storybook assistant must apply RFC 6902 patches without rewriting preserved image and history data',
+  );
+  const assistantDerivedFieldsResult = parseRpStorybookAssistantResult(JSON.stringify({
+    reply: 'Updated title.',
+    patch: [{ op: 'replace', path: '/title', value: 'New title' }],
+  }), assistantStorybook);
+  assertFixture(
+    assistantDerivedFieldsResult.changedFields.includes('title') &&
+      assistantDerivedFieldsResult.storybook.title === 'New title',
+    'Storybook assistant must derive changed fields from JSON Patch paths when needed',
+  );
+  const assistantQuestionResult = parseRpStorybookAssistantResult(JSON.stringify({
+    reply: 'The title is Old title.',
+    changedFields: [],
+    patch: [],
+  }), assistantStorybook);
+  assertFixture(
+    assistantQuestionResult.changedFields.length === 0 &&
+      assistantQuestionResult.storybook.title === 'Old title',
+    'Storybook assistant question responses must keep the storybook unchanged with an empty patch',
+  );
+  assertThrowsFixture(
+    () => parseRpStorybookAssistantResult(JSON.stringify({
+      reply: 'Rewrite.',
+      changedFields: ['storybook'],
+      patch: [{ op: 'replace', path: '', value: emptyRpStorybookV1 }],
+    }), assistantStorybook),
+    'Storybook assistant must reject root replacement JSON patches',
+  );
+  const assistantPrompt = rpStorybookEditPrompt(rpStorybookJsonText(assistantStorybook), 'Rename Lara to Mara.');
+  assertFixture(
+    assistantPrompt.includes('RFC 6902 JSON Patch') &&
+      assistantPrompt.includes('Do not return the complete storybook') &&
+      assistantPrompt.includes('Do not create, rewrite, append, delete, reorder, summarize, or otherwise patch openingHistory') &&
+      assistantPrompt.includes('"patch"'),
+    'Storybook assistant prompt must request standard JSON Patch responses',
+  );
+
+  const usedImageIds = storybookImageIdsUsedByMessages([
+    {
+      id: 1,
+      role: 'user',
+      originalText: 'RP image',
+      imageAttachments: [{
+        id: 'emily_miller_image_01',
+        name: 'Emily',
+        mimeType: 'image/jpeg',
+        size: 1,
+        dataUrl: 'data:image/jpeg;base64,AA==',
+      }],
+    },
+    {
+      id: 2,
+      role: 'output',
+      originalText: 'Phone image',
+      phoneImageIds: ['sarah_miller_image_01'],
+    },
+    {
+      id: 3,
+      role: 'error',
+      originalText: 'Ignored error',
+      phoneImageIds: ['ignored_image_01'],
+    },
+  ]);
+  assertFixture(
+    usedImageIds.has('emily_miller_image_01') &&
+      usedImageIds.has('sarah_miller_image_01') &&
+      !usedImageIds.has('ignored_image_01'),
+    'chat history image usage must include RP attachments and Phone image IDs',
+  );
+
+  const referenceStorybook = {
+    ...emptyRpStorybookV1,
+    characters: [{
+      id: 'sarah-miller',
+      name: 'Sarah Miller',
+      description: '',
+      personality: '',
+      speechStyle: '',
+      role: '',
+      images: [{
+        id: 'sarah_miller_image_02',
+        name: 'Sarah mirror',
+        mimeType: 'image/jpeg' as const,
+        size: 1,
+        dataUrl: 'data:image/jpeg;base64,story',
+        description: 'Sarah in a mirror selfie.',
+      }],
+    }],
+  };
+  const referenceNodes = [{
+    id: 'storybook',
+    type: 'rp-storybook-v1',
+    position: { x: 0, y: 0 },
+    data: {
+      nodeType: 'rp-storybook-v1',
+      label: 'Storybook',
+      description: '',
+      preview: '',
+      storybookJson: rpStorybookJsonText(referenceStorybook),
+    },
+  }] as WorkflowNode[];
+  const referenceMessages: MessageRecord[] = [{
+    id: 1,
+    role: 'output',
+    originalText: 'Older image.',
+    includeInHistory: true,
+    imageAttachments: [{
+      id: 'old_image_01',
+      name: 'Old',
+      mimeType: 'image/jpeg',
+      size: 1,
+      dataUrl: 'data:image/jpeg;base64,old',
+      description: 'Old image.',
+    }],
+    turnNumber: 1,
+  }, {
+    id: 2,
+    role: 'output',
+    originalText: 'Duplicate image.',
+    includeInHistory: true,
+    imageAttachments: [{
+      id: 'old_image_01',
+      name: 'Old copy',
+      mimeType: 'image/jpeg',
+      size: 1,
+      dataUrl: 'data:image/jpeg;base64,old',
+      description: 'Old image copy.',
+    }],
+    turnNumber: 2,
+  }, {
+    id: 3,
+    role: 'user',
+    originalText: 'Storybook id only.',
+    includeInHistory: true,
+    channel: 'phone',
+    phoneFrom: 'Sarah Miller',
+    phoneTo: 'Emily Miller',
+    phoneImageIds: ['sarah_miller_image_02'],
+    phoneImageDescription: 'Sarah shares her mirror selfie.',
+    turnNumber: 3,
+  }, {
+    id: 4,
+    role: 'output',
+    originalText: 'Newest attached image.',
+    includeInHistory: true,
+    imageAttachments: [{
+      id: 'new_image_01',
+      name: 'Newest',
+      mimeType: 'image/jpeg',
+      size: 1,
+      dataUrl: 'data:image/jpeg;base64,new',
+      description: 'Newest image.',
+    }],
+    turnNumber: 4,
+  }];
+  const referenceImages = collectRecentReferenceImages({
+    messages: referenceMessages,
+    nodes: referenceNodes,
+    options: { enabled: true, turnLookback: 10, maxImages: 3 },
+  });
+  assertFixture(
+    referenceImages.map((image) => image.imageId).join(',') ===
+      'new_image_01,sarah_miller_image_02,old_image_01',
+    'reference images must collect newest-first, resolve Storybook ids, and dedupe',
+  );
+  assertFixture(
+    collectRecentReferenceImages({
+      messages: referenceMessages,
+      nodes: referenceNodes,
+      options: { enabled: true, turnLookback: 1, maxImages: 3 },
+    }).map((image) => image.imageId).join(',') === 'new_image_01',
+    'reference image lookback must ignore images outside the selected turns',
+  );
+  const additionalReferenceImages = collectRecentReferenceImages({
+    messages: referenceMessages,
+    nodes: referenceNodes,
+    options: {
+      enabled: true,
+      turnLookback: 1,
+      maxImages: 1,
+      additionalImageIds: ['old_image_01', 'sarah_miller_image_02', 'new_image_01'],
+    },
+  });
+  assertFixture(
+    additionalReferenceImages.map((image) => image.imageId).join(',') ===
+      'new_image_01,old_image_01,sarah_miller_image_02',
+    'temporary reference images must follow automatic references, exceed the max, and dedupe',
+  );
+  assertFixture(
+    collectRecentReferenceImages({
+      messages: referenceMessages,
+      nodes: referenceNodes,
+      options: {
+        enabled: false,
+        turnLookback: 0,
+        maxImages: 0,
+        additionalImageIds: ['sarah_miller_image_02'],
+      },
+    })[0]?.imageId === 'sarah_miller_image_02',
+    'temporary reference images must work when automatic reference images are disabled',
+  );
+  assertFixture(
+    collectRecentReferenceImages({
+      messages: referenceMessages,
+      nodes: referenceNodes,
+      options: { enabled: false, turnLookback: 10, maxImages: 3 },
+    }).length === 0 &&
+      collectRecentReferenceImages({
+        messages: referenceMessages,
+        nodes: referenceNodes,
+        options: { enabled: true, turnLookback: 10, maxImages: 0 },
+      }).length === 0,
+    'reference image collection must respect disabled and max zero options',
+  );
+  const limitedReferenceImages = collectRecentReferenceImages({
+    messages: referenceMessages,
+    nodes: referenceNodes,
+    options: { enabled: true, turnLookback: 10, maxImages: 2 },
+  });
+  const markedPrompt = promptWithReferenceImageMarkers(
+    'History: [old_image_01: Old image.] [Image: Sarah shares her mirror selfie.] [Image: Newest image.]',
+    limitedReferenceImages,
+  );
+  assertFixture(
+    markedPrompt.includes('[Attached input image Nr1: new_image_01 - Newest image.]') &&
+      markedPrompt.includes('[Attached input image Nr2: sarah_miller_image_02 - Sarah shares her mirror selfie.]') &&
+      !markedPrompt.includes('Attached input image Nr3:') &&
+      !formatChatHistory(referenceMessages, false).includes('Attached input image Nr1:'),
+    'reference image markers must be dynamic prompt text only and match selected attachments',
+  );
+  const markedInputAndReferencePrompt = promptWithReferenceImageMarkers(
+    promptWithImageAttachmentMarkers(
+      'Emily Miller sends an image to Sarah Miller: [emily_miller_image_15] Or would you prefer it like this in green?',
+      [{
+        id: 'emily_miller_image_15',
+        name: 'emily_miller_image_15',
+        mimeType: 'image/jpeg',
+        size: 1,
+        dataUrl: 'data:image/jpeg;base64,input',
+      }],
+    ),
+    limitedReferenceImages,
+    1,
+  );
+  assertFixture(
+    markedInputAndReferencePrompt.includes('[Attached input image Nr1: emily_miller_image_15]') &&
+      markedInputAndReferencePrompt.includes('[Attached input image Nr2: new_image_01 - Newest image.]') &&
+      !markedInputAndReferencePrompt.includes('[emily_miller_image_15] Or'),
+    'input image markers must be inserted before reference image markers and follow LLM image order',
+  );
+  const actionImage = {
+    id: 'action_image_01',
+    name: 'Action image',
+    mimeType: 'image/jpeg' as const,
+    size: 1,
+    dataUrl: 'data:image/jpeg;base64,action',
+  };
+  const inputImage = {
+    id: 'input_image_01',
+    name: 'Input image',
+    mimeType: 'image/jpeg' as const,
+    size: 1,
+    dataUrl: 'data:image/jpeg;base64,input',
+  };
+  const referenceImage = {
+    id: 'reference_image_01',
+    name: 'Reference image',
+    mimeType: 'image/jpeg' as const,
+    size: 1,
+    dataUrl: 'data:image/jpeg;base64,reference',
+  };
+  const initialImagePass = promptImagePass({
+    actionReplay: false,
+    actionImages: [actionImage],
+    inputImages: [inputImage],
+    referenceImages: [referenceImage],
+  });
+  assertFixture(
+    initialImagePass.images.map((image) => image.id).join(',') ===
+      'input_image_01,reference_image_01' &&
+      initialImagePass.inputImageOffset === 0 &&
+      initialImagePass.referenceImageOffset === 1,
+    'initial passes must contain input and reference images without action images',
+  );
+  const replayImagePass = promptImagePass({
+    actionReplay: true,
+    actionImages: [actionImage],
+    inputImages: [inputImage],
+    referenceImages: [referenceImage],
+  });
+  assertFixture(
+    replayImagePass.images.map((image) => image.id).join(',') ===
+      'action_image_01,input_image_01,reference_image_01' &&
+      replayImagePass.inputImageOffset === 1 &&
+      replayImagePass.referenceImageOffset === 2,
+    'action images may join replay passes ahead of input and reference images',
+  );
+
+  const repeatedReferenceMessages: MessageRecord[] = [{
+    id: 10,
+    role: 'output',
+    originalText: 'Older use.',
+    includeInHistory: true,
+    channel: 'phone',
+    phoneFrom: 'Sarah Miller',
+    phoneTo: 'Emily Miller',
+    phoneImageIds: ['sarah_miller_image_02'],
+    phoneImageDescription: 'Sarah first shared the mirror selfie.',
+    turnNumber: 1,
+  }, {
+    id: 11,
+    role: 'output',
+    originalText: 'Recent use.',
+    includeInHistory: true,
+    channel: 'phone',
+    phoneFrom: 'Sarah Miller',
+    phoneTo: 'Ryan Parker',
+    phoneImageIds: ['sarah_miller_image_02'],
+    phoneImageDescription: 'Sarah shared the same mirror selfie again.',
+    turnNumber: 12,
+  }];
+  const repeatedReferences = collectRecentReferenceImages({
+    messages: repeatedReferenceMessages,
+    nodes: referenceNodes,
+    options: { enabled: true, turnLookback: 1, maxImages: 1 },
+  });
+  const repeatedMarkedPrompt = promptWithReferenceImageMarkers(
+    formatChatHistory(repeatedReferenceMessages, false),
+    repeatedReferences,
+  );
+  assertFixture(
+    repeatedReferences[0]?.imageId === 'sarah_miller_image_02' &&
+      (repeatedMarkedPrompt.match(/\[Attached input image Nr1: sarah_miller_image_02 -/g)?.length ?? 0) === 2 &&
+      repeatedMarkedPrompt.includes('Sarah first shared the mirror selfie.') &&
+      repeatedMarkedPrompt.includes('Sarah shared the same mirror selfie again.') &&
+      promptWithReferenceImageMarkers(repeatedMarkedPrompt, repeatedReferences) === repeatedMarkedPrompt,
+    'a recently selected reference image must receive the same dynamic marker at every history occurrence',
+  );
+
+  const storybookWithUsedImage = structuredClone(emptyRpStorybookV1);
+  storybookWithUsedImage.characters = [{
+    id: 'emily-miller',
+    name: 'Emily Miller',
+    description: '',
+    personality: '',
+    speechStyle: '',
+    role: '',
+    images: [{
+      id: 'emily_miller_image_01',
+      name: 'Emily',
+      mimeType: 'image/jpeg',
+      size: 1,
+      dataUrl: 'data:image/jpeg;base64,AA==',
+      description: '',
+    }],
+  }];
+  const storybookWithoutUsedImage = structuredClone(storybookWithUsedImage);
+  storybookWithoutUsedImage.characters[0]!.images = [];
+  assertFixture(
+    storybookImageById([storybookWithUsedImage], 'emily_miller_image_01')?.name === 'Emily',
+    'Phone image IDs must resolve globally without sender ownership',
+  );
+  assertFixture(
+    usedStorybookImageIdsRemoved(
+      storybookWithUsedImage,
+      storybookWithoutUsedImage,
+      usedImageIds,
+    ).includes('emily_miller_image_01'),
+    'removing an image referenced by chat history must be detected',
+  );
+  assertFixture(
+    usedStorybookImageIdsRemoved(
+      storybookWithUsedImage,
+      storybookWithUsedImage,
+      usedImageIds,
+    ).length === 0,
+    'keeping a used image while editing the Storybook must remain allowed',
+  );
+
+  const openingHistoryStorybook = structuredClone(storybookWithUsedImage);
+  const openingImageAttachment = {
+    id: 'emily_miller_image_01',
+    name: 'Emily',
+    mimeType: 'image/jpeg',
+    size: 1,
+    dataUrl: 'data:image/jpeg;base64,AA==',
+    description: 'Emily at the party.',
+  };
+  openingHistoryStorybook.openingHistory.turns = [{
+    id: 'opening-turn-1',
+    number: 1,
+    createdAt: '2026-06-01T12:00:00.000Z',
+    input: { graphText: '', messages: [] },
+    output: {
+      graphText: 'Phone image',
+      messages: [{
+        id: 1,
+        role: 'output',
+        originalText: 'Phone image',
+        includeInHistory: true,
+        channel: 'phone',
+        phoneMessage: true,
+        phoneFrom: 'Emily Miller',
+        phoneTo: 'Sarah Miller',
+        phoneImageIds: ['emily_miller_image_01'],
+        phoneImageDescription: 'Emily at the party.',
+        imageAttachments: [openingImageAttachment],
+      }],
+    },
+  }, {
+    id: 'opening-turn-2',
+    number: 2,
+    createdAt: '2026-06-01T12:05:00.000Z',
+    input: {
+      graphText: 'RP image',
+      messages: [{
+        id: 2,
+        role: 'user',
+        originalText: 'RP image',
+        includeInHistory: true,
+        channel: 'rp',
+        rpImageDescription: 'Emily at the party.',
+        imageAttachments: [openingImageAttachment],
+      }],
+    },
+    output: {
+      graphText: 'Phone reply',
+      messages: [{
+        id: 3,
+        role: 'user',
+        originalText: 'Phone reply',
+        includeInHistory: true,
+        channel: 'phone',
+        phoneMessage: true,
+        phoneFrom: 'Sarah Miller',
+        phoneTo: 'Emily Miller',
+        replyToMessageId: 1,
+      }],
+    },
+  }];
+  openingHistoryStorybook.openingHistory.checkpoints = [{
+    turnId: 'opening-turn-2',
+    createdTimelineEntryIds: [],
+    nodeSnapshots: {
+      history: {
+        before: { historyCurrentRpDateTime: '2026-06-01T12:00' },
+        after: { historyCurrentRpDateTime: '2026-06-01T12:05' },
+      },
+    },
+  }];
+  const openingHistoryNode = structuredClone(
+    currentWorkflow.nodes.find((node) => node.data.nodeType === 'rp-storybook-v1'),
+  ) as WorkflowNode | undefined;
+  if (!openingHistoryNode || openingHistoryNode.data.nodeType !== 'rp-storybook-v1') {
+    throw new Error('Workflow validation fixture failed: default Storybook node is missing');
+  }
+  openingHistoryNode.data.storybookJson = rpStorybookJsonText(openingHistoryStorybook);
+  const restoredOpeningMessages = openingHistoryTurnsFromNodes([openingHistoryNode])
+    .flatMap((turn) => [...turn.input.messages, ...turn.output.messages]);
+  const restoredPhoneImage = restoredOpeningMessages.find((message) => message.channel === 'phone');
+  const restoredRpImage = restoredOpeningMessages.find((message) => message.channel === 'rp');
+  assertFixture(
+    restoredPhoneImage?.phoneImageIds?.[0] === 'emily_miller_image_01' &&
+      restoredPhoneImage.imageAttachments?.[0]?.dataUrl === 'data:image/jpeg;base64,AA==' &&
+      restoredPhoneImage.includeInHistory === true,
+    'Phone Opening History turns must preserve full image attachments and normal history behavior',
+  );
+  assertFixture(
+    restoredRpImage?.imageAttachments?.[0]?.id === 'emily_miller_image_01' &&
+      openingHistoryTurnsFromNodes([openingHistoryNode]).every((turn) => turn.openingHistory),
+    'RP Opening History turns must preserve image data and carry only turn-level origin metadata',
+  );
+  const restoredOpeningTurns = openingHistoryTurnsFromNodes([openingHistoryNode]);
+  const remappedOpeningTurns = remapOpeningTurnMessageIds(restoredOpeningTurns, 20).remappedTurns;
+  const remappedPhoneImage = remappedOpeningTurns
+    .flatMap((turn) => [...turn.input.messages, ...turn.output.messages])
+    .find((message) => message.originalText === 'Phone image');
+  const remappedPhoneReply = remappedOpeningTurns
+    .flatMap((turn) => [...turn.input.messages, ...turn.output.messages])
+    .find((message) => message.originalText === 'Phone reply');
+  assertFixture(
+    remappedPhoneImage?.id === 20 &&
+      remappedPhoneReply?.replyToMessageId === remappedPhoneImage.id,
+    'Opening History runtime remapping must preserve phone reply links',
+  );
+  assertFixture(
+    openingHistoryCheckpointsFromNodes([openingHistoryNode])[0]?.turnId === restoredOpeningTurns[1]?.id,
+    'Opening History checkpoints must follow their namespaced runtime turn ids',
+  );
+
+  assertFixture(isWorkflowFile(currentWorkflow), 'workflow.default.json must load');
+  assertFixture(
+    currentWorkflow.formatVersion === currentWorkflowFormatVersion,
+    'workflow.default.json must declare its format version',
+  );
+  const currentPromptSwitch = currentWorkflow.nodes.find(
+    (node) => node.data.nodeType === 'llm-prompt-switch',
+  );
+  const currentPromptActions = promptActionConfigs(currentPromptSwitch?.data.llmPromptActions);
+  assertFixture(
+    currentPromptActions.length > 0 &&
+      currentPromptActions.every((action) =>
+        !('outputChannel' in action) && !('promptSlot' in action),
+      ),
+    'prompt actions must use the shared slot-free data shape',
+  );
+  const clampedPromptActions = promptActionConfigs([
+    { ...defaultPromptActionConfig('Low limit', 'getImageId'), maxReturnedImages: 0 },
+    { ...defaultPromptActionConfig('High limit', 'describeInputImage'), maxReturnedImages: 100 },
+  ]);
+  assertFixture(
+    clampedPromptActions[0]?.maxReturnedImages === 1 &&
+      clampedPromptActions[1]?.maxReturnedImages === 20,
+    'prompt action image limits must clamp to the supported 1 through 20 range',
+  );
+  const getImageIdDefaults = defaultPromptActionConfig('Get character phone image list', 'getImageId');
+  assertFixture(
+    getImageIdDefaults.maxReturnedImages === 3 &&
+      getImageIdDefaults.sendImagesToLlm &&
+      getImageIdDefaults.hideImageTextWhenSendingToLlm,
+    'get image id prompt action defaults must send three hidden-text images to the LLM',
+  );
+  assertFixture(
+    countPromptActionUses([
+      '@action:Shared action\nPrompt text',
+      'Before\n@action:Shared action',
+      '@action:Different action',
+    ], 'Shared action') === 2,
+    'prompt action usage counts must include every globally linked prompt location',
+  );
+  assertFixture(
+    replacePromptActionTitle(
+      '@action temporary text that must not remain\nNext line',
+      'Get character image list',
+      'Get character image list',
+      false,
+    ) === '@action:Get character image list\nNext line',
+    'saving a bare prompt action must canonicalize its complete dedicated line',
+  );
+  assertFixture(
+    !isWorkflowFile({ ...currentWorkflow, formatVersion: '1' }),
+    'an invalid workflow format version must be rejected',
+  );
+  assertFixture(
+    !isWorkflowFile({ ...currentWorkflow, formatVersion: '2.0' }),
+    'an unsupported workflow format version must be rejected',
+  );
+  assertFixture(
+    !isWorkflowFile({ ...currentWorkflow, formatVersion: '1.0' }),
+    'a different workflow minor format version must be rejected during beta',
+  );
+  const currentChat: SessionV2CurrentStateInput = {
+    name: 'Fixture',
+    settings: {
+      englishProcessingEnabled: false,
+      displayLanguage: 'German',
+    },
+    workflowVariables: {},
+    turns: [],
+    turnCheckpoints: [],
+    openingMessages: [],
+  };
+  const currentSession = {
+    format: 'rpgraph-session',
+    formatVersion: currentSessionFormatVersion,
+    name: 'Fixture Session',
+    savedAt: '2026-06-01T00:00:00.000Z',
+    metadata: {
+      settings: currentChat.settings,
+    },
+    workflow: {
+      format: 'rpgraph-workflow',
+      formatVersion: '2.0',
+      savedAt: '2026-06-01T00:00:00.000Z',
+      graph: {
+        nodes: [],
+        edges: [],
+      },
+    },
+    timeline: [],
+    entities: {
+      events: {},
+      images: {},
+      memory: {},
+    },
+    runtime: {
+      current: { nodes: {}, workflowVariables: {} },
+      undo: [],
+    },
+    ui: {
+      phoneSeenByConversation: {},
+      phoneDividerAfterByConversation: {},
+    },
+  };
+  assertFixture(isRpSaveFile(currentSession), 'current RP Save Format v2 must load');
+  assertFixture(
+    !isRpSaveFile({ ...currentSession, formatVersion: '1.1' }),
+    'a different session format version must be rejected during beta',
+  );
+  assertFixture(
+    !isRpSaveFile({
+      ...currentSession,
+      workflow: { ...currentSession.workflow, formatVersion: '1.1' },
+    }),
+    'sessions with incompatible embedded workflows must be rejected',
+  );
+  assertFixture(
+    !isRpSaveFile({
+      format: 'rpgraph-session',
+      formatVersion: currentSessionFormatVersion,
+      name: 'Old container',
+      savedAt: '2026-06-01T00:00:00.000Z',
+      workflow: currentWorkflow,
+      chat: {
+        format: 'rpgraph-chat',
+        formatVersion: '1.0',
+        name: 'Old chat',
+        savedAt: '2026-06-01T00:00:00.000Z',
+        settings: {
+          englishProcessingEnabled: false,
+          displayLanguage: 'German',
+        },
+        turns: [],
+        openingMessages: [],
+        currentRuntime: { nodes: {} },
+      },
+    }),
+    'old workflow plus chat session containers must be rejected',
+  );
+  const roundtripRuntimeNodes = [{
+    id: 'event-manager-1',
+    type: 'workflow',
+    position: { x: 0, y: 0 },
+    data: {
+      nodeType: 'event-manager',
+      label: 'Event Manager',
+      description: 'Events',
+      preview: 'Ready',
+      eventAppointments: [{
+        id: 'event-1',
+        status: 'upcoming',
+        title: 'Meet Alice',
+        scheduledAt: '2026-06-01T12:00',
+        sourceTurnId: 'turn-1',
+        sourceTurnNumber: 1,
+      }],
+    },
+  }, {
+    id: 'storybook-1',
+    type: 'workflow',
+    position: { x: 200, y: 0 },
+    data: {
+      nodeType: 'rp-storybook-v1',
+      label: 'Storybook',
+      description: 'Storybook',
+      preview: 'Ready',
+      storybookJson: rpStorybookJsonText({
+        ...emptyRpStorybookV1,
+        title: 'Fixture Storybook',
+        openingHistory: {
+          summary: 'Opening event fixture',
+          turns: [],
+          checkpoints: [],
+          events: [{
+            id: 'event-1',
+            status: 'upcoming',
+            title: 'Meet Alice',
+            scheduledAt: '2026-06-01T12:00',
+            sourceTurnId: 'turn-1',
+            sourceTurnNumber: 1,
+          }],
+        },
+      }),
+    },
+  }, {
+    id: 'history-1',
+    type: 'workflow',
+    position: { x: 100, y: 0 },
+    data: {
+      nodeType: 'history',
+      label: 'Chat History',
+      description: 'History',
+      preview: 'Ready',
+      llmCallStats: [{ label: 'History Analysis', durationMs: 123, inputTokens: 10, outputTokens: 5 }],
+      rawHistory: 'must not be in runtime.current',
+      originalHistory: 'must not be in runtime.current',
+      translatedHistory: 'must not be in runtime.current',
+      lastTurnsHistory: 'must not be in runtime.current',
+      historyCurrentRpDateTime: '2026-06-01T12:00',
+      historyLastPrompt: 'must not be in runtime.current',
+      historyLastResponse: 'must not be in runtime.current',
+    },
+  }] satisfies WorkflowNode[];
+  const roundtripWorkflow = {
+    format: 'rpgraph-workflow',
+    formatVersion: currentWorkflowFormatVersion,
+    savedAt: '2026-06-01T00:00:00.000Z',
+    nodes: roundtripRuntimeNodes,
+    edges: [],
+  } satisfies WorkflowFile;
+  const roundtripTurn = {
+      id: 'turn-1',
+      number: 1,
+      createdAt: '2026-06-01T00:00:00.000Z',
+      openingHistory: true,
+      input: {
+        graphText: 'Hello',
+        messages: [{
+          id: 1,
+          role: 'user',
+          originalText: 'Hello',
+          channel: 'rp',
+          turnId: 'turn-1',
+          turnNumber: 1,
+          turnPart: 'input',
+        }],
+      },
+      output: {
+        graphText: 'Hi there',
+        messages: [{
+          id: 2,
+          role: 'output',
+          originalText: 'Hi there',
+          channel: 'rp',
+          turnId: 'turn-1',
+          turnNumber: 1,
+          turnPart: 'output',
+          workflowVariableSetCommands: [{
+            name: 'Current Location',
+            value: 'Old Harbor',
+          }],
+        }, {
+          id: 4,
+          role: 'output',
+          originalText: 'Ping from Bob',
+          imageAttachments: [{
+            id: 'bob_image_01',
+            name: 'bob_image_01',
+            mimeType: 'image/jpeg',
+            size: 1,
+            dataUrl: 'data:image/jpeg;base64,a',
+          }],
+          channel: 'phone',
+          phoneMessage: true,
+          phoneFrom: 'Bob',
+          phoneTo: 'Alice',
+          phoneImageIds: ['bob_image_01'],
+          phoneImageDescription: 'Bob waving from the bus stop.',
+          turnId: 'turn-1',
+          turnNumber: 1,
+          turnPart: 'output',
+        }, {
+          id: 5,
+          role: 'user',
+          originalText: 'That is a great photo.',
+          channel: 'phone',
+          phoneMessage: true,
+          phoneFrom: 'Alice',
+          phoneTo: 'Bob',
+          replyToMessageId: 4,
+          turnId: 'turn-1',
+          turnNumber: 1,
+          turnPart: 'output',
+        }, {
+          id: 6,
+          role: 'output',
+          originalText: 'Bob waves from the bus stop.\n\nAlice pockets her phone.',
+          translatedText: 'Bob winkt von der Bushaltestelle.\n\nAlice steckt ihr Handy ein.',
+          channel: 'rp',
+          embeddedPhoneMessages: [{
+            phoneMessageId: 4,
+            from: 'Bob',
+            to: 'Alice',
+            message: 'Ping from Bob',
+          }],
+          embeddedPhoneTextBefore: 'Bob waves from the bus stop.',
+          embeddedPhoneTextAfter: 'Alice pockets her phone.',
+          embeddedPhoneTranslatedTextBefore: 'Bob winkt von der Bushaltestelle.',
+          embeddedPhoneTranslatedTextAfter: 'Alice steckt ihr Handy ein.',
+          turnId: 'turn-1',
+          turnNumber: 1,
+          turnPart: 'output',
+        }],
+      },
+  } satisfies TurnRecord;
+  const roundtripChat = {
+    ...currentChat,
+    turns: [roundtripTurn],
+    turnCheckpoints: [{
+      turnId: 'turn-1',
+      createdTimelineEntryIds: ['turn-1-input-1', 'turn-1-output-2', 'turn-1-output-4'],
+      nodeSnapshots: {
+        'history-1': {
+          before: {
+            historyCurrentRpDateTime: '2026-06-01T11:00',
+            historyProcessedTurnIds: [],
+          },
+          after: {
+            historyCurrentRpDateTime: '2026-06-01T12:00',
+            historyProcessedTurnIds: ['turn-1'],
+          },
+        },
+        'event-manager-1': {
+          before: {
+            eventProcessedTurnIds: [],
+          },
+          after: {
+            eventProcessedTurnIds: ['turn-1'],
+          },
+        },
+      },
+      workflowVariables: {
+        before: {
+          'Current Location': 'Downtown',
+        },
+        after: {
+          'Current Location': 'Old Harbor',
+        },
+      },
+      eventSnapshots: {
+        'event-1': {
+          after: {
+            id: 'event-1',
+            status: 'upcoming',
+            title: 'Meet Alice',
+            scheduledAt: '2026-06-01T12:00',
+            source: {
+              turnId: 'turn-1',
+              turnNumber: 1,
+            },
+          },
+        },
+      },
+    }],
+    openingMessages: [{
+      id: 3,
+      role: 'user',
+      originalText: 'Opening line',
+      channel: 'rp',
+      isOpening: true,
+      turnId: 'opening-message-3',
+      turnNumber: 1,
+      turnPart: 'input',
+    }],
+    phoneSeenByConversation: {
+      'Alice::Bob': 2,
+    },
+    phoneDividerAfterByConversation: {
+      'Alice::Bob': 1,
+    },
+    workflowVariables: {
+      'Current Location': 'Old Harbor',
+    },
+  } satisfies SessionV2CurrentStateInput;
+  const sessionV2 = sessionV2FromCurrentState(
+    roundtripChat,
+    roundtripWorkflow,
+    roundtripRuntimeNodes,
+    '2026-06-01T00:00:00.000Z',
+  );
+  assertFixture(isRpgraphSessionV2(sessionV2), 'RP Save Format v2 roundtrip payload must validate');
+  const invalidReplySession = structuredClone(sessionV2);
+  const invalidReplyEntry = invalidReplySession.timeline.find(
+    (entry): entry is TimelineMessageEntry => entry.kind === 'message' && !!entry.replyToMessageId,
+  );
+  if (invalidReplyEntry) {
+    (invalidReplyEntry as unknown as Record<string, unknown>).replyToMessageId = 4;
+  }
+  assertFixture(
+    !isRpgraphSessionV2(invalidReplySession),
+    'RP Save Format v2 must reject non-string timeline reply ids',
+  );
+  const danglingReplySession = structuredClone(sessionV2);
+  const danglingReplyEntry = danglingReplySession.timeline.find(
+    (entry): entry is TimelineMessageEntry => entry.kind === 'message' && !!entry.replyToMessageId,
+  );
+  if (danglingReplyEntry) {
+    danglingReplyEntry.replyToMessageId = 'missing-phone-message';
+  }
+  assertFixture(
+    !isRpgraphSessionV2(danglingReplySession),
+    'RP Save Format v2 must reject dangling timeline reply ids',
+  );
+  const nestedReplySession = structuredClone(sessionV2);
+  const nestedReply = nestedReplySession.timeline.find(
+    (entry): entry is TimelineMessageEntry => entry.kind === 'message' && !!entry.replyToMessageId,
+  );
+  const nestedReplyTarget = nestedReplySession.timeline.find(
+    (entry): entry is TimelineMessageEntry => entry.kind === 'message' && entry.id === nestedReply?.replyToMessageId,
+  );
+  if (nestedReply && nestedReplyTarget) {
+    nestedReplyTarget.replyToMessageId = nestedReply.id;
+  }
+  assertFixture(
+    !isRpgraphSessionV2(nestedReplySession),
+    'RP Save Format v2 must reject nested phone reply links',
+  );
+  assertFixture(latestSessionV2TurnNumber(sessionV2) === 1, 'RP Save Format v2 must retain latest turn number');
+  const restoredAppState = appStateFromSessionV2(sessionV2);
+  assertFixture(
+    restoredAppState.turns.length === 1 &&
+      restoredAppState.openingMessages.length === 1 &&
+      restoredAppState.currentRuntime.nodes['history-1']?.historyCurrentRpDateTime === '2026-06-01T12:00' &&
+      restoredAppState.workflowVariables['Current Location'] === 'Old Harbor',
+    'RP Save Format v2 must restore app state directly from the V2 session',
+  );
+  assertFixture(restoredAppState.turns.length === 1, 'RP Save Format v2 must restore normal turns');
+  assertFixture(
+    restoredAppState.turns[0]?.openingHistory === true,
+    'RP Save Format v2 must preserve Opening History turn origin metadata',
+  );
+  assertFixture(restoredAppState.turns[0]?.output.messages[0]?.originalText === 'Hi there', 'RP Save Format v2 must restore output text');
+  assertFixture(
+    restoredAppState.turns[0]?.output.messages[0]?.workflowVariableSetCommands?.[0]?.value === 'Old Harbor',
+    'RP Save Format v2 must restore output workflow variable metadata',
+  );
+  const embeddedPhoneRoundtripMessage = restoredAppState.turns[0]?.output.messages.find((message) =>
+    message.originalText.startsWith('Bob waves from the bus stop.'),
+  );
+  const embeddedPhoneRoundtripLinkedPhone = restoredAppState.turns[0]?.output.messages.find((message) =>
+    message.originalText === 'Ping from Bob',
+  );
+  assertFixture(
+    embeddedPhoneRoundtripMessage?.embeddedPhoneTextBefore === 'Bob waves from the bus stop.' &&
+      embeddedPhoneRoundtripMessage.embeddedPhoneTextAfter === 'Alice pockets her phone.' &&
+      embeddedPhoneRoundtripMessage.embeddedPhoneTranslatedTextBefore === 'Bob winkt von der Bushaltestelle.' &&
+      embeddedPhoneRoundtripMessage.embeddedPhoneTranslatedTextAfter === 'Alice steckt ihr Handy ein.' &&
+      embeddedPhoneRoundtripMessage.embeddedPhoneMessages?.[0]?.phoneMessageId === embeddedPhoneRoundtripLinkedPhone?.id,
+    'RP Save Format v2 must restore embedded phone composite text and relinked phone ids',
+  );
+  assertFixture(restoredAppState.openingMessages[0]?.originalText === 'Opening line', 'RP Save Format v2 must restore opening messages');
+  assertFixture(
+    sessionV2.ui.phoneSeenByConversation['Alice::Bob'] === 2 &&
+      restoredAppState.phoneSeenByConversation?.['Alice::Bob'] === 2,
+    'RP Save Format v2 must store and restore numeric phone UI state',
+  );
+  const timelinePhoneImage = sessionV2.timeline.find(
+    (entry): entry is TimelineMessageEntry => entry.kind === 'message' && entry.channel === 'phone',
+  );
+  assertFixture(
+    timelinePhoneImage?.phone?.imageIds?.[0] === 'bob_image_01' &&
+      timelinePhoneImage.images?.[0]?.imageId === 'bob_image_01' &&
+      sessionV2.entities.images.bob_image_01?.id === 'bob_image_01' &&
+      restoredAppState.turns[0]?.output.messages.find((message) => message.channel === 'phone')?.phoneImageIds?.[0] === 'bob_image_01',
+    'RP Save Format v2 must retain phone Storybook image ids',
+  );
+  const timelinePhoneReply = sessionV2.timeline.find(
+    (entry): entry is TimelineMessageEntry => entry.kind === 'message' && !!entry.replyToMessageId,
+  );
+  assertFixture(
+    timelinePhoneReply?.replyToMessageId === timelinePhoneImage?.id &&
+      restoredAppState.turns[0]?.output.messages.find((message) => message.id === 5)?.replyToMessageId === 4,
+    'RP Save Format v2 must retain phone reply message links',
+  );
+  const restoredReplyHistory = formatChatHistory(
+    restoredAppState.turns.flatMap((turn) => [...turn.input.messages, ...turn.output.messages]),
+    false,
+  );
+  assertFixture(
+    restoredReplyHistory.includes(
+      '[Replied to Bob: [bob_image_01: Bob waving from the bus stop.] Ping from Bob]',
+    ),
+    'restored Chat History must resolve saved phone reply image ids',
+  );
+  assertFixture(
+    restoredAppState.turnCheckpoints[0]?.nodeSnapshots['history-1']?.before.historyCurrentRpDateTime === '2026-06-01T11:00' &&
+      restoredAppState.turnCheckpoints[0]?.nodeSnapshots['history-1']?.after.historyCurrentRpDateTime === '2026-06-01T12:00' &&
+      restoredAppState.turnCheckpoints[0]?.workflowVariables?.before['Current Location'] === 'Downtown' &&
+      restoredAppState.turnCheckpoints[0]?.workflowVariables?.after['Current Location'] === 'Old Harbor' &&
+      restoredAppState.turnCheckpoints[0]?.eventSnapshots?.['event-1']?.after?.title === 'Meet Alice' &&
+      !('runtimeBefore' in restoredAppState.turns[0]!) &&
+      !('runtimeAfter' in restoredAppState.turns[0]!),
+    'RP Save Format v2 must restore undo checkpoints without compatibility runtime snapshots on turns',
+  );
+  assertFixture(
+    appointmentFromEventEntity(sessionV2.entities.events['event-1']!).title === 'Meet Alice',
+    'RP Save Format v2 must keep events in entities',
+  );
+  assertFixture(
+    sessionV2.entities.events['event-1']?.source.storybookOpening === true,
+    'RP Save Format v2 must mark Storybook Opening History events in event entities',
+  );
+  assertFixture(
+    formatPhoneContext(sessionV2, { encoding: 'json-compact', maxEntries: 10 }).includes('Ping from Bob'),
+    'RP Save Format v2 must expose phone messages through focused phone context',
+  );
+  assertFixture(
+    sessionV2.timeline.some((entry) =>
+      entry.kind === 'event-change' &&
+      entry.operation === 'add' &&
+      entry.eventIds.includes('event-1')
+    ),
+    'RP Save Format v2 must include event changes in the timeline',
+  );
+  assertFixture(
+    sessionV2.runtime.current.nodes['history-1']?.historyCurrentRpDateTime === '2026-06-01T12:00' &&
+      !('rawHistory' in sessionV2.runtime.current.nodes['history-1']!) &&
+      !('originalHistory' in sessionV2.runtime.current.nodes['history-1']!) &&
+      !('historyLastPrompt' in sessionV2.runtime.current.nodes['history-1']!),
+    'RP Save Format v2 runtime must keep declared runtime fields and omit derived/debug history fields',
+  );
+  assertFixture(
+    !!sessionV2.debug?.nodeDiagnostics['history-1']?.entries.some((entry) =>
+      entry.text.includes('historyLastPrompt') &&
+      entry.text.includes('must not be in runtime.current')
+    ) &&
+      sessionV2.debug.recentLlmCalls.some((call) =>
+        call.nodeId === 'history-1' &&
+        call.label === 'History Analysis' &&
+        call.inputTokens === 10
+    ),
+    'RP Save Format v2 must keep bounded node debug outside runtime.current',
+  );
+  assertFixture(
+    sessionV2.runtime.undo.length === 1 &&
+      sessionV2.runtime.undo[0]?.createdTimelineEntryIds.includes('turn-1-input-1') &&
+      sessionV2.runtime.undo[0]?.nodeSnapshots['history-1']?.before.historyCurrentRpDateTime === '2026-06-01T11:00' &&
+      sessionV2.runtime.undo[0]?.nodeSnapshots['history-1']?.after.historyCurrentRpDateTime === '2026-06-01T12:00' &&
+      sessionV2.runtime.undo[0]?.eventSnapshots?.['event-1']?.after?.title === 'Meet Alice',
+    'RP Save Format v2 must create minimal undo checkpoints from committed turns',
+  );
+  const debugTurnSummary = debugTurnSummaryFromTurnRecord(
+    roundtripChat.turns[0]!,
+    roundtripRuntimeNodes,
+    sessionV2.runtime.undo[0],
+  );
+  assertFixture(
+    debugTurnSummary.checkpoint.createdTimelineEntryCount > 0 &&
+      debugTurnSummary.checkpoint.nodeSnapshots['history-1']?.fields.includes('historyCurrentRpDateTime') &&
+      debugTurnSummary.checkpoint.eventIds.includes('event-1') &&
+      !('runtimeBefore' in debugTurnSummary) &&
+      !('runtimeAfter' in debugTurnSummary),
+    'debug turn summaries must expose V2 checkpoints without broad runtime snapshots',
+  );
+  const checkpointBeforeNodes = applyTurnCheckpointToNodes(
+    roundtripRuntimeNodes,
+    sessionV2.runtime.undo[0]!,
+    'before',
+  );
+  const checkpointBeforeHistory = checkpointBeforeNodes.find((node) => node.id === 'history-1');
+  const checkpointBeforeEvents = checkpointBeforeNodes.find((node) => node.id === 'event-manager-1');
+  assertFixture(
+    checkpointBeforeHistory?.data.historyCurrentRpDateTime === '2026-06-01T11:00' &&
+      checkpointBeforeEvents?.data.eventAppointments?.length === 0,
+    'RP Save Format v2 checkpoints must restore node and event state before a turn',
+  );
+  const checkpointAfterNodes = applyTurnCheckpointToNodes(
+    checkpointBeforeNodes,
+    sessionV2.runtime.undo[0]!,
+    'after',
+  );
+  const checkpointAfterHistory = checkpointAfterNodes.find((node) => node.id === 'history-1');
+  const checkpointAfterEvents = checkpointAfterNodes.find((node) => node.id === 'event-manager-1');
+  assertFixture(
+    checkpointAfterHistory?.data.historyCurrentRpDateTime === '2026-06-01T12:00' &&
+      checkpointAfterEvents?.data.eventAppointments?.[0]?.title === 'Meet Alice',
+    'RP Save Format v2 checkpoints must restore node and event state after a turn',
+  );
+  assertFixture(
+    upcomingAppointments([
+      { ...appointmentFromEventEntity(sessionV2.entities.events['event-1']!), scheduledAt: '2026-06-01T12:00' },
+      {
+        ...appointmentFromEventEntity(sessionV2.entities.events['event-1']!),
+        id: 'event-0',
+        scheduledAt: '2026-06-01T10:00',
+      },
+    ])[0]?.id === 'event-0',
+    'event store must sort upcoming events by schedule',
+  );
+  assertFixture(
+    updateAppointmentStatus(
+      [appointmentFromEventEntity(sessionV2.entities.events['event-1']!)],
+      'event-1',
+      'completed',
+    )[0]?.status === 'completed',
+    'event store must update event status',
+  );
+  const historyOutputs = buildHistoryOutputs({
+    messages: roundtripChat.turns.flatMap((turn) => [...turn.input.messages, ...turn.output.messages]),
+    fallbackOriginalHistory: '',
+    fallbackTranslatedHistory: '',
+    lastTurnsCount: boundedHistoryLastTurnsCount(1),
+    rpDateTimeFormat: 'iso',
+    rpWeekdayLanguage: 'en-US',
+  });
+  assertFixture(
+    historyOutputs.originalHistory.includes('Hello') &&
+      historyOutputs.lastTurnsHistory.includes('Hi there'),
+    'history store must derive one formatted history path and last-turn history',
+  );
+  const phoneMessages = [{
+    id: 10,
+    role: 'user',
+    originalText: 'Ping',
+    channel: 'phone',
+    phoneFrom: 'Alice',
+    phoneTo: 'Bob',
+  }, {
+    id: 11,
+    role: 'output',
+    originalText: 'Pong',
+    channel: 'phone',
+    phoneFrom: 'Bob',
+    phoneTo: 'Alice',
+  }] satisfies MessageRecord[];
+  const aliceBobKey = phoneConversationKey('Alice', 'Bob');
+  const phoneInfo = phoneConversationInfoFromMessages(phoneMessages, { [aliceBobKey]: 10 });
+  assertFixture(
+    phoneMessagesBetween(phoneMessages, 'Alice', 'Bob').length === 2 &&
+      phoneInfo.get(aliceBobKey)?.latestId === 11 &&
+      phoneInfo.get(aliceBobKey)?.unreadByRecipient.alice?.unreadCount === 1,
+    'phone selectors must normalize conversation keys and unread phone messages',
+  );
+  assertFixture(
+    phoneSeenStateFromMessages(phoneMessages)[aliceBobKey] === 11 &&
+      viewerHasUnreadPhoneMessages(phoneInfo, 'Alice') &&
+      !viewerHasUnreadPhoneMessages(phoneInfo, 'Bob'),
+    'phone selectors must derive loaded seen state and viewer unread state',
+  );
+  assertFixture(
+    directPhoneTimelineEntries(phoneMessages)[0]?.phoneMessage.from === 'Alice' &&
+      linkedPhoneMessageIds([{ ...phoneMessages[0]!, embeddedPhoneMessages: [{ phoneMessageId: 11, from: 'Bob', to: 'Alice', message: 'Pong' }] }]).has(11),
+    'phone selectors must expose direct timeline entries and linked phone message ids',
+  );
+  assertFixture(
+    visibleMessageRecords([
+      { ...phoneMessages[0]!, embeddedPhoneMessages: [{ phoneMessageId: 11, from: 'Bob', to: 'Alice', message: 'Pong' }] },
+      phoneMessages[1]!,
+      { id: 12, role: 'error', originalText: 'Hidden error' },
+    ]).map((message) => message.id).join(',') === '10',
+    'phone selectors must hide linked phone messages and errors from the visible chat timeline',
+  );
+  const phoneMessagesWithTime = [
+    phoneMessages[0]!,
+    { ...phoneMessages[1]!, rpDateTime: '2026-06-01T12:30' },
+  ];
+  assertFixture(
+    messageEffectiveRpDateTime(
+      { ...phoneMessages[0]!, channel: 'rp', embeddedPhoneMessages: [{ phoneMessageId: 11, from: 'Bob', to: 'Alice', message: 'Pong' }] },
+      phoneMessagesById(phoneMessagesWithTime),
+    ) === '2026-06-01T12:30',
+    'phone selectors must derive RP time from linked embedded phone messages',
+  );
+  const phoneMessageViews = phoneConversationMessageViews([
+    { ...phoneMessages[0]!, translatedText: 'Translated ping', rpDateTime: '2026-06-01T12:00' },
+    { ...phoneMessages[1]!, rpDateTime: '2026-06-01T12:30' },
+  ], {
+    viewerName: 'Alice Example',
+    selectedPhoneDividerAfterId: 10,
+    englishProcessingEnabled: true,
+    rpTimeTrackingEnabled: true,
+  });
+  assertFixture(
+    phoneMessageViews[0]?.outgoing === true &&
+      phoneMessageViews[0]?.visibleText === 'Translated ping' &&
+      phoneMessageViews[0]?.dayRpDateTime === '2026-06-01T12:00' &&
+      phoneMessageViews[1]?.showNewDivider === true &&
+      matchingPhoneName([{ name: 'Alice Example' }], 'Alice')?.name === 'Alice Example',
+    'phone selectors must build phone UI message views from canonical message data',
+  );
+  assertFixture(
+    canonicalPhoneName([{ name: 'Lara Miller' }, { name: 'Robert Miller' }], 'Lara Herzchen') === 'Lara Miller' &&
+      canonicalPhoneName([{ name: 'Lara Miller' }, { name: 'Robert Miller' }], 'Lara ❤️') === 'Lara Miller' &&
+      canonicalPhoneName([{ name: 'Lara Miller' }, { name: 'Lara Meyer' }], 'Lara') === 'Lara',
+    'phone names must canonicalize only when a nickname or partial name has one clear character match',
+  );
+  assertFixture(
+    canonicalPhoneName([{ name: 'Postarius' }, { name: 'Post Delivery' }], 'Post') === 'Post Delivery' &&
+      canonicalPhoneName([{ name: 'Postarius' }, { name: 'Posta' }], 'Post') === 'Post',
+    'phone names must preserve ambiguous optional contact matches',
+  );
+  const fixtureCharacters = [
+    { id: 'alice', name: 'Alice' },
+    { id: 'bob', name: 'Bob' },
+    { id: 'cara', name: 'Cara' },
+  ];
+  const phoneContacts = phoneContactsForViewer(fixtureCharacters, {
+    viewedCharacter: fixtureCharacters[0],
+    messages: phoneMessages,
+    conversations: phoneConversationInfoFromMessages(phoneMessages, { [aliceBobKey]: 10 }),
+    characterColors: new Map([['Bob', '#123456']]),
+    fallbackColor: '#abcdef',
+    englishProcessingEnabled: false,
+  });
+  const selectedPhoneContact = phoneContacts.find((contact) => contact.character.id === 'bob');
+  assertFixture(
+    selectedPhoneContact?.conversationKey === aliceBobKey &&
+      selectedPhoneContact.preview === 'Pong' &&
+      selectedPhoneContact.unreadCount === 1 &&
+      selectedPhoneConversationMessages(phoneMessages, fixtureCharacters[0], selectedPhoneContact).length === 2,
+    'phone selectors must build contact rows and selected conversations for the viewed phone',
+  );
+  assertFixture(
+    unreadPhoneConversationsForCharacters(fixtureCharacters, {
+      narratorSelected: true,
+      selectedContact: selectedPhoneContact,
+      conversations: phoneConversationInfoFromMessages(phoneMessages, { [aliceBobKey]: 10 }),
+    }).some((conversation) =>
+      conversation.viewerName === 'Alice' &&
+      conversation.contactName === 'Bob' &&
+      conversation.unreadCount === 1 &&
+      conversation.unread
+    ),
+    'phone selectors must build narrator phone switch rows from unread conversations',
+  );
+  const unreadSwitch = unreadPhoneConversationsForCharacters(fixtureCharacters, {
+    narratorSelected: true,
+    selectedContact: selectedPhoneContact,
+    conversations: phoneConversationInfoFromMessages(phoneMessages, { [aliceBobKey]: 10 }),
+  }).find((conversation) => conversation.unread);
+  assertFixture(
+    !!unreadSwitch &&
+      phoneSwitchCharacters(fixtureCharacters, unreadSwitch, phoneInfo).viewer?.id === 'alice' &&
+      phoneSwitchCharacters(fixtureCharacters, unreadSwitch, phoneInfo).contact?.id === 'bob' &&
+      embeddedPhoneMessageCharacters(fixtureCharacters, {
+        phoneMessageId: 11,
+        from: 'Bob',
+        to: 'Alice',
+        message: 'Pong',
+      }).viewer?.id === 'alice',
+    'phone selectors must resolve phone switch and embedded phone message characters',
+  );
+  assertFixture(
+    formatPhoneInput(
+      'Ryan Parker',
+      'Sarah Miller',
+      'This is Jessie, do you know her?',
+      {
+        id: 'ryan_parker_image_01',
+        description: 'A woman standing beside an unidentified man outside a café.',
+      },
+    ) === 'Ryan Parker sends an image to Sarah Miller: [ryan_parker_image_01: A woman standing beside an unidentified man outside a café.] This is Jessie, do you know her?' &&
+    formatPhoneInput(
+      'Ryan Parker',
+      'Sarah Miller',
+      'This is Jessie, do you know her?',
+      {},
+    ) === 'Ryan Parker sends an image to Sarah Miller: This is Jessie, do you know her?' &&
+    formatPhoneInput(
+      'Ryan Parker',
+      'Sarah Miller',
+      'Do you know Jessie?',
+    ) === 'Ryan Parker texts Sarah Miller: Do you know Jessie?',
+    'current phone input must distinguish text, uploaded images, and referenced Storybook images',
+  );
+  assertFixture(
+    formatChatHistory([{
+      id: 1,
+      role: 'user',
+      originalText: 'I am leaving now.',
+      rpDateTime: '2026-06-01T12:10',
+    }], false, 'eu', 'de-DE') === '[01.06.26 MO 12:10] I am leaving now.',
+    'chat history must render RP timestamps',
+  );
+  assertFixture(
+    formatChatHistory([{
+      id: 1,
+      role: 'user',
+      originalText: 'Helga looks at the picture she took last week.',
+      imageAttachments: [{
+        id: 'image-temp-123',
+        name: 'RP Picture 01',
+        mimeType: 'image/jpeg',
+        size: 1,
+        dataUrl: 'data:image/jpeg;base64,AA==',
+      }],
+      rpImageDescription: 'Ryan and Espen stand close at the party, caught in obvious romantic tension while Helga teases them.',
+      rpImageName: 'RP Picture 01',
+    }], false) === '[RP Picture 01: Ryan and Espen stand close at the party, caught in obvious romantic tension while Helga teases them.] Helga looks at the picture she took last week.',
+    'chat history must render described RP input images with stable RP picture names',
+  );
+  assertFixture(
+    formatChatHistory([{
+      id: 1,
+      role: 'user',
+      originalText: 'I am leaving now.',
+      rpDateTime: '2026-06-05T20:00',
+    }], false, 'us', 'de-DE') === '[06/05/26 FR 8:00 PM] I am leaving now.',
+    'chat history must render US RP timestamps',
+  );
+  assertFixture(
+    formatChatHistory([{
+      id: 1,
+      role: 'user',
+      originalText: 'I am leaving now.',
+      rpDateTime: '2026-06-05T20:00',
+    }], false, 'iso', 'de-DE') === '[2026-06-05 FR 20:00] I am leaving now.',
+    'chat history must render ISO RP timestamps',
+  );
+  assertFixture(
+    formatChatHistory([{
+      id: 1,
+      role: 'user',
+      originalText: 'Robert sees a flower stand.',
+      rpDateTime: '2026-06-14T17:15',
+    }, {
+      id: 2,
+      role: 'output',
+      originalText: 'Robert pulls over.',
+      rpDateTime: '2026-06-14T17:15',
+    }, {
+      id: 3,
+      role: 'output',
+      originalText: 'Sara replies.',
+      rpDateTime: '2026-06-14T17:16',
+    }], false, 'eu', 'en-US') === [
+      '[14.06.26 SUN 17:15] Robert sees a flower stand.',
+      'Robert pulls over.',
+      '[14.06.26 SUN 17:16] Sara replies.',
+    ].join('\n\n'),
+    'chat history must render RP timestamps only when the time changes',
+  );
+  assertFixture(
+    formatChatHistory([{
+      id: 1,
+      role: 'user',
+      originalText: 'Robert Miller moves the story forward with an action, dialogue, or decision.',
+      includeInHistory: true,
+      channel: 'rp',
+      speakerName: 'Narrator',
+    }, {
+      id: 2,
+      role: 'output',
+      originalText: 'Robert opens the door.',
+      includeInHistory: true,
+    }], false) === 'Robert opens the door.',
+    'chat history must omit AutoTurn marker inputs',
+  );
+  assertFixture(
+    formatChatHistory([{
+      id: 1,
+      role: 'output',
+      originalText: 'Robert pulls over.\n\nHe puts his phone away.',
+      includeInHistory: true,
+      embeddedPhoneMessages: [{
+        phoneMessageId: 2,
+        from: 'Robert Miller',
+        to: 'Sara Steiner',
+        message: 'Which flowers does Lara like?',
+      }],
+      embeddedPhoneTextBefore: 'Robert pulls over.',
+      embeddedPhoneTextAfter: 'He puts his phone away.',
+    }, {
+      id: 2,
+      role: 'output',
+      originalText: 'Which flowers does Lara like?',
+      includeInHistory: true,
+      channel: 'phone',
+      phoneMessage: true,
+      phoneFrom: 'Robert Miller',
+      phoneTo: 'Sara Steiner',
+    }], false) === [
+      'Robert pulls over.',
+      'Robert Miller texts Sara Steiner: Which flowers does Lara like?',
+      'He puts his phone away.',
+    ].join('\n\n'),
+    'chat history must inline embedded phone messages at their RP text position',
+  );
+  assertFixture(
+    formatChatHistory([{
+      id: 1,
+      role: 'user',
+      originalText: "Hey that's us together at the party from last weekend jack sent the picture",
+      includeInHistory: true,
+      channel: 'phone',
+      phoneMessage: true,
+      phoneFrom: 'Emily Miller',
+      phoneTo: 'Sarah Miller',
+      phoneImageIds: ['emily_miller_image_01'],
+      phoneImageDescription: 'Emily Miller and Sarah Miller sitting on a red tiled patio, both wearing sunglasses; Emily looks forward while Sarah looks down.',
+      inputMessageFormat: 1,
+      inputPromptSlot: 0,
+      rpDateTime: '2026-06-22T15:40',
+    }], false, 'eu', 'en-US') === [
+      "[22.06.26 MON 15:40] Emily Miller sends an image to Sarah Miller: [emily_miller_image_01: Emily Miller and Sarah Miller sitting on a red tiled patio, both wearing sunglasses; Emily looks forward while Sarah looks down.] Hey that's us together at the party from last weekend jack sent the picture",
+    ].join('\n\n'),
+    'chat history must label phone user-image inputs with their Storybook image id',
+  );
+  assertFixture(
+    formatChatHistory([{
+      id: 1,
+      role: 'output',
+      originalText: 'Hey, that is us at the party.',
+      includeInHistory: true,
+      channel: 'phone',
+      phoneMessage: true,
+      phoneFrom: 'Emily Miller',
+      phoneTo: 'Sarah Miller',
+      phoneImageIds: ['emily_miller_image_01'],
+      phoneImageDescription: 'Emily and Sarah sitting together on a red tiled patio.',
+    }, {
+      id: 2,
+      role: 'user',
+      originalText: 'I love this one.',
+      includeInHistory: true,
+      channel: 'phone',
+      phoneMessage: true,
+      phoneFrom: 'Sarah Miller',
+      phoneTo: 'Emily Miller',
+      replyToMessageId: 1,
+    }], false) === [
+      'Emily Miller sends an image to Sarah Miller: [emily_miller_image_01: Emily and Sarah sitting together on a red tiled patio.] Hey, that is us at the party.',
+      'Sarah Miller replies to Emily Miller:\n[Replied to Emily Miller: [emily_miller_image_01: Emily and Sarah sitting together on a red tiled patio.] Hey, that is us at the party.]\nSarah Miller\'s message: I love this one.',
+    ].join('\n\n'),
+    'chat history must include the replied phone message and its image id',
+  );
+  const rawReplyHistoryMessages: MessageRecord[] = [{
+    id: 1,
+    role: 'output',
+    originalText: 'Photo from the party.',
+    channel: 'phone',
+    phoneFrom: 'Emily Miller',
+    phoneTo: 'Sarah Miller',
+    phoneImageIds: ['emily_miller_image_01'],
+    phoneImageDescription: 'Emily and Sarah together at the party.',
+    imageAttachments: [{
+      id: 'emily_miller_image_01',
+      name: 'Party photo',
+      mimeType: 'image/jpeg',
+      size: 1,
+      dataUrl: 'data:image/jpeg;base64,a',
+    }],
+    turnNumber: 1,
+  }, {
+    id: 2,
+    role: 'user',
+    originalText: 'I remember that evening.',
+    channel: 'phone',
+    phoneFrom: 'Sarah Miller',
+    phoneTo: 'Emily Miller',
+    replyToMessageId: 1,
+    turnNumber: 2,
+  }];
+  const replyHistoryOutputs = buildHistoryOutputs({
+    messages: rawReplyHistoryMessages,
+    fallbackOriginalHistory: '',
+    fallbackTranslatedHistory: '',
+    lastTurnsCount: 1,
+    rpDateTimeFormat: 'iso',
+    rpWeekdayLanguage: 'en-US',
+  });
+  const rawReplyHistory = JSON.parse(replyHistoryOutputs.rawHistory) as MessageRecord[];
+  assertFixture(
+    rawReplyHistory[0]?.phoneImageIds?.[0] === 'emily_miller_image_01' &&
+      rawReplyHistory[0]?.imageAttachments?.[0]?.id === 'emily_miller_image_01' &&
+      rawReplyHistory[1]?.replyToMessageId === 1,
+    'raw Chat History must retain phone image ids and reply message ids',
+  );
+  assertFixture(
+    replyHistoryOutputs.lastTurnsHistory.includes(
+      '[Replied to Emily Miller: [emily_miller_image_01: Emily and Sarah together at the party.] Photo from the party.]',
+    ) && !replyHistoryOutputs.lastTurnsHistory.startsWith('Emily Miller texts'),
+    'last-turn Chat History must resolve reply image context outside the selected turn window',
+  );
+  const extractedWorkflowVariables = extractWorkflowVariableSetCommands([
+    'Robert opens the door.',
+    '',
+    '@set',
+    'Current Location = "Old Harbor"',
+    'Tension = 8',
+    '@endset',
+    '',
+    '@set Weather = "Rain"',
+  ].join('\n'));
+  assertFixture(
+    extractedWorkflowVariables.text === 'Robert opens the door.' &&
+      extractedWorkflowVariables.commands.length === 3 &&
+      extractedWorkflowVariables.commands[0]?.name === 'Current Location' &&
+      extractedWorkflowVariables.commands[0]?.value === 'Old Harbor' &&
+      extractedWorkflowVariables.commands[1]?.value === '8' &&
+      extractedWorkflowVariables.commands[2]?.name === 'Weather',
+    'workflow variable extraction must remove @set commands from visible output',
+  );
+  const previewVariableDefinitions = [{
+    key: 'Current Location',
+    label: 'Current Location',
+  }];
+  const previewVariableValues = workflowVariablePreviewValues(
+    extractedWorkflowVariables.commands,
+    previewVariableDefinitions,
+    { 'Current Location': 'Downtown' },
+  );
+  assertFixture(
+    resolveWorkflowVariables(
+      'They arrive at <Current Location>.',
+      previewVariableDefinitions,
+      previewVariableValues,
+    ) === 'They arrive at Old Harbor.',
+    'workflow variable preview values must resolve variables set in the same output',
+  );
+  assertFixture(
+    resolveWorkflowVariables(
+      'Tell the model to write \\<Current Location>, then use <Current Location>.',
+      previewVariableDefinitions,
+      previewVariableValues,
+    ) === 'Tell the model to write <Current Location>, then use Old Harbor.',
+    'escaped workflow variable tokens must remain literal in resolved text',
+  );
+  const fencedEmbeddedPhone = parseEmbeddedPhoneMessagesFromRpOutput([
+    'Lara taps out a reminder.',
+    '',
+    '```json',
+    '{"phoneMessages":[{"from":"Lara Miller","to":"Robert Miller","message":"Please get the heavy duty ones."}]}',
+    '```',
+  ].join('\n'));
+  assertFixture(
+    fencedEmbeddedPhone.text === 'Lara taps out a reminder.' &&
+      fencedEmbeddedPhone.textBefore === 'Lara taps out a reminder.' &&
+      fencedEmbeddedPhone.textAfter === '' &&
+      fencedEmbeddedPhone.phoneMessages[0]?.from === 'Lara Miller' &&
+      fencedEmbeddedPhone.phoneMessages[0]?.message === 'Please get the heavy duty ones.',
+    'embedded phone parser must remove markdown fences around phoneMessages JSON',
+  );
+  const embeddedPhoneWithImageId = parseEmbeddedPhoneMessagesFromRpOutput(
+    '{"phoneMessages":[{"from":"Lara Miller","to":"Robert Miller","message":"Look at this.","imageId":"lara_miller_image_01"}]}',
+  );
+  assertFixture(
+    embeddedPhoneWithImageId.phoneMessages[0]?.imageId === 'lara_miller_image_01',
+    'embedded phone parser must preserve Storybook image ids',
+  );
+  const embeddedPhoneWithSendImageId = parseEmbeddedPhoneMessagesFromRpOutput(
+    '{"phoneMessages":[{"from":"Lara Miller","to":"Robert Miller","message":"Look at this.","sendImageId":"lara_miller_image_01"}]}',
+  );
+  assertFixture(
+    embeddedPhoneWithSendImageId.phoneMessages[0]?.imageId === 'lara_miller_image_01',
+    'embedded phone parser must preserve outgoing sendImageId attachments',
+  );
+  assertFixture(
+    parsePhoneMessageOutput(
+      '{"from":"Lara Miller","to":"Robert Miller","message":"Look at this."}',
+    )?.message === 'Look at this.',
+    'phone message parser must accept message-only JSON replies',
+  );
+  assertFixture(
+    parsePhoneMessageOutput(
+      '{"from":"Lara Miller","to":"Robert Miller","message":"Look at this.","sendImageId":"lara_miller_image_01"}',
+    )?.imageId === 'lara_miller_image_01',
+    'phone message parser must accept outgoing sendImageId attachments',
+  );
+  assertFixture(
+    parsePhoneMessageOutput(
+      '{"from":"Lara Miller","to":"Robert Miller","message":"Look at this.","imageId":"lara_miller_image_01"}',
+    ) === null &&
+      parsePhoneMessageOutput(
+        '{"from":"Lara Miller","to":"Robert Miller","message":"Look at this.","imageDescription":"Lara smiles beside Daniel after carrying boxes."}',
+      ) === null &&
+      parsePhoneMessageOutput(
+        'from: Lara Miller, to: Robert Miller, image: "Lara smiles beside Daniel.", message: "Look at this."',
+      ) === null,
+    'phone message parser must reject old image fields and legacy text replies',
+  );
+  assertFixture(
+    parseEmbeddedPhoneMessagesFromRpOutput(
+      '{"phoneMessages":[{"from":"Lara Miller","to":"Robert Miller","message":"Look at this.","image_description":"Lara smiles beside Daniel after carrying boxes."}]}',
+    ).phoneMessages[0]?.imageDescription === 'Lara smiles beside Daniel after carrying boxes.',
+    'embedded phone parser must accept canonical image description aliases',
+  );
+  const phoneMessageWithNewImageAction = parsePhoneMessageOutput([
+    '{"from":"Robert Miller","to":"Lara Miller","message":"That face beside the boxes says this got heavier than planned. Stay there; I am coming down before you try carrying the rest alone."}',
+    '{"imageId":"new_image","imageAction":"create","caption":"Lara Miller stands beside stacked moving boxes with a strained, determined expression after trying to carry them herself."}',
+  ].join('\n'));
+  assertFixture(
+    phoneMessageWithNewImageAction?.from === 'Robert Miller' &&
+      phoneMessageWithNewImageAction.imageId === undefined &&
+      phoneMessageWithNewImageAction.incomingImageAction?.imageId === 'new_image' &&
+      phoneMessageWithNewImageAction.incomingImageAction.imageAction === 'create' &&
+      phoneMessageWithNewImageAction.incomingImageAction.caption ===
+        'Lara Miller stands beside stacked moving boxes with a strained, determined expression after trying to carry them herself.',
+    'phone message parser must keep incoming new-image actions separate from the phone reply',
+  );
+  const mixedPromptSwitchAction = parsePromptActionCall([
+    '{"from":"Robert Miller","to":"Lara Miller","message":"That look says the boxes won this round."}',
+    '{"action":"update_phone_image_caption","imageId":"image-temp-123","imageAction":"create","caption":"Lara Miller stands beside stacked moving boxes with a strained, determined expression after trying to carry them herself."}',
+  ].join('\n'));
+  assertFixture(
+    mixedPromptSwitchAction?.action === 'updatePhoneImageCaption' &&
+      mixedPromptSwitchAction.imageId === 'new_image' &&
+      mixedPromptSwitchAction.imageAction === 'create',
+    'prompt switch action parser must prefer a caption action over a same-pass phone reply and normalize create image ids',
+  );
+  const fencedDescribeInputImageAction = parsePromptActionCall([
+    '```json',
+    '{',
+    '"action": "describe_input_image",',
+    '"caption": "Helga studies a party photo of Ryan and Espen standing close together, both caught in obvious romantic tension before tonight."',
+    '}',
+    '```',
+  ].join('\n'));
+  assertFixture(
+    fencedDescribeInputImageAction?.action === 'describeInputImage' &&
+      fencedDescribeInputImageAction.caption ===
+        'Helga studies a party photo of Ryan and Espen standing close together, both caught in obvious romantic tension before tonight.',
+    'prompt action parser must accept fenced JSON action calls',
+  );
+  assertFixture(
+    unwrapJsonCodeFence('```json\n{"action":"describe_input_image"}\n```') ===
+      '{"action":"describe_input_image"}' &&
+      knownPromptActionId('describe_input_image') === 'describeInputImage' &&
+      knownPromptActionId('update_phone_image_caption') === 'updatePhoneImageCaption' &&
+      knownPromptActionId('get_image_id') === 'getImageId' &&
+      knownPromptActionId('make_coffee') === undefined,
+    'fence unwrapping and known action ids must classify LLM action names',
+  );
+  const captionDefaults = defaultPromptActionConfig(
+    'Update phone image caption',
+    'updatePhoneImageCaption',
+  );
+  const captionMissingCaptionRule =
+    'If the image label shows an imageId but no caption yet, always use imageAction "update" with that exact imageId and write its first caption.';
+  const legacyCaptionAction = promptActionConfigs([{
+    ...captionDefaults,
+    instructionTemplate: captionDefaults.instructionTemplate.replace(`\n${captionMissingCaptionRule}`, ''),
+    afterReplyTemplate: captionDefaults.afterReplyTemplate.replace(`\n${captionMissingCaptionRule}`, ''),
+  }])[0];
+  assertFixture(
+    captionDefaults.instructionTemplate.includes(captionMissingCaptionRule) &&
+      captionDefaults.afterReplyTemplate.includes(captionMissingCaptionRule) &&
+      legacyCaptionAction?.instructionTemplate === captionDefaults.instructionTemplate &&
+      legacyCaptionAction.afterReplyTemplate === captionDefaults.afterReplyTemplate,
+    'phone caption templates must cover uncaptioned image ids and migrate the previous default text',
+  );
+  const phoneMessageWithUpdateImageAction = parsePhoneMessageOutput([
+    '{"from":"Robert Miller","to":"Lara Miller","message":"That is Daniel in the background, right? The whole box situation suddenly makes a lot more sense, and yes, I am absolutely asking about this when I get there."}',
+    '{"imageId":"lara_miller_image_01","imageAction":"update","caption":"Lara Miller stands beside stacked moving boxes while Daniel is visible in the background, adding tension to the situation."}',
+  ].join('\n'));
+  assertFixture(
+    phoneMessageWithUpdateImageAction?.incomingImageAction?.imageId === 'lara_miller_image_01' &&
+      phoneMessageWithUpdateImageAction.incomingImageAction.imageAction === 'update' &&
+      phoneMessageWithUpdateImageAction.incomingImageAction.caption ===
+        'Lara Miller stands beside stacked moving boxes while Daniel is visible in the background, adding tension to the situation.',
+    'phone message parser must preserve incoming image update actions',
+  );
+  const currentIncomingPhoneImage: MessageRecord = {
+    id: 99,
+    role: 'user',
+    originalText: 'Incoming phone image',
+    channel: 'phone',
+    phoneImageIds: ['current_phone_image_01'],
+    imageAttachments: [{
+      id: 'current_phone_image_01',
+      name: 'Current phone image',
+      mimeType: 'image/jpeg',
+      size: 1,
+      dataUrl: 'data:image/jpeg;base64,current',
+    }],
+  };
+  assertFixture(
+    phoneImageActionMatchesMessage(currentIncomingPhoneImage, {
+      imageId: 'current_phone_image_01',
+      imageAction: 'update',
+      caption: 'Current caption.',
+    }) &&
+      !phoneImageActionMatchesMessage(currentIncomingPhoneImage, {
+        imageId: 'older_storybook_image_01',
+        imageAction: 'update',
+        caption: 'Wrong target.',
+      }),
+    'incoming phone image actions must only match the current message image id',
+  );
+  const phoneMessageWithNoChangeImageAction = parsePhoneMessageOutput([
+    '{"from":"Robert Miller","to":"Lara Miller","message":"The tilted lamp in the corner is doing heroic work there. I get why you sent this; the room looks like it is halfway through giving up."}',
+    '{"imageId":"lara_miller_image_01","imageAction":"no_change"}',
+  ].join('\n'));
+  assertFixture(
+    phoneMessageWithNoChangeImageAction?.incomingImageAction?.imageId === 'lara_miller_image_01' &&
+      phoneMessageWithNoChangeImageAction.incomingImageAction.imageAction === 'no_change' &&
+      phoneMessageWithNoChangeImageAction.incomingImageAction.caption === undefined,
+    'phone message parser must preserve incoming image no_change actions without captions',
+  );
+  assertFixture(
+    parseOutputActions(
+      '{"phoneMessages":[{"from":"Lara Miller","to":"Robert Miller","message":"Look at this.","sendImageId":"lara_miller_image_01"}]}',
+    ).phoneMessages[0]?.imageId === 'lara_miller_image_01',
+    'output action parser must preserve outgoing sendImageId attachments',
+  );
+  assertFixture(
+    parseOutputActions(
+      '{"phoneMessages":[{"from":"Lara Miller","to":"Robert Miller","message":"Look at this.","imageId":"lara_miller_image_01"}]}',
+    ).phoneMessages[0]?.imageId === 'lara_miller_image_01',
+    'output action parser must preserve Storybook image ids',
+  );
+  const imageContextRuleSpecs = storybookImageContextRuleSpecs('storybook-node-1', {
+    ...emptyRpStorybookV1,
+    characters: [
+      {
+        id: 'lara_miller',
+        name: 'Lara Miller',
+        description: '',
+        personality: '',
+        speechStyle: '',
+        role: '',
+        images: [
+        {
+          id: 'lara_miller_image_01',
+          name: 'lara_miller_image_01',
+          mimeType: 'image/jpeg',
+          size: 1,
+          dataUrl: 'data:image/jpeg;base64,abc',
+          description: '',
+        },
+        {
+          id: 'lara_miller_image_02',
+          name: 'lara_miller_image_02',
+          mimeType: 'image/jpeg',
+          size: 1,
+          dataUrl: 'data:image/jpeg;base64,abc',
+          description: 'Lara smiles beside the moving boxes.',
+        },
+        ],
+      },
+    ],
+  });
+  assertFixture(
+    imageContextRuleSpecs.length === 1 &&
+      imageContextRuleSpecs[0]?.describedImageCount === 1 &&
+      imageContextRuleSpecs[0]?.conditionText.includes('Lara Miller'),
+    'storybook image context rules must be generated only for described images',
+  );
+  const imageTransferStorybook = {
+    ...emptyRpStorybookV1,
+    characters: [
+      {
+        id: 'lara_miller',
+        name: 'Lara Miller',
+        description: '',
+        personality: '',
+        speechStyle: '',
+        role: '',
+        images: [],
+      },
+      {
+        id: 'robert_miller',
+        name: 'Robert Miller',
+        description: '',
+        personality: '',
+        speechStyle: '',
+        role: '',
+        images: [],
+      },
+    ],
+  };
+  const sharedAttachment = {
+    id: 'lara_miller_image_01',
+    name: 'lara_miller_image_01.jpg',
+    mimeType: 'image/jpeg' as const,
+    size: 12,
+    dataUrl: 'data:image/jpeg;base64,transfer',
+    width: 100,
+    height: 80,
+  };
+  const senderImageResult = withImagesEnsuredForStorybookCharacter(
+    imageTransferStorybook,
+    'lara_miller',
+    [sharedAttachment],
+    'Lara smiles beside the moving boxes.',
+  );
+  const recipientImageResult = withImagesEnsuredForStorybookCharacter(
+    senderImageResult.storybook,
+    'robert_miller',
+    senderImageResult.images.map((image) => ({
+      id: image.id,
+      name: image.name,
+      mimeType: image.mimeType,
+      size: image.size,
+      dataUrl: image.dataUrl,
+      width: image.width,
+      height: image.height,
+    })),
+    'Lara smiles beside the moving boxes.',
+    { receivedFrom: 'Lara Miller' },
+  );
+  const transferredImage = recipientImageResult.storybook.characters[1]?.images[0];
+  assertFixture(
+    transferredImage?.id === 'lara_miller_image_01' &&
+      transferredImage.receivedFrom === 'Lara Miller',
+    'received Storybook phone images must keep sender image ids and receivedFrom metadata',
+  );
+  const revisedImageResult = withStorybookImageDescriptionUpdated(
+    recipientImageResult.storybook,
+    sharedAttachment.id,
+    sharedAttachment.dataUrl,
+    'Lara smiles beside her brother Daniel and the moving boxes.',
+  );
+  const revisedDescriptions = storybookImageDescriptions([revisedImageResult.storybook]);
+  const revisedHistory = withStorybookImageDescriptions([{
+    id: 501,
+    role: 'user',
+    originalText: 'That is my brother Daniel.',
+    channel: 'phone',
+    phoneFrom: 'Lara Miller',
+    phoneTo: 'Robert Miller',
+    phoneImageIds: [sharedAttachment.id],
+    phoneImageDescription: 'Lara smiles beside an unidentified man and the moving boxes.',
+    inputMessageFormat: 1,
+    inputPromptSlot: 0,
+  }], revisedDescriptions);
+  assertFixture(
+    revisedImageResult.updatedCount === 2 &&
+      revisedImageResult.storybook.characters.every(
+        (character) => character.images[0]?.description === 'Lara smiles beside her brother Daniel and the moving boxes.',
+      ) &&
+      formatChatHistory(revisedHistory, false).includes(
+        `[${sharedAttachment.id}: Lara smiles beside her brother Daniel and the moving boxes.]`,
+      ),
+    'updated Storybook image descriptions must synchronize gallery copies and prior phone history',
+  );
+  const differentIdCopyStorybook = {
+    ...recipientImageResult.storybook,
+    characters: recipientImageResult.storybook.characters.map((character, index) => index === 1
+      ? {
+          ...character,
+          images: character.images.map((image) => ({
+            ...image,
+            id: 'robert_miller_received_image_01',
+            name: 'robert_miller_received_image_01',
+          })),
+        }
+      : character),
+  };
+  const revisedDifferentIdCopy = withStorybookImageDescriptionUpdated(
+    differentIdCopyStorybook,
+    sharedAttachment.id,
+    sharedAttachment.dataUrl,
+    'Lara smiles beside her brother Daniel and the moving boxes.',
+  );
+  assertFixture(
+    revisedDifferentIdCopy.updatedCount === 2 &&
+      revisedDifferentIdCopy.storybook.characters.every(
+        (character) => character.images[0]?.description === 'Lara smiles beside her brother Daniel and the moving boxes.',
+      ),
+    'LLM caption updates must synchronize Storybook copies of the same image even when copy ids differ',
+  );
+  const manuallyEditedStorybook = {
+    ...recipientImageResult.storybook,
+    characters: recipientImageResult.storybook.characters.map((character, index) => index === 1
+      ? {
+          ...character,
+          images: character.images.map((image) => ({
+            ...image,
+            description: 'Lara smiles beside her brother Daniel after carrying the moving boxes.',
+          })),
+        }
+      : character),
+  };
+  const synchronizedManualEdit = withChangedStorybookImageDescriptionsSynchronized(
+    recipientImageResult.storybook,
+    manuallyEditedStorybook,
+  );
+  assertFixture(
+    synchronizedManualEdit.characters.every(
+      (character) => character.images[0]?.description === 'Lara smiles beside her brother Daniel after carrying the moving boxes.',
+    ),
+    'manual Storybook caption edits must synchronize every copy of the same image',
+  );
+  const imageAccessResult = withImagesEnsuredForStorybookCharacter(
+    senderImageResult.storybook,
+    'robert_miller',
+    senderImageResult.images.map((image) => ({
+      id: image.id,
+      name: image.name,
+      mimeType: image.mimeType,
+      size: image.size,
+      dataUrl: image.dataUrl,
+      width: image.width,
+      height: image.height,
+    })),
+    'Lara smiles beside the moving boxes.',
+    { imageAccess: true },
+  );
+  const accessedImage = imageAccessResult.storybook.characters[1]?.images[0];
+  assertFixture(
+    accessedImage?.id === 'lara_miller_image_01' &&
+      accessedImage.imageAccess === true &&
+      !accessedImage.receivedFrom,
+    'Storybook images copied from known history must retain their id and Image Access marker',
+  );
+  const directlyReceivedAfterAccess = withImagesEnsuredForStorybookCharacter(
+    imageAccessResult.storybook,
+    'robert_miller',
+    [sharedAttachment],
+    'Lara smiles beside the moving boxes.',
+    { receivedFrom: 'Lara Miller' },
+  );
+  const transitionedImage = directlyReceivedAfterAccess.storybook.characters[1]?.images[0];
+  assertFixture(
+    transitionedImage?.receivedFrom === 'Lara Miller' && !transitionedImage.imageAccess,
+    'a direct Phone receipt must replace an existing Image Access marker with receivedFrom',
+  );
+  assertFixture(
+    storybookImageSourceById(
+      [imageAccessResult.storybook],
+      'lara_miller_image_01',
+    )?.ownerName === 'Lara Miller',
+    'global Storybook image lookup must prefer the original unmarked owner',
+  );
+  const ownExistingImageResult = withImagesEnsuredForStorybookCharacter(
+    imageTransferStorybook,
+    'robert_miller',
+    [sharedAttachment],
+    'Robert owns this image.',
+  );
+  const ownExistingReceivedAgain = withImagesEnsuredForStorybookCharacter(
+    ownExistingImageResult.storybook,
+    'robert_miller',
+    [sharedAttachment],
+    'Robert owns this image.',
+    { receivedFrom: 'Lara Miller' },
+  );
+  assertFixture(
+    !ownExistingReceivedAgain.storybook.characters[1]?.images[0]?.receivedFrom,
+    'existing own Storybook images must not be relabeled as received images',
+  );
+  const normalizedDuplicateIds = parseRpStorybookJson(JSON.stringify({
+    ...emptyRpStorybookV1,
+    characters: [{
+      id: 'lara_miller',
+      name: 'Lara Miller',
+      description: '',
+      personality: '',
+      speechStyle: '',
+      role: '',
+      images: [
+        {
+          id: 'lara_miller_image_01',
+          name: 'received.jpg',
+          mimeType: 'image/jpeg',
+          size: 1,
+          dataUrl: 'data:image/jpeg;base64,received',
+          description: 'Received copy.',
+          receivedFrom: 'Robert Miller',
+        },
+        {
+          id: 'lara_miller_image_01',
+          name: 'own.jpg',
+          mimeType: 'image/jpeg',
+          size: 1,
+          dataUrl: 'data:image/jpeg;base64,own',
+          description: 'Own copy.',
+        },
+      ],
+    }],
+  }));
+  assertFixture(
+    new Set(normalizedDuplicateIds.characters[0]?.images.map((image) => image.id)).size ===
+      (normalizedDuplicateIds.characters[0]?.images.length ?? 0),
+    'storybook image normalization must avoid duplicate ids inside one character library',
+  );
+  const storybookWithFormattedTextImage = {
+    ...emptyRpStorybookV1,
+    characters: [{
+      id: 'lara_miller',
+      name: 'Lara Miller',
+      description: '',
+      personality: '',
+      speechStyle: '',
+      role: '',
+      images: [{
+        id: 'lara_miller_image_01',
+        name: 'lara_miller_image_01',
+        mimeType: 'image/jpeg' as const,
+        size: 1,
+        dataUrl: 'data:image/jpeg;base64,abc',
+        description: 'Lara smiles beside the moving boxes.',
+      }],
+    }],
+  };
+  assertFixture(
+    !rpStorybookFormattedText(storybookWithFormattedTextImage).includes('Character Images:') &&
+      rpStorybookFormattedText(storybookWithFormattedTextImage, { characterImages: true })
+        .includes('Lara smiles beside the moving boxes.'),
+    'storybook formatted text settings must control whether character images are included',
+  );
+  const completeLivePreview = embeddedPhoneMessagesLivePreview([
+    'Lara taps out a reminder.',
+    '',
+    '{"phoneMessages":[{"from":"Lara Miller","to":"Robert Miller","message":"Please get the heavy duty ones."}]}',
+    '',
+    'Robert glances at the list.',
+  ].join('\n'));
+  assertFixture(
+    completeLivePreview.textBefore === 'Lara taps out a reminder.' &&
+      completeLivePreview.textAfter === 'Robert glances at the list.' &&
+      completeLivePreview.phoneMessages.length === 1 &&
+      completeLivePreview.phoneMessages[0].message === 'Please get the heavy duty ones.',
+    'embedded phone live preview must parse complete phoneMessages JSON into bubble data',
+  );
+  const incompleteLivePreview = embeddedPhoneMessagesLivePreview(
+    'Lara types.\n\n{"phoneMessages":[{"from":"Lara","to":"Robert","message":"Please get',
+  );
+  assertFixture(
+    incompleteLivePreview.text === 'Lara types.' &&
+      incompleteLivePreview.phoneMessages.length === 0,
+    'embedded phone live preview must hide incomplete phoneMessages JSON entirely',
+  );
+  const fencedLivePreview = embeddedPhoneMessagesLivePreview(
+    'Lara types.\n\n```json\n{"phoneMessages":[{"from":"Lara","to":"Robert","message":"Please get',
+  );
+  assertFixture(
+    fencedLivePreview.text === 'Lara types.' && fencedLivePreview.phoneMessages.length === 0,
+    'embedded phone live preview must hide incomplete fenced phoneMessages JSON entirely',
+  );
+  assertFixture(
+    formatAppointments([{
+      id: 'appointment-1',
+      scheduledAt: '2026-06-02T12:10',
+      title: 'Message Alex',
+      requestedBy: 'Alex',
+      sourceTurnId: 'turn-1',
+      status: 'upcoming',
+    }], 'eu', 'de-DE') === 'Upcoming events:\n- [02.06.26 DI 12:10] Message Alex (requested by Alex)',
+    'appointments must render separately from chat history',
+  );
+  assertFixture(
+    formatAppointments([{
+      id: 'event-conditional-1',
+      title: 'Report back after the meeting',
+      condition: 'after the meeting happened',
+      details: 'Use the Phone UI to tell the user how it went.',
+      channel: 'phone',
+      phoneFrom: 'Lara',
+      phoneTo: 'Alex',
+      sourceTurnId: 'turn-2',
+      sourceTurnNumber: 2,
+      status: 'upcoming',
+    }]) === 'Upcoming events:\n- [after the meeting happened] Report back after the meeting [phone: Lara -> Alex] - Use the Phone UI to tell the user how it went. - Turn 2',
+    'conditional events must render without scheduled timestamps',
+  );
+
+  const removedCoreNodeWorkflow = structuredClone(currentWorkflow) as {
+    nodes: Array<{ data: { nodeType: string } }>;
+  };
+  if (!removedCoreNodeWorkflow.nodes[0]) {
+    throw new Error('Workflow validation fixture failed: default workflow has no nodes');
+  }
+  removedCoreNodeWorkflow.nodes[0].data.nodeType = 'token-estimator';
+
+  assertFixture(
+    !isWorkflowFile(removedCoreNodeWorkflow),
+    'an unregistered short core node type must be rejected',
+  );
+
+  const workflowWithRuntimeData = structuredClone(currentWorkflow);
+  const prompt = workflowWithRuntimeData.nodes.find((node) =>
+    node.data.nodeType === 'llm-prompt' || node.data.nodeType === 'llm-prompt-switch',
+  );
+  if (!prompt) {
+    throw new Error('Workflow validation fixture failed: default workflow has no prompt');
+  }
+  Object.assign(prompt.data, {
+    connectionId: 'removed-connection',
+    fullText: 'must not be saved',
+    generatedText: 'must not be saved',
+    runCompleted: true,
+    llmCallStats: [{ label: 'Generate', durationMs: 1, inputTokens: 2 }],
+  });
+  const history = workflowWithRuntimeData.nodes.find((node) => node.data.nodeType === 'history');
+  if (!history) {
+    throw new Error('Workflow validation fixture failed: default workflow has no chat history');
+  }
+  Object.assign(history.data, {
+    connectionId: 'removed-connection',
+    historyTimeTrackingEnabled: true,
+    historyCurrentRpDateTime: '2026-06-01T12:10',
+    historyLastPrompt: 'must not be saved',
+    historyLastResponse: 'must not be saved',
+  });
+  const eventManager = workflowWithRuntimeData.nodes.find((node) => node.data.nodeType === 'event-manager');
+  if (!eventManager) {
+    throw new Error('Workflow validation fixture failed: default workflow has no event manager');
+  }
+  Object.assign(eventManager.data, {
+    connectionId: 'removed-connection',
+    eventAppointments: [{
+      id: 'appointment-1',
+      scheduledAt: '2026-06-02T12:10',
+      title: 'Message Alex',
+      sourceTurnId: 'turn-1',
+      sourceTurnNumber: 1,
+      sourceNote: 'Turn 1: Alex asked to be messaged.',
+      channel: 'phone',
+      phoneFrom: 'Lara',
+      phoneTo: 'Alex',
+      status: 'upcoming',
+    }],
+    eventLastPrompt: 'must not be saved',
+    eventLastResponse: 'must not be saved',
+  });
+  const memorySlot = workflowWithRuntimeData.nodes.find((node) => node.data.nodeType === 'memory-slot');
+  if (!memorySlot) {
+    throw new Error('Workflow validation fixture failed: default workflow has no wire link');
+  }
+  Object.assign(memorySlot.data, {
+    preview: 'Stored text loaded',
+    memorySlotText: 'SECRET RP MEMORY',
+    fullText: 'SECRET RP MEMORY',
+  });
+  const storybook = workflowWithRuntimeData.nodes.find((node) => node.data.nodeType === 'rp-storybook-v1');
+  if (!storybook) {
+    throw new Error('Workflow validation fixture failed: default workflow has no storybook');
+  }
+  Object.assign(storybook.data, {
+    storybookStatus: 'Loaded storybook: external.rpgraph-storybook.json',
+    storybookFileName: 'external.rpgraph-storybook.json',
+    storybookFilePath: '/tmp/external.rpgraph-storybook.json',
+  });
+
+  const persistedWorkflow = {
+    ...workflowWithRuntimeData,
+    nodes: workflowWithRuntimeData.nodes.map((node) => ({
+      ...node,
+      data: persistentNodeData(node.data as WorkflowNodeData),
+    })),
+  };
+  assertFixture(isWorkflowFile(persistedWorkflow), 'registry-saved workflow must load');
+  assertFixture(
+    persistedWorkflow.nodes.every((node) => typeof node.data.nodeDataVersion === 'string'),
+    'all saved core nodes must carry their data version',
+  );
+  const dynamicContextDefinition = getRegisteredCoreNode('dynamic-context-injection');
+  if (!dynamicContextDefinition) {
+    throw new Error('Workflow validation fixture failed: dynamic context node is not registered');
+  }
+  const dynamicContextNode = dynamicContextDefinition.create({
+    defaultConnectionId: 'default',
+    position: { x: 120, y: 120 },
+    createId: (prefix) => `${prefix}-fixture`,
+    readNodes: () => [],
+    originalHistory: '',
+    translatedHistory: '',
+  });
+  dynamicContextNode.data.dynamicContextRules = [{
+    id: 'rule-fixture',
+    conditionText: 'If the text is about Lara, attach Lara context.',
+    contextId: '',
+  }];
+  const workflowWithDynamicContext = {
+    ...persistedWorkflow,
+    nodes: [
+      ...persistedWorkflow.nodes,
+      {
+        ...dynamicContextNode,
+        data: persistentNodeData(dynamicContextNode.data),
+      },
+    ],
+  };
+  assertFixture(isWorkflowFile(workflowWithDynamicContext), 'workflow with dynamic context node must load');
+  const persistedPrompt = persistedWorkflow.nodes.find((node) =>
+    node.data.nodeType === 'llm-prompt' || node.data.nodeType === 'llm-prompt-switch',
+  );
+  assertFixture(
+    !!persistedPrompt &&
+      !('fullText' in persistedPrompt.data) &&
+      !('generatedText' in persistedPrompt.data) &&
+      !('llmCallStats' in persistedPrompt.data) &&
+      !('runCompleted' in persistedPrompt.data),
+    'runtime prompt data must not be persisted',
+  );
+  const persistedHistory = persistedWorkflow.nodes.find((node) => node.data.nodeType === 'history');
+  assertFixture(
+    !!persistedHistory &&
+      persistedHistory.data.historyTimeTrackingEnabled === true &&
+      !('historyCurrentRpDateTime' in persistedHistory.data) &&
+      !('rawHistory' in persistedHistory.data) &&
+      !('originalHistory' in persistedHistory.data) &&
+      !('translatedHistory' in persistedHistory.data) &&
+      !('lastTurnsHistory' in persistedHistory.data) &&
+      !('historyLastPrompt' in persistedHistory.data) &&
+      !('historyLastResponse' in persistedHistory.data),
+    'history workflow persistence must keep configuration and omit derived/runtime history data',
+  );
+  const persistedEventManager = persistedWorkflow.nodes.find((node) => node.data.nodeType === 'event-manager');
+  assertFixture(
+    !!persistedEventManager &&
+      !('eventAppointments' in persistedEventManager.data) &&
+      !('eventLastPrompt' in persistedEventManager.data) &&
+      !('eventLastResponse' in persistedEventManager.data),
+    'event manager workflow persistence must omit event runtime data',
+  );
+  const persistedMemorySlot = persistedWorkflow.nodes.find((node) => node.data.nodeType === 'memory-slot');
+  const runtimeSnapshot = captureTurnRuntime(workflowWithRuntimeData.nodes as WorkflowNode[]);
+  assertFixture(
+    !!persistedMemorySlot &&
+      persistedMemorySlot.data.memorySlotText === '' &&
+      persistedMemorySlot.data.fullText === '' &&
+      runtimeSnapshot.nodes[memorySlot.id]?.memorySlotText === 'SECRET RP MEMORY' &&
+      runtimeSnapshot.nodes[memorySlot.id]?.fullText === 'SECRET RP MEMORY',
+    'wire link text must be omitted from workflow saves but retained in RP runtime snapshots',
+  );
+  assertFixture(
+    !('historyLastPrompt' in runtimeSnapshot.nodes[history.id]!) &&
+      !('historyLastResponse' in runtimeSnapshot.nodes[history.id]!) &&
+      !('eventLastPrompt' in runtimeSnapshot.nodes[eventManager.id]!) &&
+      !('eventLastResponse' in runtimeSnapshot.nodes[eventManager.id]!),
+    'turn runtime snapshots must omit bounded debug prompt and response fields',
+  );
+  const persistedStorybook = persistedWorkflow.nodes.find((node) => node.data.nodeType === 'rp-storybook-v1');
+  assertFixture(
+    !!persistedStorybook &&
+      typeof persistedStorybook.data.storybookJson === 'string' &&
+      persistedStorybook.data.storybookFormattedTextSettings?.characterImages === false &&
+      !('storybookText' in persistedStorybook.data) &&
+      !('storybookFileName' in persistedStorybook.data) &&
+      !('storybookFilePath' in persistedStorybook.data),
+    'storybook workflow persistence must embed JSON, keep output settings, and omit derived text and external file references',
+  );
+  const hydratedStorybook = persistedStorybook
+    ? hydrateNodeData(persistedStorybook.data, {
+        defaultConnectionId: 'active-default',
+        connectionIds: new Set(['active-default']),
+      })
+    : undefined;
+  assertFixture(
+    !!hydratedStorybook &&
+      typeof hydratedStorybook.storybookJson === 'string' &&
+      !('storybookText' in hydratedStorybook),
+    'storybook hydration must keep formatted storybook text derived on demand',
+  );
+  const hydratedPrompt = persistedPrompt
+    ? hydrateNodeData(persistedPrompt.data, {
+        defaultConnectionId: 'active-default',
+        connectionIds: new Set(['active-default']),
+      })
+    : undefined;
+  assertFixture(
+    hydratedPrompt?.connectionId === 'active-default',
+    'hydration must replace a missing connection with the active default',
+  );
+
+  const missingPluginData: Record<string, unknown> & {
+    pluginConfiguration: { collection: string; topK: number };
+  } = {
+    nodeType: 'com.example.memory/vector-search',
+    nodeDataVersion: '1.0.0',
+    label: 'Vector Search',
+    description: 'Installed separately',
+    preview: 'Plugin unavailable',
+    portsSnapshot: [
+      { id: 'query', direction: 'input', valueType: 'text', label: 'Query' },
+      { id: 'result', direction: 'output', valueType: 'text', label: 'Result' },
+    ],
+    pluginConfiguration: { collection: 'story-memory', topK: 4 },
+  };
+  const workflowWithMissingPlugin = structuredClone(currentWorkflow) as Record<string, unknown> & {
+    nodes: unknown[];
+    edges: unknown[];
+  };
+  workflowWithMissingPlugin.nodes.push({
+    id: 'missing-vector-search',
+    type: 'workflow',
+    position: { x: 1, y: 2 },
+    data: missingPluginData,
+  });
+  workflowWithMissingPlugin.edges.push({
+    id: 'missing-plugin-edge',
+    source: 'missing-vector-search',
+    sourceHandle: 'result',
+    target: 'rp-output',
+    targetHandle: null,
+  });
+  assertFixture(
+    isWorkflowFile(workflowWithMissingPlugin),
+    'a namespaced missing plugin node with valid port snapshots must load',
+  );
+  const hydratedMissing = hydrateNodeData(missingPluginData, {
+    defaultConnectionId: 'active-default',
+    connectionIds: new Set(['active-default']),
+  });
+  assertFixture(
+    hydratedMissing.kind === 'missing-plugin-node',
+    'a missing plugin node must hydrate as a placeholder',
+  );
+  assertFixture(
+    JSON.stringify(persistentNodeData(hydratedMissing)) === JSON.stringify(missingPluginData),
+    'a missing plugin node must save its original data unchanged',
+  );
+  assertFixture(
+    workflowWithMissingPlugin.edges.some(
+      (edge) => (edge as { id?: string }).id === 'missing-plugin-edge',
+    ),
+    'edges connected to a missing plugin node must be retained',
+  );
+
+  const versionHydrateContext = {
+    defaultConnectionId: 'active-default',
+    connectionIds: new Set(['active-default']),
+  };
+  const inputData = currentWorkflow.nodes.find((node) => node.data.nodeType === 'input')?.data;
+  if (!inputData) {
+    throw new Error('Workflow validation fixture failed: default workflow has no input');
+  }
+  const identicalVersion = hydrateNodeData(
+    { ...inputData, nodeDataVersion: '1.6.0' },
+    versionHydrateContext,
+  );
+  assertFixture(
+    identicalVersion.kind === undefined && identicalVersion.nodeDataVersion === '1.6.0',
+    'an identical core node version must hydrate normally',
+  );
+  const patchVersion = hydrateNodeData(
+    { ...inputData, nodeDataVersion: '1.6.1' },
+    versionHydrateContext,
+  );
+  assertFixture(
+    patchVersion.kind === undefined && patchVersion.nodeDataVersion === '1.6.0',
+    'a patch-only core node difference must hydrate normally',
+  );
+  const minorVersion = hydrateNodeData(
+    { ...inputData, nodeDataVersion: '1.7.0' },
+    versionHydrateContext,
+  );
+  assertFixture(
+    minorVersion.kind === 'incompatible-core-node' &&
+      minorVersion.nodeDataVersion === '1.7.0' &&
+      minorVersion.currentNodeVersion === '1.6.0',
+    'a minor core node difference must hydrate as an incompatible placeholder',
+  );
+  const majorVersion = hydrateNodeData(
+    { ...inputData, nodeDataVersion: '2.0.0' },
+    versionHydrateContext,
+  );
+  assertFixture(
+    majorVersion.kind === 'incompatible-core-node' &&
+      majorVersion.nodeDataVersion === '2.0.0' &&
+      majorVersion.currentNodeVersion === '1.6.0',
+    'a major core node difference must hydrate as an incompatible placeholder',
+  );
+
+  const workflowWithInvalidVersion = structuredClone(currentWorkflow);
+  workflowWithInvalidVersion.nodes[0]!.data.nodeDataVersion = '1.0';
+  assertFixture(
+    !isWorkflowFile(workflowWithInvalidVersion),
+    'an invalid node version string must be rejected',
+  );
+
+  const workflowWithIncompatibleNode = structuredClone(currentWorkflow);
+  workflowWithIncompatibleNode.nodes[0]!.data.nodeDataVersion = '1.7.0';
+  assertFixture(
+    isWorkflowFile(workflowWithIncompatibleNode),
+    'a workflow with an incompatible core node version must remain loadable',
+  );
+  if (!isWorkflowFile(workflowWithIncompatibleNode)) {
+    throw new Error('Workflow validation fixture failed: incompatible workflow validation changed');
+  }
+  const loadedNodes = workflowWithIncompatibleNode.nodes.map((node) => ({
+    ...node,
+    data: hydrateNodeData(node.data, versionHydrateContext),
+  }));
+  const filteredEdges = removeEdgesConnectedToIncompatibleNodes(
+    loadedNodes,
+    workflowWithIncompatibleNode.edges,
+  );
+  assertFixture(
+    filteredEdges.every((edge) => edge.source !== 'user-input' && edge.target !== 'user-input') &&
+      filteredEdges.length < workflowWithIncompatibleNode.edges.length,
+    'edges connected to an incompatible core node must be removed',
+  );
+
+  const workflowWithOldStorybookNode = structuredClone(currentWorkflow);
+  const oldStorybookNode = workflowWithOldStorybookNode.nodes.find(
+    (node) => node.data.nodeType === 'rp-storybook-v1',
+  );
+  if (!oldStorybookNode) {
+    throw new Error('Workflow validation fixture failed: missing storybook node');
+  }
+  oldStorybookNode.data.nodeDataVersion = '1.12.0';
+  oldStorybookNode.data.storybookJson = JSON.stringify({
+    ...emptyRpStorybookV1,
+    version: '1.15.0',
+  });
+  assertFixture(
+    isWorkflowFile(workflowWithOldStorybookNode),
+    'a workflow with an old storybook node must remain loadable',
+  );
+  const oldStorybookHydrated = hydrateNodeData(oldStorybookNode.data, versionHydrateContext);
+  assertFixture(
+    oldStorybookHydrated.kind === 'incompatible-core-node' &&
+      oldStorybookHydrated.nodeDataVersion === '1.12.0' &&
+      oldStorybookHydrated.currentNodeVersion === currentCoreNodeVersions['rp-storybook-v1'],
+    'an old storybook node must hydrate as an incompatible placeholder before parsing old storybook JSON',
+  );
+
+  const longTraceTextInput = [
+    ...Array.from({ length: 140 }, (_, index) => `Older context sentence ${index + 1} about party planning.`),
+    'Emily Miller texts Sarah Miller: And are you ready? What did you put on?',
+  ].join(' ');
+  const turnTraceNode = {
+    id: 'turn-trace-prompt-switch',
+    type: 'workflow',
+    position: { x: 0, y: 0 },
+    data: {
+      label: 'Trace Prompt Switch',
+      description: '',
+      preview: '',
+      nodeType: 'llm-prompt-switch',
+      llmPromptSwitchDebug: {
+        inputValue: 'large input omitted from the trace',
+        promptBefore: 'Before prompt',
+        promptAfter: 'A'.repeat(500),
+        combinedPrompt: '',
+        promptPasses: [
+          {
+            label: 'Initial action prompt',
+            sections: [
+              {
+                label: 'Text Input',
+                text: longTraceTextInput,
+                parts: [{ text: longTraceTextInput }],
+              },
+              {
+                label: 'Prompt After Input',
+                text: `${'A'.repeat(500)}\n\nAvailable action: get image ID list`,
+                parts: [
+                  { text: 'A'.repeat(500) },
+                  { text: 'Available action: get image ID list', actionInserted: true },
+                ],
+              },
+            ],
+          },
+          {
+            label: 'Action replay 1',
+            sections: [
+              {
+                label: 'Text Input',
+                text: longTraceTextInput,
+                parts: [{ text: longTraceTextInput }],
+              },
+              {
+                label: 'Prompt After Input',
+                text: `${'A'.repeat(500)}\n\nImage ID list:\n- img-1: Sarah mirror selfie`,
+                parts: [
+                  { text: 'A'.repeat(500) },
+                  { text: 'Image ID list:\n- img-1: Sarah mirror selfie', actionInserted: true },
+                ],
+              },
+            ],
+          },
+        ],
+        outputPasses: [
+          { label: 'Initial action output', text: '{"action":"get_image_id","characters":"Sarah","tags":"mirror,selfie"}' },
+          { label: 'Action replay 1 output', text: '{"from":"Sarah","to":"Emily","message":"I found one.","sendImageId":"img-1"}' },
+        ],
+        actionResults: ['Image ID list:\n- img-1: Sarah mirror selfie'],
+        generatedText: 'AI reply',
+        selectedOutputChannel: 2,
+        selectedPromptSlot: 3,
+        outputChannelValue: '2',
+        promptSlotValue: '3',
+      },
+    },
+  } as WorkflowNode;
+  const tracedTurn: TurnRecord = {
+    id: 'trace-turn-40',
+    number: 40,
+    createdAt: '2026-06-27T12:00:00.000Z',
+    mode: 'user',
+    messageFormat: 1,
+    promptSlot: 3,
+    input: {
+      graphText: 'duplicated graph input',
+      messages: [{
+        id: 100,
+        role: 'user',
+        originalText: 'Show me the picture.',
+        includeInHistory: true,
+        channel: 'phone',
+        phoneMessage: true,
+        phoneFrom: 'Emily',
+        phoneTo: 'Sarah',
+        imageAttachments: [{
+          id: 'private-image',
+          name: 'private.png',
+          mimeType: 'image/png',
+          size: 10,
+          dataUrl: 'data:image/png;base64,SECRET',
+        }],
+      }],
+    },
+    output: {
+      graphText: '',
+      messages: [{
+        id: 101,
+        role: 'output',
+        originalText: 'Here it is.',
+        includeInHistory: true,
+        channel: 'phone',
+        phoneMessage: true,
+        phoneFrom: 'Sarah',
+        phoneTo: 'Emily',
+      }],
+    },
+  };
+  const turnTrace = createTurnTrace({
+    turn: tracedTurn,
+    run: {
+      runId: 'trace-run-40',
+      startedAt: '2026-06-27T12:00:01.000Z',
+      calls: [
+        {
+          order: 1,
+          nodeId: turnTraceNode.id,
+          nodeLabel: turnTraceNode.data.label,
+          label: 'Phone / Reply',
+        },
+        {
+          order: 2,
+          nodeId: turnTraceNode.id,
+          nodeLabel: turnTraceNode.data.label,
+          label: 'Phone / Reply / Action replay 1',
+        },
+      ],
+    },
+    nodes: [turnTraceNode],
+    status: 'completed',
+    warnings: ['Prompt fallback used.', 'Prompt fallback used.'],
+    traceEvents: [
+      {
+        kind: 'warning',
+        nodeId: turnTraceNode.id,
+        nodeLabel: turnTraceNode.data.label,
+        nodeType: 'llm-prompt-switch',
+        message: 'Prompt slot fallback used.',
+      },
+      {
+        kind: 'format',
+        nodeId: turnTraceNode.id,
+        nodeLabel: turnTraceNode.data.label,
+        nodeType: 'llm-prompt-switch',
+        name: 'Phone Message JSON',
+        status: 'ok',
+        detail: 'Sarah → Emily',
+      },
+      {
+        kind: 'format',
+        nodeId: 'rp-output',
+        nodeLabel: 'RP Output',
+        nodeType: 'output',
+        name: 'Output Actions JSON',
+        status: 'error',
+        detail: 'Could not parse JSON.',
+        preview: 'not json',
+      },
+    ],
+    completedAt: '2026-06-27T12:00:02.000Z',
+  });
+  assertFixture(
+    turnTrace.channel === 'phone' &&
+      turnTrace.input.messages[0]?.imageCount === 1 &&
+      !JSON.stringify(turnTrace).includes('SECRET'),
+    'turn traces must retain useful phone/image metadata without storing image data',
+  );
+  assertFixture(
+    turnTrace.steps[0]?.selectedOutputChannel === 2 &&
+      turnTrace.steps[0]?.selectedPromptSlot === 3 &&
+      turnTrace.steps[0]?.promptAfter === 'A'.repeat(500) &&
+      turnTrace.steps[0]?.promptPasses?.[0]?.sections?.[0]?.excerpt?.kind === 'last-text-input-words' &&
+      turnTrace.steps[0]?.promptPasses?.[0]?.sections?.[0]?.text.includes('What did you put on?') === true &&
+      turnTrace.steps[0]?.promptPasses?.[0]?.sections?.[0]?.text.includes('Older context sentence 1 about party planning.') === false &&
+      turnTrace.steps[0]?.promptPasses?.[0]?.sections?.[1]?.parts?.[1]?.actionInserted === true &&
+      turnTrace.steps[1]?.promptAfter === undefined &&
+      turnTrace.steps[1]?.promptPasses?.[0]?.prompt.includes('img-1: Sarah mirror selfie') === true,
+    'turn traces must identify the Prompt Switch route, include full action prompt passes, and excerpt long text input',
+  );
+  assertFixture(
+    !!turnTrace.steps[0]?.warnings?.includes('Prompt slot fallback used.') &&
+      turnTrace.steps[0]?.formatResults?.[0]?.name === 'Phone Message JSON' &&
+      turnTrace.steps.some((step) =>
+        step.nodeId === 'rp-output' &&
+        step.formatResults?.[0]?.status === 'error' &&
+        step.formatResults[0].preview === 'not json',
+      ),
+    'turn traces must attach node warnings and parse results to the relevant route step',
+  );
+  assertFixture(
+    turnTrace.warnings?.length === 1 &&
+      turnTraceCopyPayload([turnTrace]).range.fromTurn === 40 &&
+      turnTraceCopyPayload([turnTrace]).version === 4 &&
+      turnTraceCopyPayload([turnTrace]).privacy === 'memory-only' &&
+      JSON.stringify(turnTraceCopyPayload([turnTrace])).includes('Text Input excerpt: showing the last') &&
+      !JSON.stringify(turnTraceCopyPayload([turnTrace])).includes('Older context sentence 1 about party planning.') &&
+      JSON.stringify(turnTraceCopyPayload([turnTrace])).includes('Available action: get image ID list') &&
+      JSON.stringify(turnTraceCopyPayload([turnTrace])).includes('img-1: Sarah mirror selfie') &&
+      !JSON.stringify(turnTraceCopyPayload([turnTrace])).includes('inputTokens') &&
+      !JSON.stringify(turnTraceCopyPayload([turnTrace])).includes('totalTokens') &&
+      !JSON.stringify(turnTraceCopyPayload([turnTrace])).includes('durationMs'),
+    'turn trace copy payloads must expose a compact memory-only range without token or timing stats',
+  );
+
+  const inputDefinition = getRegisteredCoreNode('input');
+  if (!inputDefinition) {
+    throw new Error('Workflow validation fixture failed: input definition is not registered');
+  }
+  assertThrowsFixture(
+    () => registerNode(inputDefinition),
+    'the registry must reject duplicate node type ids',
+  );
+  assertThrowsFixture(
+    () => registerNode({ type: 'llm-prompt', origin: 'plugin' } as NodeCreationDefinition),
+    'plugins must not register under core-style type ids',
+  );
+  assertThrowsFixture(
+    () => registerNode({
+      type: 'com.example.invalid/version',
+      dataVersion: '1',
+      origin: 'plugin',
+    } as unknown as NodeCreationDefinition),
+    'the registry must reject invalid node version strings',
+  );
+}
+
+async function verifyPromptRunFixtures() {
+  const warnings: string[] = [];
+  const llmOutputs = [
+    '{"action":"describe_input_image","caption":"Ryan and Espen share a look at the party."}',
+    'Espen grins and grabs the phone.',
+  ];
+  let llmCalls = 0;
+  const context = {
+    nodes: [],
+    edges: [],
+    historyMessages: [],
+    comfyProviderIds: [],
+    providerHealthById: {},
+    llm: {
+      supportsVision: async () => true,
+      complete: async () => {
+        llmCalls += 1;
+        return { text: llmOutputs.shift() ?? '', connection: { label: 'Fixture LLM' } };
+      },
+    },
+    reportWarning: (message: string) => warnings.push(message),
+    updateRuntimeData: () => {},
+  } as unknown as ExecuteContext;
+  const node = {
+    id: 'fixture-prompt',
+    data: { label: 'Fixture Prompt', connectionId: 'fixture-connection' },
+  } as WorkflowNode;
+  const result = await runActionAwarePrompt({
+    node,
+    context,
+    inputValue: 'Helga shows the picture.',
+    images: [{
+      id: 'img-1',
+      name: 'RP Picture 01',
+      mimeType: 'image/png',
+      size: 1,
+      dataUrl: 'data:image/png;base64,a',
+    }],
+    referenceImages: [],
+    promptBefore: '',
+    promptAfter: 'Write the story.\n\n@action:Describe input image (After Reply Action)',
+    actionConfigs: [defaultPromptActionConfig('Describe input image', 'describeInputImage')],
+    streamsVisibleOutput: false,
+    contributesToTokenCalibration: false,
+    callLabel: () => 'Fixture call',
+  });
+  assertFixture(
+    llmCalls === 2 && warnings.length === 0,
+    'a premature after-reply caption call must be consumed without warnings or an extra after-reply pass',
+  );
+  assertFixture(
+    result.generatedText.startsWith('Espen grins and grabs the phone.') &&
+      result.generatedText.includes('"image": "Ryan and Espen share a look at the party."'),
+    'a premature after-reply caption call must keep the visible reply and append the image metadata',
+  );
+
+  const runStreamingScenario = async (llmTexts: string[]) => {
+    const streamedChunks: string[] = [];
+    let promptForCall = '';
+    const streamContext = {
+      nodes: [],
+      edges: [],
+      historyMessages: [],
+      comfyProviderIds: [],
+      providerHealthById: {},
+      llm: {
+        supportsVision: async () => true,
+        complete: async (request: { prompt: string; onChunk?: (text: string) => void }) => {
+          promptForCall = promptForCall || request.prompt;
+          const llmText = llmTexts.shift() ?? '';
+          for (let end = 4; end <= llmText.length; end += Math.max(8, llmText.length >> 2)) {
+            request.onChunk?.(llmText.slice(0, end));
+          }
+          if (llmText) {
+            request.onChunk?.(llmText);
+          }
+          return { text: llmText, connection: { label: 'Fixture LLM' } };
+        },
+      },
+      streamOutput: (text: string) => streamedChunks.push(text),
+      reportWarning: () => {},
+      updateRuntimeData: () => {},
+    } as unknown as ExecuteContext;
+    const streamResult = await runActionAwarePrompt({
+      node: {
+        id: 'fixture-stream',
+        data: { label: 'Fixture Stream', connectionId: 'fixture-connection' },
+      } as WorkflowNode,
+      context: streamContext,
+      inputValue: 'Narrator: Espen checks her phone.',
+      images: [],
+      referenceImages: [],
+      promptBefore: '',
+      promptAfter: 'Write the story.\n\n@action:Get character phone image list',
+      actionConfigs: [defaultPromptActionConfig('Get character phone image list', 'getImageId')],
+      streamsVisibleOutput: true,
+      contributesToTokenCalibration: false,
+      callLabel: () => 'Fixture call',
+    });
+    return { streamedChunks, promptForCall, streamResult };
+  };
+  const proseScenario = await runStreamingScenario([
+    'Espen laughs and pockets her phone before anyone notices.',
+  ]);
+  assertFixture(
+    proseScenario.streamedChunks.length > 0 &&
+      proseScenario.streamedChunks[proseScenario.streamedChunks.length - 1] ===
+        'Espen laughs and pockets her phone before anyone notices.' &&
+      proseScenario.streamResult.generatedText === 'Espen laughs and pockets her phone before anyone notices.',
+    'a prose reply must stream live even while a pre-reply action is still pending',
+  );
+  assertFixture(
+    proseScenario.promptForCall.includes('Available action: get character phone image list'),
+    'pending pre-reply action instructions must be visible in the prompt',
+  );
+  const actionCallScenario = await runStreamingScenario([
+    '{"action":"get_image_id","characters":"Espen Harper","tags":"selfie, mirror, party, outfit, bedroom, phone"}',
+    'Espen scrolls to the party photo and smirks.',
+  ]);
+  assertFixture(
+    actionCallScenario.streamedChunks.every((chunk) => !chunk.includes('{')) &&
+      actionCallScenario.streamResult.generatedText === 'Espen scrolls to the party photo and smirks.',
+    'an action call must never be streamed into the visible chat while the replay reply still streams',
+  );
+}
+
+verifyWorkflowValidationFixtures();
+void verifyPromptRunFixtures();
