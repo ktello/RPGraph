@@ -64,12 +64,18 @@ No cloud account. No subscription. Your stories stay on **your** computer. 🔒
 
 > 🧠 **Which model do I need?** RPGraph Studio was built and tuned around **Gemma 4 31B** — everything works with it out of the box. The workflows depend on reliable **JSON output**, and Gemma 4 is currently the smallest local model that can handle this. Smaller models won't cut it — if you can't run Gemma 4 locally, use a larger API model instead.
 
-1. **Launch the app**
-   - 🐧 Linux: run `RPGraph-linux.sh`
-   - 🪟 Windows: run `RPGraph-windows.bat`
-2. **Connect a model** — any OpenAI-compatible endpoint works (an LM Studio-style connection or Ollama).
-3. **Start playing** — the bundled starter workflow (`User Input → LLM Prompt → RP Output`) works out of the box. Pick your character and send your first message. 🎬
-4. *(Optional)* Connect **ComfyUI** (`http://127.0.0.1:8188` by default) for image generation.
+Install **[Git](https://git-scm.com/download/win)** and **[Node.js 24](https://nodejs.org/)**, then download RPGraph Studio:
+
+```bash
+git clone https://github.com/unrefined803/RPGraph.git
+cd RPGraph
+```
+
+Launch the app:
+- Linux: `RPGraph-linux.sh`
+- Windows: `RPGraph-windows.bat`
+
+If packages are missing, the starter will offer to install them.
 
 ---
 
