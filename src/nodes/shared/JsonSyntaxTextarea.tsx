@@ -614,6 +614,10 @@ export function JsonSyntaxTextarea({
     syncHighlightScroll();
   }, [value]);
 
+  useLayoutEffect(() => {
+    syncHighlightScroll();
+  }, [highlightActive, value]);
+
   const rememberSelectionBeforeInput = (element: HTMLTextAreaElement) => {
     selectionBeforeInputRef.current = textSelectionSnapshot(element);
   };
@@ -848,6 +852,10 @@ export function JsonSyntaxTextarea({
               </React.Fragment>
             );
           })}
+          {/* A <pre> does not render an empty line after a trailing newline,
+              but a textarea does. The invisible character forces the same final
+              line so both elements scroll at exactly the same height. */}
+          {'\u200b'}
         </pre>
       )}
     </div>
