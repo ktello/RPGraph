@@ -1105,7 +1105,6 @@ export function StudioDialogs({
           textDialogNode?.data.nodeType === 'last-rp-output' ||
           textDialogNode?.data.nodeType === 'load-text' ||
           textDialogNode?.data.nodeType === 'context-builder' ||
-          textDialogNode?.data.nodeType === 'dynamic-context-injection' ||
           textDialogNode?.data.nodeType === 'llm-decision' ||
           textDialogNode?.data.nodeType === 'character-stats'
         ? textDialogNode.data.nodeType === 'load-text'

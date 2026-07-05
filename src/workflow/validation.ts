@@ -118,18 +118,6 @@ function isLlmDecisionOutputTogglesArray(value: unknown) {
   );
 }
 
-function isDynamicContextRule(value: unknown) {
-  return (
-    isRecord(value) &&
-    typeof value.id === 'string' &&
-    typeof value.conditionText === 'string' &&
-    typeof value.contextId === 'string' &&
-    (value.contextPlacement === undefined ||
-      value.contextPlacement === 'before' ||
-      value.contextPlacement === 'after')
-  );
-}
-
 function isRpStorybookFormattedTextSettings(value: unknown) {
   return (
     isRecord(value) &&
@@ -302,12 +290,6 @@ function isWorkflowNodeData(value: unknown): value is WorkflowNodeData {
     !isOptionalFiniteNumber(value.textRouterNumberOutputCount) ||
     (value.textSelectorMode !== undefined && !isTextRouterMode(value.textSelectorMode)) ||
     !isOptionalFiniteNumber(value.textSelectorInputCount) ||
-    (value.dynamicContextRules !== undefined &&
-      (!Array.isArray(value.dynamicContextRules) ||
-        !value.dynamicContextRules.every(isDynamicContextRule))) ||
-    !isOptionalBoolean(value.dynamicContextImageRulesEnabled) ||
-    (value.dynamicContextMatchedRuleIndexes !== undefined &&
-      !isNumberArray(value.dynamicContextMatchedRuleIndexes)) ||
     !isOptionalFiniteNumber(value.combinerInputCount) ||
     (value.combinerPrefixes !== undefined && !isStringArray(value.combinerPrefixes)) ||
     (value.combinerInputPreviews !== undefined && !isStringArray(value.combinerInputPreviews)) ||

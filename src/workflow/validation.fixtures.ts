@@ -83,7 +83,6 @@ import {
   promptWithImageAttachmentMarkers,
   promptWithReferenceImageMarkers,
 } from '../chat/referenceImages';
-import { storybookImageContextRuleSpecs } from '../nodes/dynamic-context-injection/storybookImageRules';
 import {
   defaultPromptActionConfig,
   countPromptActionUses,
@@ -1882,43 +1881,6 @@ export function verifyWorkflowValidationFixtures() {
     ).phoneMessages[0]?.imageId === 'lara_miller_image_01',
     'output action parser must preserve Storybook image ids',
   );
-  const imageContextRuleSpecs = storybookImageContextRuleSpecs('storybook-node-1', {
-    ...emptyRpStorybookV1,
-    characters: [
-      {
-        id: 'lara_miller',
-        name: 'Lara Miller',
-        description: '',
-        personality: '',
-        speechStyle: '',
-        role: '',
-        images: [
-        {
-          id: 'lara_miller_image_01',
-          name: 'lara_miller_image_01',
-          mimeType: 'image/jpeg',
-          size: 1,
-          dataUrl: 'data:image/jpeg;base64,abc',
-          description: '',
-        },
-        {
-          id: 'lara_miller_image_02',
-          name: 'lara_miller_image_02',
-          mimeType: 'image/jpeg',
-          size: 1,
-          dataUrl: 'data:image/jpeg;base64,abc',
-          description: 'Lara smiles beside the moving boxes.',
-        },
-        ],
-      },
-    ],
-  });
-  assertFixture(
-    imageContextRuleSpecs.length === 1 &&
-      imageContextRuleSpecs[0]?.describedImageCount === 1 &&
-      imageContextRuleSpecs[0]?.conditionText.includes('Lara Miller'),
-    'storybook image context rules must be generated only for described images',
-  );
   const imageTransferStorybook = {
     ...emptyRpStorybookV1,
     characters: [
@@ -2319,34 +2281,6 @@ export function verifyWorkflowValidationFixtures() {
     persistedWorkflow.nodes.every((node) => typeof node.data.nodeDataVersion === 'string'),
     'all saved core nodes must carry their data version',
   );
-  const dynamicContextDefinition = getRegisteredCoreNode('dynamic-context-injection');
-  if (!dynamicContextDefinition) {
-    throw new Error('Workflow validation fixture failed: dynamic context node is not registered');
-  }
-  const dynamicContextNode = dynamicContextDefinition.create({
-    defaultConnectionId: 'default',
-    position: { x: 120, y: 120 },
-    createId: (prefix) => `${prefix}-fixture`,
-    readNodes: () => [],
-    originalHistory: '',
-    translatedHistory: '',
-  });
-  dynamicContextNode.data.dynamicContextRules = [{
-    id: 'rule-fixture',
-    conditionText: 'If the text is about Lara, attach Lara context.',
-    contextId: '',
-  }];
-  const workflowWithDynamicContext = {
-    ...persistedWorkflow,
-    nodes: [
-      ...persistedWorkflow.nodes,
-      {
-        ...dynamicContextNode,
-        data: persistentNodeData(dynamicContextNode.data),
-      },
-    ],
-  };
-  assertFixture(isWorkflowFile(workflowWithDynamicContext), 'workflow with dynamic context node must load');
   const persistedPrompt = persistedWorkflow.nodes.find((node) =>
     node.data.nodeType === 'llm-prompt' || node.data.nodeType === 'llm-prompt-switch',
   );

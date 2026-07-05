@@ -186,9 +186,6 @@ import { WorkflowNodeRenderer } from './nodes/WorkflowNodeRenderer';
 import { resetCharacterStatsRuntimeData } from './nodes/character-stats/runtime';
 import { contextCompressionCapacitySegments } from './nodes/context-compression/capacity';
 import {
-  syncStorybookImageContextRules,
-} from './nodes/dynamic-context-injection/storybookImageRules';
-import {
   customNodeAssistantPrompt,
   defaultCustomNodeDefinition,
   customNodeDefinition,
@@ -3830,7 +3827,6 @@ function App() {
         storybookJson: rpStorybookJsonText(result.storybook),
         storybookStatus: status(result.addedCount, result.updatedCount),
       });
-      syncStorybookImageContextRules(nodesRef.current, storybookNode.id, result.storybook, updateRuntimeNode);
     }
     return result.images.map(chatAttachmentFromStorybookImage);
   }
@@ -3860,7 +3856,6 @@ function App() {
         storybookJson: rpStorybookJsonText(result.storybook),
         storybookStatus: `Updated ${image.id} description.`,
       });
-      syncStorybookImageContextRules(nodesRef.current, node.id, result.storybook, updateRuntimeNode);
     });
   }
 
@@ -3894,7 +3889,6 @@ function App() {
         storybookJson: rpStorybookJsonText(result.storybook),
         storybookStatus: `Updated ${normalizedImageId} description.`,
       });
-      syncStorybookImageContextRules(nodesRef.current, node.id, result.storybook, updateRuntimeNode);
     });
     if (updated) {
       const immediateDescriptions = new Map(storybookImageDescriptionById);
@@ -3962,7 +3956,6 @@ function App() {
         storybookJson: rpStorybookJsonText(result.storybook),
         storybookStatus: `Removed ${result.removedCount} inactive received image${result.removedCount === 1 ? '' : 's'}.`,
       });
-      syncStorybookImageContextRules(nodesRef.current, node.id, result.storybook, updateRuntimeNode);
     });
   }
 

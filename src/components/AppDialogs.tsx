@@ -1902,7 +1902,7 @@ function CharacterImagesDialog({
               type="button"
               className="node-info-button storybook-image-context-help nodrag"
               aria-label="Image List context help"
-              data-tooltip="Add and describe character images here. In Dynamic Context Injection, enable Automatic Image List Rules to let that node create Image List rules and attach the matching image library context when a character should send or select a stored image."
+              data-tooltip="Add and describe character images here so prompts and phone actions can reference stored image IDs."
             >
               ?
             </button>

@@ -129,18 +129,7 @@ export function storybookCreateImageCharactersFromNodes(nodes: WorkflowNode[]): 
   });
 }
 
-export function storybookCharacterContextText(character: StorybookCharacter) {
-  return [
-    '## Charakter Context',
-    character.profile.name || character.name ? `Name: ${character.profile.name || character.name}` : '',
-    character.profile.role ? `Role: ${character.profile.role}` : '',
-    character.profile.description ? `Description: ${character.profile.description}` : '',
-    character.profile.personality ? `Personality: ${character.profile.personality}` : '',
-    character.profile.speechStyle ? `Speech Style: ${character.profile.speechStyle}` : '',
-  ].filter(Boolean).join('\n');
-}
-
-export function storybookImageListId(characterId: string) {
+function storybookImageListId(characterId: string) {
   return `${characterId}:images`;
 }
 
@@ -181,17 +170,6 @@ export function storybookImageListsFromNodes(nodes: WorkflowNode[]): StorybookIm
       }];
     });
   });
-}
-
-export function storybookImageListContextText(imageList: StorybookImageList) {
-  const imageLines = imageList.images.map((image) => {
-    const description = image.description.trim();
-    return `${image.id} = ${JSON.stringify(description)}`;
-  });
-  return [
-    `## Image List: ${imageList.label}`,
-    ...imageLines,
-  ].join('\n');
 }
 
 export function storybookOpeningSituation(nodes: WorkflowNode[]) {

@@ -10,7 +10,6 @@ export const coreNodeTypes = [
   'memory-slot',
   'phone-message-router',
   'text-selector',
-  'dynamic-context-injection',
   'llm-prompt-switch',
   'fixed-number',
   'fixed-bool',

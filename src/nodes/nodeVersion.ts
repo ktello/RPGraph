@@ -22,7 +22,6 @@ export const currentCoreNodeVersions: Record<CoreNodeType, NodeVersion> = {
   'memory-slot': '1.0.0',
   'phone-message-router': '1.1.0',
   'text-selector': '1.1.0',
-  'dynamic-context-injection': '1.0.2',
   'llm-prompt-switch': '1.2.2',
   'llm-prompt': '1.1.1',
   combiner: '1.0.0',

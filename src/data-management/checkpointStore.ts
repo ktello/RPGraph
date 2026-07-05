@@ -58,11 +58,6 @@ export const coreNodeDataPolicies: NodeDataPolicyByType = {
     runtime: ['preview', 'storybookStatus'],
     checkpoint: ['storybookJson'],
   },
-  'dynamic-context-injection': {
-    persisted: ['dynamicContextRules', 'dynamicContextImageRulesEnabled'],
-    runtime: ['preview', 'fullText', 'dynamicContextMatchedRuleIndexes'],
-    checkpoint: [],
-  },
 };
 
 function pickNodeFields(node: WorkflowNode, fields: readonly string[]) {

@@ -186,13 +186,6 @@ export type LlmDecisionOutputToggles = {
 
 export type TextRouterMode = 'bool' | 'number';
 
-export type DynamicContextRule = {
-  id: string;
-  conditionText: string;
-  contextId: string;
-  contextPlacement?: 'before' | 'after';
-};
-
 type RpStorybookFormattedTextSettings = {
   title: boolean;
   introduction: boolean;
@@ -289,9 +282,6 @@ type WorkflowNodeCommonFields = {
   textRouterNumberOutputCount?: number;
   textSelectorMode?: TextRouterMode;
   textSelectorInputCount?: number;
-  dynamicContextRules?: DynamicContextRule[];
-  dynamicContextImageRulesEnabled?: boolean;
-  dynamicContextMatchedRuleIndexes?: number[];
   combinerInputCount?: number;
   combinerPrefixes?: string[];
   combinerInputPreviews?: string[];
@@ -427,7 +417,6 @@ type MemorySlotNodeData = CoreWorkflowNodeCommonFields & {
 };
 type PhoneMessageRouterNodeData = CoreWorkflowNodeCommonFields & { nodeType: 'phone-message-router' };
 type TextSelectorNodeData = CoreWorkflowNodeCommonFields & { nodeType: 'text-selector' };
-type DynamicContextInjectionNodeData = CoreWorkflowNodeCommonFields & { nodeType: 'dynamic-context-injection' };
 type LlmPromptSwitchNodeData = CoreWorkflowNodeCommonFields & { nodeType: 'llm-prompt-switch' };
 type FixedNumberNodeData = CoreWorkflowNodeCommonFields & { nodeType: 'fixed-number' };
 type FixedBoolNodeData = CoreWorkflowNodeCommonFields & { nodeType: 'fixed-bool' };
@@ -456,7 +445,6 @@ type ConcreteCoreWorkflowNodeData =
   | MemorySlotNodeData
   | PhoneMessageRouterNodeData
   | TextSelectorNodeData
-  | DynamicContextInjectionNodeData
   | LlmPromptSwitchNodeData
   | FixedNumberNodeData
   | FixedBoolNodeData

@@ -174,18 +174,6 @@ export const corePersistence: Record<CoreNodeType, CorePersistence> = {
       fullText: '',
     }),
   },
-  'dynamic-context-injection': {
-    saveData: (data) => preservedData(data, 'Ports ready', {
-      connectionId: data.connectionId,
-      dynamicContextRules: data.dynamicContextRules ?? [],
-      dynamicContextImageRulesEnabled: data.dynamicContextImageRulesEnabled ?? true,
-    }),
-    hydrateData: (data, context) => preservedData(data, 'Ports ready', {
-      connectionId: connectionId(data, context),
-      dynamicContextRules: data.dynamicContextRules ?? [],
-      dynamicContextImageRulesEnabled: data.dynamicContextImageRulesEnabled ?? true,
-    }),
-  },
   'llm-prompt': {
     saveData: (data) => preservedData(data, 'Not run yet', {
       llmPromptBefore: data.llmPromptBefore,

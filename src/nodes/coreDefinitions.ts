@@ -39,11 +39,6 @@ import { executeContextBuilderNode } from './context-builder/execute';
 import { CustomNodeCard } from './custom-node/Card';
 import { executeCustomNode } from './custom-node/execute';
 import { customNodeDefinition, defaultCustomNodeDefinition } from './custom-node/model';
-import { DynamicContextInjectionNodeCard } from './dynamic-context-injection/Card';
-import {
-  dynamicContextPorts,
-  executeDynamicContextInjectionNode,
-} from './dynamic-context-injection/execute';
 import { EventManagerNodeCard } from './event-manager/Card';
 import { executeEventManagerNode } from './event-manager/execute';
 import { defaultEventManagerPromptSettings } from './event-manager/prompt';
@@ -135,7 +130,6 @@ export const coreNodeLayout = {
   eventManagerWidth: 365,
   contextBuilderWidth: 430,
   contextBuilderHeight: 620,
-  dynamicContextInjectionWidth: 365,
   llmDecisionWidth: 390,
   customNodeWidth: 365,
 } as const;
@@ -469,37 +463,6 @@ const coreNodeCreationDefinitions: Array<Omit<CoreNodeCreationDefinition, 'saveD
         textSelectorMode: 'bool',
         textSelectorInputCount: 5,
         fullText: '',
-      },
-    }),
-  },
-  {
-    type: 'dynamic-context-injection',
-    dataVersion: currentCoreNodeVersions['dynamic-context-injection'],
-    label: 'Dynamic Context Injection',
-    description: 'Mirror text, image and condition ports',
-    menuDescription: 'Mirror context ports for later dynamic injection',
-    origin: 'core',
-    usesLlm: true,
-    requiresPostOutputPermission: true,
-    ports: () => [
-      ...dynamicContextPorts.map((port) => input(port.id, port.valueType, port.inputLabel)),
-      ...dynamicContextPorts.map((port) => output(port.id, port.valueType, port.outputLabel)),
-    ],
-    Component: DynamicContextInjectionNodeCard,
-    execute: executeDynamicContextInjectionNode,
-    create: ({ defaultConnectionId, position, createId }) => ({
-      id: createId('dynamic-context-injection'),
-      type: 'workflow',
-      position,
-      style: { width: coreNodeLayout.dynamicContextInjectionWidth },
-      data: {
-        label: 'Dynamic Context Injection',
-        description: 'Mirror text, image and condition ports',
-        preview: 'Ports ready',
-        nodeType: 'dynamic-context-injection',
-        connectionId: defaultConnectionId,
-        dynamicContextRules: [],
-        dynamicContextImageRulesEnabled: true,
       },
     }),
   },

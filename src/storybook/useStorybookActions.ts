@@ -17,7 +17,6 @@ import {
   normalizeEventAppointments,
   removeEventEntities,
 } from '../data-management/eventStore';
-import { syncStorybookImageContextRules } from '../nodes/dynamic-context-injection/storybookImageRules';
 import { usedStorybookImageIdsRemoved } from './imageUsage';
 import { withChangedStorybookImageDescriptionsSynchronized } from './imageLibrary';
 import storybookFormatVersions from './formatVersions.json';
@@ -101,7 +100,6 @@ export function useStorybookActions({
     nodeId: string,
     storybook: ReturnType<typeof parseRpStorybookJson>,
     patch: Partial<WorkflowNodeData>,
-    syncImageRules = false,
   ) {
     const node = nodesRef.current.find((entry) => entry.id === nodeId);
     let committedStorybook = storybook;
@@ -129,9 +127,6 @@ export function useStorybookActions({
       ...patch,
       storybookJson: rpStorybookJsonText(committedStorybook),
     });
-    if (syncImageRules) {
-      syncStorybookImageContextRules(nodesRef.current, nodeId, committedStorybook, updateRuntimeNode);
-    }
     return true;
   }
 
@@ -140,7 +135,6 @@ export function useStorybookActions({
       nodeId,
       storybook,
       { storybookStatus: status ?? 'Storybook updated.' },
-      true,
     );
   }
 
@@ -221,9 +215,6 @@ export function useStorybookActions({
       storybookFileName: fileName,
       storybookFilePath: filePath,
     });
-    if (applied) {
-      syncStorybookImageContextRules(nodesRef.current, nodeId, storybook, updateRuntimeNode);
-    }
     return applied;
   }
 

@@ -25,7 +25,7 @@ This document is the first high-level map of the current codebase. It is intenti
 
 ## What The App Is
 
-RPGraph Studio is an Electron + React application for interactive roleplay workflows. A user edits a graph of connected nodes, writes or sends character messages through the chat panel, and runs the graph to produce roleplay output. The graph can include LLM prompts, storybook context, chat history, dynamic context, output routing, character statistics, event handling, and utility nodes.
+RPGraph Studio is an Electron + React application for interactive roleplay workflows. A user edits a graph of connected nodes, writes or sends character messages through the chat panel, and runs the graph to produce roleplay output. The graph can include LLM prompts, storybook context, chat history, output routing, character statistics, event handling, and utility nodes.
 
 The project describes itself in `package.json` as:
 
@@ -199,7 +199,7 @@ Node palette groups in the current UI:
 
 - **Input & Output**: `input`, `last-user-input`, `last-rp-output`, `history`, `output`, `text-preview`, `load-text`
 - **LLM & Logic**: `custom`, `llm-prompt`, `llm-prompt-switch`, `llm-decision`, `context-compression`, `event-manager`, `character-stats`
-- **Text & Values**: `note`, `group`, `combiner`, `memory-slot`, `dynamic-context-injection`, `phone-message-router`, `text-selector`, `write-text`, `fixed-number`, `fixed-bool`, `settings-value`
+- **Text & Values**: `note`, `group`, `combiner`, `memory-slot`, `phone-message-router`, `text-selector`, `write-text`, `fixed-number`, `fixed-bool`, `settings-value`
 - **Story Context**: `rp-storybook-v1`, `context-builder`
 
 Important singleton nodes include `User Input`, `RP Output`, and `RP Storybook V1`.

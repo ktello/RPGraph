@@ -79,8 +79,6 @@ function getExpectedCallLabels(data: WorkflowNode['data']): string[] {
       }
       return labels;
     }
-    case 'dynamic-context-injection':
-      return ['Dynamic Context Rules'];
     case 'llm-prompt-switch': {
       const outputTitles = data.llmPromptSwitchOutputTitles ?? [];
       const selectedOutputChannel = data.llmPromptSwitchSelectedOutputChannel ?? 0;

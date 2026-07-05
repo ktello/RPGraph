@@ -7,7 +7,6 @@ import type { EventEntity } from '../data-management/types';
 import { runtimePortValueKey } from '../nodes/shared/portRuntime';
 import { wireLinkName } from '../nodes/memory-slot/model';
 import { customNodeDefinition } from '../nodes/custom-node/model';
-import { syncStorybookImageContextRules } from '../nodes/dynamic-context-injection/storybookImageRules';
 import {
   parseRpStorybookJson,
   rpStorybookJsonText,
@@ -452,7 +451,6 @@ export async function executeGraph({
         storybookJson: nextStorybookJson,
         storybookStatus: `Generated ${ensureResult.imageIds.length} image${ensureResult.imageIds.length === 1 ? '' : 's'} for ${character.name}.`,
       });
-      syncStorybookImageContextRules(nodes, storybookNode.id, ensureResult.storybook, updateRuntimeNode);
     }
 
     const imagesById = new Map(ensureResult.images.map((image) => [image.id, image]));
