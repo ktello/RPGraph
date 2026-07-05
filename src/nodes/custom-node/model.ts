@@ -321,11 +321,13 @@ export function parseCustomNodeAssistantResult(
   }
   return {
     reply: reply || 'Custom Node updated.',
-    changedFields: stringArray(parsed.changedFields).length
-      ? stringArray(parsed.changedFields)
-      : isDefinitionPatch(patch)
-        ? changedFieldsFromPatch(patch)
-        : [],
+    changedFields: !definition
+      ? []
+      : stringArray(parsed.changedFields).length
+        ? stringArray(parsed.changedFields)
+        : isDefinitionPatch(patch)
+          ? changedFieldsFromPatch(patch)
+          : [],
     definition,
   };
 }

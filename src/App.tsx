@@ -3083,6 +3083,7 @@ function App() {
         runPrepared: false,
         runError: messageText,
       });
+      customNodeLastRunErrorRef.current[nodeId] = messageText.trim();
       appendCustomNodeAssistantDiagnostic(nodeId, `${label} run error`, messageText);
     }
   }

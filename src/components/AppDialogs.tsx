@@ -477,6 +477,7 @@ export function CustomNodeAssistantDialog({
   const [isCheckingSecurity, setIsCheckingSecurity] = useState(false);
   const [moreOpen, setMoreOpen] = useState(false);
   const [editDraft, setEditDraft] = useState('');
+  const [editCodeDraft, setEditCodeDraft] = useState('');
   const [editStatus, setEditStatus] = useState('');
   const [previewZoom, setPreviewZoom] = useState(0.82);
   const [previewPan, setPreviewPan] = useState({ x: 0, y: 0 });
@@ -499,6 +500,10 @@ export function CustomNodeAssistantDialog({
     label: connection.label,
   }));
   const definitionJson = JSON.stringify(definition, null, 2);
+  const definitionMetadataJson = JSON.stringify({
+    ...definition,
+    code: undefined,
+  }, null, 2);
   const backdropDismiss = useBackdropDismiss<HTMLDivElement>(onClose);
 
   useEffect(() => {
@@ -521,13 +526,14 @@ export function CustomNodeAssistantDialog({
       setPreviewDisplays({});
       setPreviewRuntimePortValues({});
       setPreviewStatus(node.data.preview);
-      setEditDraft(JSON.stringify(definition, null, 2));
+      setEditDraft(definitionMetadataJson);
+      setEditCodeDraft(definition.code);
       setEditStatus('');
     });
     return () => {
       active = false;
     };
-  }, [definition, node.data.preview]);
+  }, [definition, definitionMetadataJson, node.data.preview]);
 
   function submit(event: FormEvent) {
     event.preventDefault();
@@ -577,7 +583,27 @@ export function CustomNodeAssistantDialog({
   }
 
   function applyEditedDefinition() {
-    onApplyDefinitionText(editDraft);
+    let parsedDefinition: unknown;
+    try {
+      parsedDefinition = JSON.parse(editDraft);
+    } catch (error) {
+      setEditStatus(`JSON failed: ${error instanceof Error ? error.message : String(error)}`);
+      return;
+    }
+
+    if (!parsedDefinition || typeof parsedDefinition !== 'object' || Array.isArray(parsedDefinition)) {
+      setEditStatus('JSON failed: Definition must be an object.');
+      return;
+    }
+
+    const parsedRecord = parsedDefinition as Record<string, unknown>;
+    // A full definition pasted into the JSON pane keeps its own code; the
+    // Runtime Code pane only fills in when the JSON has no code field.
+    const mergedCode = typeof parsedRecord.code === 'string' ? parsedRecord.code : editCodeDraft;
+    onApplyDefinitionText(JSON.stringify({
+      ...parsedRecord,
+      code: mergedCode,
+    }, null, 2));
     setEditStatus('Applied.');
   }
 
@@ -741,19 +767,48 @@ export function CustomNodeAssistantDialog({
 
               <div className="storybook-panel-content">
                 {viewMode === 'code' && (
-                  <div className="storybook-json-panel custom-node-code-panel">
-                    <JsonSyntaxTextarea readOnly value={definitionJson} />
+                  <div className="custom-node-readable-code-panel">
+                    <section className="custom-node-readable-section">
+                      <div className="custom-node-readable-heading">Definition</div>
+                      <JsonSyntaxTextarea readOnly value={definitionMetadataJson} wrap="soft" />
+                    </section>
+                    <section className="custom-node-readable-section custom-node-readable-code-section">
+                      <div className="custom-node-readable-heading">Runtime Code</div>
+                      <textarea
+                        className="custom-node-runtime-code-editor"
+                        value={definition.code.trim() || '// No runtime code yet.'}
+                        readOnly
+                        spellCheck={false}
+                        wrap="soft"
+                      />
+                    </section>
                   </div>
                 )}
 
                 {viewMode === 'edit' && (
                   <div className="storybook-json-panel custom-node-code-panel custom-node-edit-panel">
-                    <JsonSyntaxTextarea
-                      value={editDraft}
-                      onChange={(val) => setEditDraft(val)}
-                    />
+                    <div className="custom-node-readable-code-panel custom-node-edit-split-panel">
+                      <section className="custom-node-readable-section">
+                        <div className="custom-node-readable-heading">Definition JSON</div>
+                        <JsonSyntaxTextarea
+                          value={editDraft}
+                          onChange={(val) => setEditDraft(val)}
+                          wrap="soft"
+                        />
+                      </section>
+                      <section className="custom-node-readable-section custom-node-readable-code-section">
+                        <div className="custom-node-readable-heading">Runtime Code</div>
+                        <textarea
+                          className="custom-node-runtime-code-editor"
+                          value={editCodeDraft}
+                          onChange={(event) => setEditCodeDraft(event.target.value)}
+                          spellCheck={false}
+                          wrap="soft"
+                        />
+                      </section>
+                    </div>
                     <div className="custom-node-edit-actions">
-                      <span className="run-note">{editStatus || 'Edit the Custom Node JSON, then apply it.'}</span>
+                      <span className="run-note">{editStatus || 'Edit the definition or runtime code, then apply it.'}</span>
                       <button className="inspect-button nodrag" type="button" onClick={applyEditedDefinition}>
                         Apply JSON
                       </button>
