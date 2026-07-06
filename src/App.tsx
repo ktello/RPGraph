@@ -1336,6 +1336,21 @@ function App() {
   )
     ? dialogueCloneVoiceProviderId
     : cloneVoiceProviderOptions[0]?.value ?? '';
+  // A voice provider can be selectable in the Voice Playback dialog while its
+  // setup is still incomplete (e.g. OpenRouter TTS without an API key). Surface
+  // the health detail as a warning next to the provider picker.
+  const voiceProviderSetupWarning = (connectionId: string) => {
+    if (!connectionId) {
+      return null;
+    }
+    const health = providerHealthById[connectionId];
+    if (!health || health.status === 'online' || health.status === 'checking') {
+      return null;
+    }
+    return health.detail ?? 'Provider is not connected.';
+  };
+  const narratorProviderWarning = voiceProviderSetupWarning(resolvedNarratorProviderId);
+  const cloneVoiceProviderWarning = voiceProviderSetupWarning(resolvedCloneVoiceProviderId);
   const {
     dialogueVoiceSpeakerNames,
     narratorVoiceReady,
@@ -5291,6 +5306,11 @@ function App() {
 
     const connectionIsOnline = (connectionId: string) =>
       providerHealthById[connectionId]?.status === 'online';
+    // Detected capabilities may be missing for plain OpenAI-compatible
+    // providers; only an explicit `text: false` (e.g. a speech-only
+    // OpenRouter TTS preset) disqualifies a provider as a text provider.
+    const connectionTextCapable = (connectionId: string) =>
+      providerHealthById[connectionId]?.capabilities?.text !== false;
     const everyConnectionReady = (connectionIds: Set<string>, predicate: (connection: ConnectionPreset, id: string) => boolean) =>
       connectionIds.size > 0 &&
       [...connectionIds].every((connectionId) => {
@@ -5299,10 +5319,11 @@ function App() {
       });
     const textReady = everyConnectionReady(
       llmConnectionIds,
-      (connection, connectionId) => isLlmConnection(connection) && connectionIsOnline(connectionId),
+      (connection, connectionId) =>
+        isLlmConnection(connection) && connectionTextCapable(connectionId) && connectionIsOnline(connectionId),
     );
     const anyTextConnected = connections.some((connection) =>
-      isLlmConnection(connection) && connectionIsOnline(connection.id),
+      isLlmConnection(connection) && connectionTextCapable(connection.id) && connectionIsOnline(connection.id),
     );
     const anyVisionConnected = connections.some((connection) =>
       isLlmConnection(connection) && connection.vision === true && connectionIsOnline(connection.id),
@@ -5961,9 +5982,11 @@ function App() {
               dialogueNarratorOnlyDisabledReason={dialogueNarratorOnlyDisabledReason}
               narratorProviderOptions={narratorProviderOptions}
               narratorProviderId={resolvedNarratorProviderId}
+              narratorProviderWarning={narratorProviderWarning}
               onNarratorProviderChange={setDialogueNarratorProviderId}
               cloneVoiceProviderOptions={cloneVoiceProviderOptions}
               cloneVoiceProviderId={resolvedCloneVoiceProviderId}
+              cloneVoiceProviderWarning={cloneVoiceProviderWarning}
               onCloneVoiceProviderChange={setDialogueCloneVoiceProviderId}
               onConfigureOpenRouterTts={openOpenRouterTtsSetup}
               voiceReadAloudActive={readAloudActive}

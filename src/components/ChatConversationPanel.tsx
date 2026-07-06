@@ -100,9 +100,11 @@ type ChatConversationPanelProps = {
   dialogueNarratorOnlyDisabledReason: string | null;
   narratorProviderOptions: Array<{ value: string; label: string }>;
   narratorProviderId: string;
+  narratorProviderWarning: string | null;
   onNarratorProviderChange: (providerId: string) => void;
   cloneVoiceProviderOptions: Array<{ value: string; label: string }>;
   cloneVoiceProviderId: string;
+  cloneVoiceProviderWarning: string | null;
   onCloneVoiceProviderChange: (providerId: string) => void;
   onConfigureOpenRouterTts: () => void;
   voiceReadAloudActive: boolean;
@@ -168,9 +170,11 @@ export function ChatConversationPanel({
   dialogueNarratorOnlyDisabledReason,
   narratorProviderOptions,
   narratorProviderId,
+  narratorProviderWarning,
   onNarratorProviderChange,
   cloneVoiceProviderOptions,
   cloneVoiceProviderId,
+  cloneVoiceProviderWarning,
   onCloneVoiceProviderChange,
   onConfigureOpenRouterTts,
   voiceReadAloudActive,
@@ -1652,9 +1656,11 @@ export function ChatConversationPanel({
           narratorOnlyDisabledReason={dialogueNarratorOnlyDisabledReason}
           narratorProviderOptions={narratorProviderOptions}
           narratorProviderId={narratorProviderId}
+          narratorProviderWarning={narratorProviderWarning}
           onNarratorProviderChange={onNarratorProviderChange}
           cloneVoiceProviderOptions={cloneVoiceProviderOptions}
           cloneVoiceProviderId={cloneVoiceProviderId}
+          cloneVoiceProviderWarning={cloneVoiceProviderWarning}
           onCloneVoiceProviderChange={onCloneVoiceProviderChange}
           onConfigureOpenRouterTts={onConfigureOpenRouterTts}
           onClose={() => setVoicePlaybackDialogOpen(false)}

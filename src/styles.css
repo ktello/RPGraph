@@ -9803,6 +9803,10 @@ button.message-timeline-row.phone:focus-visible {
   font-size: 12px;
 }
 
+.voice-playback-setup-section p.voice-playback-provider-warning {
+  color: #cba84d;
+}
+
 .voice-playback-setup-section ol {
   margin: 0;
   padding-left: 18px;

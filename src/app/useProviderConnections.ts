@@ -803,11 +803,19 @@ export function useProviderConnections({
           setAvailableConnectionModels(models);
         }
         const capabilities = openRouterCapabilitiesForConnection(detectedConnection, modelDetails);
+        // The OpenRouter model list is public, so a successful listing does not
+        // prove the preset can generate anything. Without an API key the preset
+        // stays yellow ("Setup needed") instead of green.
+        const missingApiKey = connection.apiKey.trim().length === 0;
         health = {
-          status: models.length > 0 ? 'online' : 'offline',
-          detail: models.length > 0
-            ? providerModelCountDetail(models.length)
-            : 'Connection succeeded, but no models were returned.',
+          status: missingApiKey
+            ? 'warning'
+            : models.length > 0 ? 'online' : 'offline',
+          detail: missingApiKey
+            ? 'No API key set. Add your OpenRouter API key.'
+            : models.length > 0
+              ? providerModelCountDetail(models.length)
+              : 'Connection succeeded, but no models were returned.',
           capabilities,
           checkedAt: providerCheckedAt(),
         };
@@ -1187,14 +1195,22 @@ export function useProviderConnections({
         : { text: true };
       setAvailableConnectionModels(models);
       setEditingConnection(connection);
+      // See checkProviderConnection: the public OpenRouter model list also
+      // loads without an API key, but generation would fail with 401.
+      const missingOpenRouterApiKey =
+        !!openRouterModels && connection.apiKey.trim().length === 0;
       updateProviderHealth(connection.id, {
-        status: 'online',
-        detail: providerModelCountDetail(models.length),
+        status: missingOpenRouterApiKey ? 'warning' : 'online',
+        detail: missingOpenRouterApiKey
+          ? 'No API key set. Add your OpenRouter API key.'
+          : providerModelCountDetail(models.length),
         capabilities,
         checkedAt: providerCheckedAt(),
       });
       setConnectionStatus(
-        `Connected. ${models.length} ${models.length === 1 ? 'model' : 'models'} found.`,
+        missingOpenRouterApiKey
+          ? `${models.length} ${models.length === 1 ? 'model' : 'models'} found, but no API key is set.`
+          : `Connected. ${models.length} ${models.length === 1 ? 'model' : 'models'} found.`,
       );
     } catch (error) {
       const fallbackModels = fallbackModelsForConnection(editingConnection, error);

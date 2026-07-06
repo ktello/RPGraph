@@ -10,9 +10,11 @@ type VoicePlaybackDialogProps = {
   narratorOnlyDisabledReason: string | null;
   narratorProviderOptions: Array<{ value: string; label: string }>;
   narratorProviderId: string;
+  narratorProviderWarning: string | null;
   onNarratorProviderChange: (providerId: string) => void;
   cloneVoiceProviderOptions: Array<{ value: string; label: string }>;
   cloneVoiceProviderId: string;
+  cloneVoiceProviderWarning: string | null;
   onCloneVoiceProviderChange: (providerId: string) => void;
   onConfigureOpenRouterTts: () => void;
   onClose: () => void;
@@ -53,9 +55,11 @@ export function VoicePlaybackDialog({
   narratorOnlyDisabledReason,
   narratorProviderOptions,
   narratorProviderId,
+  narratorProviderWarning,
   onNarratorProviderChange,
   cloneVoiceProviderOptions,
   cloneVoiceProviderId,
+  cloneVoiceProviderWarning,
   onCloneVoiceProviderChange,
   onConfigureOpenRouterTts,
   onClose,
@@ -139,6 +143,11 @@ export function VoicePlaybackDialog({
                       <option value={option.value} key={option.value}>{option.label}</option>
                     ))}
                   </select>
+                  {narratorProviderWarning && (
+                    <p className="voice-playback-provider-warning" role="alert">
+                      Not connected: {narratorProviderWarning}
+                    </p>
+                  )}
                 </div>
 
                 <div className="voice-playback-setup-section">
@@ -189,6 +198,11 @@ export function VoicePlaybackDialog({
                     <option value={option.value} key={option.value}>{option.label}</option>
                   ))}
                 </select>
+                {cloneVoiceProviderWarning && (
+                  <p className="voice-playback-provider-warning" role="alert">
+                    Not connected: {cloneVoiceProviderWarning}
+                  </p>
+                )}
                 <p>
                   Upload or replace each character's MP3 sample in Storybook → Character Setup →
                   Voice Setup.
