@@ -9,6 +9,7 @@ import {
 } from 'react';
 import { StatLine } from '../components/StatLine';
 import { ModelIdPicker } from '../components/ModelIdPicker';
+import { DarkAudioPlayer } from '../components/DarkAudioPlayer';
 import type {
   MessageRecord,
   ConnectionPreset,
@@ -39,9 +40,11 @@ import { NodeCustomSelect } from '../nodes/shared/NodeCustomSelect';
 import { HighlightedPreviewText } from '../nodes/shared/HighlightedPreviewText';
 import { providerOption } from '../nodes/shared/providerHealthLabels';
 import { llmProviderKind } from '../llm/providerKind';
-import { sanitizeDataUrlsInText } from '../utils/sanitize';
+import { sanitizeDataUrls, sanitizeDataUrlsInText } from '../utils/sanitize';
 import {
   connectionReasoningEfforts,
+  bundledComfyWorkflows,
+  bundledComfyWorkflowPathForRole,
   defaultComfyCheckpointName,
   defaultComfyDiffusionModelName,
   defaultComfyHeight,
@@ -64,6 +67,8 @@ import {
   comfyWorkflowCompatibilityMessage,
   type ComfyWorkflowInspection,
 } from '../comfy/workflowCompatibility';
+import { comfyConnectionRole } from '../comfy/connectionRole';
+import { copyTextToClipboard } from '../utils/clipboard';
 
 type ComfyModelLists = {
   checkpoints: string[];
@@ -72,6 +77,29 @@ type ComfyModelLists = {
   text_encoders: string[];
   diffusion_models: string[];
 };
+
+type ComfyOnboardingMemoryInfo = {
+  title: string;
+  body: string;
+};
+
+function comfyOnboardingMemoryInfo(role: 'image' | 'voice' | null): ComfyOnboardingMemoryInfo | null {
+  if (role === 'voice') {
+    return {
+      title: 'How voice model memory is managed',
+      body: 'Higgs Audio needs about 11 GB of VRAM while it is active. A local Gemma 4 LLM can need about 24 GB, so keeping both ready for fast switching needs about 35 GB of system memory/cache. RPGraph keeps the voice model warm for quick clips, then unloads it before the next local LM Studio or Ollama LLM request; with enough memory this switch is usually around two seconds. API LLM providers do not need that local LLM switch.',
+    };
+  }
+
+  if (role === 'image') {
+    return {
+      title: 'How image model memory is managed',
+      body: 'Krea 2 needs about 16 GB of VRAM while it is active. Together with a local Gemma 4 LLM at about 24 GB, fast local switching needs about 40 GB of system memory/cache. RPGraph unloads local LM Studio or Ollama models before ComfyUI image generation and can unload ComfyUI again after generation when the workflow asks for memory management. API LLM providers do not use local LLM VRAM, so they avoid this swap.',
+    };
+  }
+
+  return null;
+}
 
 function formatFileDate(value: string | number) {
   const date = new Date(value);
@@ -189,6 +217,8 @@ type StudioDialogsProps = {
   editingConnection: ConnectionPreset;
   connectionDraftPending: boolean;
   editingConnectionCapabilities?: ProviderConnectionCapabilities;
+  editingConnectionSupportedVoices: string[];
+  editingConnectionSupportedParameters: string[];
   providerHealthById: Record<string, ProviderConnectionHealth>;
   availableConnectionModels: string[];
   availableComfyModels: ComfyModelLists;
@@ -203,15 +233,22 @@ type StudioDialogsProps = {
   onApplyProviderPreset: (
     preset: Pick<ConnectionPreset, 'kind' | 'providerKind' | 'label' | 'baseUrl' | 'apiKey' | 'model' | 'comfyWorkflowPath' | 'comfyWidth' | 'comfyHeight' | 'comfyPrompt' | 'comfyCheckpointName' | 'comfyDiffusionModelName' | 'comfyVaeName' | 'comfyTextEncoderName' | 'comfyLoraSlots' | 'reasoningEffort'>,
   ) => void;
+  onApplyComfyConnectionRole: (role: 'image' | 'voice') => void;
   onEditConnection: (field: keyof ConnectionPreset, value: ConnectionPreset[keyof ConnectionPreset]) => void;
   onRefreshConnectionModels: () => void;
   onDeleteConnection: () => void;
   onCheckConnectionModels: () => void;
   onConnectComfyProvider: () => void;
-  onSelectComfyWorkflow: () => void;
+  onSelectBundledComfyWorkflow: (workflowPath: string) => void;
+  onConfirmComfyWorkflowSetup: () => void;
   onRepairComfyWorkflow: (llmConnectionId: string) => void;
   onApplyComfyWorkflowRepair: () => void;
   onGenerateComfyTestImage: () => void;
+  onGenerateCharacterVoicePreview: (request: {
+    providerId: string;
+    speechText: string;
+    sampleDataUrl: string;
+  }) => Promise<Array<{ dataUrl: string; filename: string }>>;
   onUnloadComfyModels: () => void;
   comfyProviderActionActive: 'models' | 'generate' | 'unload' | 'repair' | 'apply-repair' | null;
   lmStudioToolsAvailable: boolean;
@@ -224,6 +261,7 @@ type StudioDialogsProps = {
   onLoadOllamaModel: () => void;
   onUnloadOllamaModels: () => void;
   onApplyConnectionToAllNodes: () => void;
+  onSetNarratorOnlyProvider: (providerId: string) => void;
 };
 
 function PencilIcon() {
@@ -355,11 +393,21 @@ const providerCapabilityLabels: Record<ProviderCapabilityKind, string> = {
   vision: 'Vision',
   tools: 'Tools',
   image: 'Image generation',
+  voice: 'Audio generation',
 };
 
 function ProviderCapabilityIcon({ kind }: { kind: ProviderCapabilityKind }) {
   if (kind === 'text') {
     return <span className="provider-capability-text-mark" aria-hidden="true">TXT</span>;
+  }
+  if (kind === 'voice') {
+    return (
+      <svg viewBox="0 0 24 24" aria-hidden="true">
+        <polygon points="4 9 8 9 13 4 13 20 8 15 4 15" />
+        <path d="M17 9.5a4 4 0 0 1 0 5" />
+        <path d="M19.5 7a7.5 7.5 0 0 1 0 10" />
+      </svg>
+    );
   }
   if (kind === 'vision') {
     return (
@@ -424,7 +472,7 @@ const providerPresets = [
     model: '',
     reasoningEffort: 'none',
     models: [''],
-    description: 'Local OpenAI-compatible server',
+    description: 'Local LM Studio server',
   },
   {
     label: 'Ollama',
@@ -435,18 +483,7 @@ const providerPresets = [
     model: '',
     reasoningEffort: 'none',
     models: [''],
-    description: 'Local Ollama server - not tested locally',
-  },
-  {
-    label: 'OpenAI',
-    kind: 'llm',
-    providerKind: 'openai',
-    baseUrl: 'https://api.openai.com/v1',
-    apiKey: '',
-    model: '',
-    reasoningEffort: 'none',
-    models: [''],
-    description: 'Official OpenAI API',
+    description: 'Local Ollama server',
   },
   {
     label: 'OpenRouter',
@@ -463,26 +500,15 @@ const providerPresets = [
     label: 'Google Gemini',
     kind: 'llm',
     providerKind: 'gemini',
-    baseUrl: 'https://generativelanguage.googleapis.com/v1beta/openai',
+    baseUrl: 'https://generativelanguage.googleapis.com/v1beta',
     apiKey: '',
     model: 'gemini-2.5-flash',
     reasoningEffort: 'none',
     models: ['gemini-2.5-flash', 'gemini-2.5-pro'],
-    description: 'Gemini OpenAI compatibility',
+    description: 'Google Gemini API',
   },
   {
-    label: 'Custom Provider',
-    kind: 'llm',
-    providerKind: 'custom',
-    baseUrl: 'http://localhost:8000/v1',
-    apiKey: '',
-    model: '',
-    reasoningEffort: 'none',
-    models: [''],
-    description: 'Any OpenAI-compatible endpoint',
-  },
-  {
-    label: 'ComfyUI Default',
+    label: 'ComfyUI Image + Voice',
     kind: 'comfyui',
     baseUrl: 'http://127.0.0.1:8188',
     apiKey: '',
@@ -498,7 +524,7 @@ const providerPresets = [
     comfyLoraSlots: defaultComfyLoraSlots,
     reasoningEffort: 'none',
     models: [''],
-    description: 'Local image generation server',
+    description: 'Image and voice generation server',
   },
 ] satisfies Array<
   Pick<ConnectionPreset, 'kind' | 'providerKind' | 'label' | 'baseUrl' | 'apiKey' | 'model' | 'comfyWorkflowPath' | 'comfyWidth' | 'comfyHeight' | 'comfyPrompt' | 'comfyCheckpointName' | 'comfyDiffusionModelName' | 'comfyVaeName' | 'comfyTextEncoderName' | 'comfyLoraSlots' | 'reasoningEffort'> & {
@@ -800,6 +826,8 @@ export function StudioDialogs({
   editingConnection,
   connectionDraftPending,
   editingConnectionCapabilities,
+  editingConnectionSupportedVoices,
+  editingConnectionSupportedParameters,
   providerHealthById,
   availableConnectionModels,
   availableComfyModels,
@@ -812,15 +840,18 @@ export function StudioDialogs({
   onSelectConnection,
   onNewConnection,
   onApplyProviderPreset,
+  onApplyComfyConnectionRole,
   onEditConnection,
   onRefreshConnectionModels,
   onDeleteConnection,
   onCheckConnectionModels,
   onConnectComfyProvider,
-  onSelectComfyWorkflow,
+  onSelectBundledComfyWorkflow,
+  onConfirmComfyWorkflowSetup,
   onRepairComfyWorkflow,
   onApplyComfyWorkflowRepair,
   onGenerateComfyTestImage,
+  onGenerateCharacterVoicePreview,
   onUnloadComfyModels,
   comfyProviderActionActive,
   lmStudioToolsAvailable,
@@ -833,6 +864,7 @@ export function StudioDialogs({
   onLoadOllamaModel,
   onUnloadOllamaModels,
   onApplyConnectionToAllNodes,
+  onSetNarratorOnlyProvider,
 }: StudioDialogsProps) {
   const sessionPasswordInputRef = useRef<HTMLInputElement>(null);
   const saveFileNameInputRef = useRef<HTMLInputElement>(null);
@@ -848,7 +880,14 @@ export function StudioDialogs({
   const [editingWorkflowVariableKey, setEditingWorkflowVariableKey] = useState<string | null>(null);
   const [workflowVariableNameDraft, setWorkflowVariableNameDraft] = useState('');
   const [workflowVariableStatus, setWorkflowVariableStatus] = useState('');
+  const [comfyWorkflowCopyStatus, setComfyWorkflowCopyStatus] = useState('');
   const [apiKeyVisible, setApiKeyVisible] = useState(false);
+  const [narratorVoiceTestText, setNarratorVoiceTestText] = useState(
+    'The night was quiet as the rain fell softly against the window. Somewhere in the distance, a clock struck midnight.',
+  );
+  const [narratorVoiceTestStatus, setNarratorVoiceTestStatus] = useState('');
+  const [narratorVoiceTesting, setNarratorVoiceTesting] = useState(false);
+  const narratorVoiceTestAudioRef = useRef<HTMLAudioElement | null>(null);
   const [uiScalePercentDraft, setUiScalePercentDraft] = useState(() =>
     String(Math.round(uiScale * 100)),
   );
@@ -874,6 +913,30 @@ export function StudioDialogs({
     ),
   );
   const isComfyConnection = editingConnection.kind === 'comfyui';
+  const isVoiceOnlyModel =
+    editingConnectionCapabilities?.voice === true &&
+    editingConnectionCapabilities.text !== true &&
+    editingConnectionCapabilities.vision !== true &&
+    editingConnectionCapabilities.image !== true &&
+    editingConnectionCapabilities.tools !== true;
+  const supportsTtsTemperature =
+    isVoiceOnlyModel && editingConnectionSupportedParameters.includes('temperature');
+  const supportsGeminiVoiceDirection =
+    isVoiceOnlyModel && editingConnection.model.startsWith('google/gemini-');
+  const editingComfyRole = comfyConnectionRole(editingConnection);
+  const isComfyImageEditing = isComfyConnection && editingComfyRole === 'image';
+  const isComfyVoiceEditing = isComfyConnection && editingComfyRole === 'voice';
+  const comfyRolePending = isComfyConnection && editingComfyRole === null;
+  const comfyWorkflowOptions = bundledComfyWorkflows.filter((workflow) => workflow.role === editingComfyRole);
+  const comfyWorkflowSetupConfirmed = isComfyConnection && editingConnection.comfyWorkflowSetupConfirmed === true;
+  const currentComfyWorkflowPath = bundledComfyWorkflowPathForRole(
+    editingConnection.comfyWorkflowPath,
+    editingComfyRole,
+  );
+  const selectedComfyWorkflow =
+    comfyWorkflowOptions.find((workflow) => workflow.apiWorkflowPath === currentComfyWorkflowPath) ??
+    comfyWorkflowOptions[0];
+  const comfyOnboardingMemory = comfyOnboardingMemoryInfo(editingComfyRole);
   const editingProviderKind = llmProviderKind(editingConnection);
   const comfyLoraSlots = validComfyLoraSlots(editingConnection.comfyLoraSlots ?? defaultComfyLoraSlots);
   const [comfyRepairProviderId, setComfyRepairProviderId] = useState('');
@@ -936,6 +999,25 @@ export function StudioDialogs({
       ok,
       added,
     });
+    if (isComfyVoiceEditing) {
+      const placeholderItem = (id: string, label: string) =>
+        item(
+          id,
+          label,
+          !missing.has(id) && nextPlaceholders.has(id),
+          !originalPlaceholders.has(id) && nextPlaceholders.has(id),
+        );
+      return [
+        item(
+          'format',
+          'API workflow',
+          comfyWorkflowChecklistInspection?.format === 'api',
+          originalMissing.has('API workflow export') || originalMissing.has('ComfyUI API workflow JSON'),
+        ),
+        placeholderItem('speech_text', 'Speech text'),
+        placeholderItem('voice_audio', 'Voice sample'),
+      ];
+    }
     const modelLabel = comfyWorkflowChecklistInspection?.modelSource === 'checkpoint'
       ? 'Checkpoint'
       : comfyWorkflowChecklistInspection?.modelSource === 'diffusion_model'
@@ -981,6 +1063,13 @@ export function StudioDialogs({
       ),
     ];
   })();
+
+  useEffect(() => {
+    return () => {
+      narratorVoiceTestAudioRef.current?.pause();
+      narratorVoiceTestAudioRef.current = null;
+    };
+  }, []);
   const isHistoryTimeResponseDialog =
     textDialogNode?.data.nodeType === 'history' && textDialogView === 'history-time-response';
   const isEventManagerResponseDialog =
@@ -1042,6 +1131,74 @@ export function StudioDialogs({
       event.preventDefault();
       setEditingWorkflowVariableKey(null);
       setWorkflowVariableNameDraft('');
+    }
+  }
+
+  async function copyComfyWorkflowPath(path: string, label: string) {
+    try {
+      const resolvedPath = await window.rpgraph.resolveProjectPath(path);
+      await copyTextToClipboard(resolvedPath.path);
+      setComfyWorkflowCopyStatus(`${label} copied.`);
+    } catch (error) {
+      setComfyWorkflowCopyStatus(
+        `Copy failed: ${error instanceof Error ? error.message : String(error)}`,
+      );
+    }
+  }
+
+  async function chooseNarratorVoiceSample() {
+    const result = await window.rpgraph.selectAudio();
+    if (result.canceled || !result.audio) {
+      return;
+    }
+    onEditConnection('comfyNarratorVoice', {
+      name: result.audio.name,
+      dataUrl: result.audio.dataUrl,
+    });
+  }
+
+  async function testNarratorVoice() {
+    const speechText = narratorVoiceTestText.trim();
+    const sampleDataUrl = editingConnection.comfyNarratorVoice?.dataUrl;
+    if (!sampleDataUrl) {
+      setNarratorVoiceTestStatus('Choose a narrator voice sample first.');
+      return;
+    }
+    if (!speechText) {
+      setNarratorVoiceTestStatus('Enter test text first.');
+      return;
+    }
+    setNarratorVoiceTesting(true);
+    setNarratorVoiceTestStatus('');
+    narratorVoiceTestAudioRef.current?.pause();
+    narratorVoiceTestAudioRef.current = null;
+    try {
+      const clips = await onGenerateCharacterVoicePreview({
+        providerId: editingConnection.id,
+        speechText,
+        sampleDataUrl,
+      });
+      const clip = clips[0];
+      if (!clip) {
+        setNarratorVoiceTestStatus('No voice clip was returned.');
+        return;
+      }
+      const audio = new Audio(clip.dataUrl);
+      narratorVoiceTestAudioRef.current = audio;
+      audio.addEventListener('ended', () => {
+        if (narratorVoiceTestAudioRef.current === audio) {
+          narratorVoiceTestAudioRef.current = null;
+          setNarratorVoiceTestStatus('');
+        }
+      }, { once: true });
+      await audio.play();
+      setNarratorVoiceTestStatus('Playing narrator voice test.');
+    } catch (error) {
+      setNarratorVoiceTestStatus(
+        `Narrator voice test failed: ${error instanceof Error ? error.message : String(error)}`,
+      );
+    } finally {
+      setNarratorVoiceTesting(false);
     }
   }
   const textDialogBytesPerEstimatedToken = textDialogNode?.data.displayTokenBytesPerToken;
@@ -1114,7 +1271,7 @@ export function StudioDialogs({
             textDialogNode?.data.nodeType === 'llm-prompt-switch'
           ? textDialogNode.data.generatedText ?? ''
           : textDialogNode?.data.preview ?? '';
-  const jsonDialogContent = JSON.stringify(jsonDialogNode?.data ?? {}, null, 2);
+  const jsonDialogContent = JSON.stringify(sanitizeDataUrls(jsonDialogNode?.data ?? {}), null, 2);
   const roundedUiScalePercent = Math.round(uiScale * 100);
   const canDecreaseUiScale = uiScale > minUiScale + 0.0001;
   const canIncreaseUiScale = uiScale < maxUiScale - 0.0001;
@@ -1163,7 +1320,10 @@ export function StudioDialogs({
 
   useEffect(() => {
     if (!showConnections) {
-      queueMicrotask(() => setApiKeyVisible(false));
+      queueMicrotask(() => {
+        setApiKeyVisible(false);
+        setComfyWorkflowCopyStatus('');
+      });
     }
   }, [showConnections]);
 
@@ -2542,7 +2702,7 @@ export function StudioDialogs({
             <div className="dialog-header">
               <div>
                 <h2>Providers</h2>
-                <p>LLM providers and local image providers, saved locally</p>
+                <p>LLM providers and local image and voice providers, saved locally</p>
               </div>
               <button type="button" className="close-button" onClick={onCloseConnections}>
                 Close
@@ -2586,6 +2746,24 @@ export function StudioDialogs({
                     matching Base URL and defaults — everything can be adjusted afterwards.
                   </span>
                 </div>
+                ) : comfyRolePending ? (
+                <div className="connection-draft-placeholder comfy-role-chooser">
+                  <strong>Choose the ComfyUI setup</strong>
+                  <span>
+                    A ComfyUI preset either generates images or voice clips. Pick one — the
+                    matching workflow and defaults are prepared for you.
+                  </span>
+                  <div className="comfy-role-options">
+                    <button type="button" onClick={() => onApplyComfyConnectionRole('image')}>
+                      <strong>Image Generation</strong>
+                      <span>Create character and scene images with a ComfyUI image workflow.</span>
+                    </button>
+                    <button type="button" onClick={() => onApplyComfyConnectionRole('voice')}>
+                      <strong>Voice Generation</strong>
+                      <span>Clone character voices from short MP3 samples with a ComfyUI voice workflow.</span>
+                    </button>
+                  </div>
+                </div>
                 ) : (
                 <>
                 <div className="connection-form">
@@ -2626,23 +2804,55 @@ export function StudioDialogs({
                   {isComfyConnection ? (
                     <>
                       <div className="connection-field comfy-workflow-field">
-                        <label htmlFor="comfy-workflow-path">WORKFLOW JSON</label>
-                        <div className="comfy-workflow-row">
-                          <input
-                            id="comfy-workflow-path"
-                            value={editingConnection.comfyWorkflowPath || defaultComfyWorkflowPath}
-                            readOnly
-                          />
-                          <button
-                            type="button"
-                            className="connection-inline-button"
-                            onClick={onSelectComfyWorkflow}
-                            disabled={comfyProviderActionActive !== null}
-                          >
-                            Choose
-                          </button>
-                        </div>
-                        {comfyWorkflowIncompatible ? (
+                        <label htmlFor="comfy-workflow-path">WORKFLOW</label>
+                        <NodeCustomSelect
+                          id="comfy-workflow-path"
+                          value={selectedComfyWorkflow?.apiWorkflowPath ?? currentComfyWorkflowPath}
+                          options={comfyWorkflowOptions.length
+                            ? comfyWorkflowOptions.map((workflow) => ({
+                                value: workflow.apiWorkflowPath,
+                                label: workflow.label,
+                              }))
+                            : [{ value: currentComfyWorkflowPath, label: 'No bundled workflow', disabled: true }]}
+                          onChange={(workflowPath) => {
+                            setComfyWorkflowCopyStatus('');
+                            onSelectBundledComfyWorkflow(String(workflowPath));
+                          }}
+                        />
+                        {selectedComfyWorkflow && !comfyWorkflowSetupConfirmed ? (
+                          <div className="comfy-workflow-onboarding">
+                            <div>
+                              <strong>{selectedComfyWorkflow.label}</strong>
+                              <span>{selectedComfyWorkflow.description}</span>
+                            </div>
+                            <ol>
+                              <li>Copy the normal workflow path and open that workflow in ComfyUI.</li>
+                              <li>Install the required custom nodes and download the required models there.</li>
+                              <li>Run the normal ComfyUI workflow once until it works.</li>
+                              <li>Return to RPGraph and confirm that ComfyUI is set up and working.</li>
+                            </ol>
+                            {comfyOnboardingMemory ? (
+                              <div className="comfy-workflow-memory-note">
+                                <strong>{comfyOnboardingMemory.title}</strong>
+                                <span>{comfyOnboardingMemory.body}</span>
+                              </div>
+                            ) : null}
+                            <div className="connection-provider-actions">
+                              <button
+                                type="button"
+                                className="secondary"
+                                onClick={() => void copyComfyWorkflowPath(selectedComfyWorkflow.setupWorkflowPath, 'Normal workflow path')}
+                              >
+                                Copy Normal Workflow Path
+                              </button>
+                              <button type="button" onClick={onConfirmComfyWorkflowSetup}>
+                                ComfyUI Is Set Up and Working
+                              </button>
+                            </div>
+                            {comfyWorkflowCopyStatus ? <em>{comfyWorkflowCopyStatus}</em> : null}
+                          </div>
+                        ) : null}
+                        {comfyWorkflowSetupConfirmed && comfyWorkflowIncompatible ? (
                           <div className={`comfy-workflow-compatibility ${comfyWorkflowRepairReady ? 'ready' : 'error'}`}>
                             <div>
                               <strong>{comfyWorkflowRepairReady ? 'Fix ready' : 'Workflow incompatible'}</strong>
@@ -2702,7 +2912,116 @@ export function StudioDialogs({
                           </div>
                         ) : null}
                       </div>
-                      {!comfyWorkflowIncompatible ? (
+                      {comfyWorkflowSetupConfirmed && !comfyWorkflowIncompatible && isComfyVoiceEditing ? (
+                        <>
+                          <div className="connection-provider-tools comfy-connection-tools" aria-label="ComfyUI voice connection tools">
+                            <div>
+                              <strong>
+                                ComfyUI Voice
+                                <span className={providerHealthClass(editingConnectionHealth)}>
+                                  {providerHealthLabel(editingConnectionHealth)}
+                                </span>
+                                <ProviderCapabilityBadges
+                                  capabilities={editingConnectionHealth.capabilities ?? { voice: true }}
+                                  kinds={['voice']}
+                                />
+                              </strong>
+                              <span>
+                                {editingConnectionHealth.detail ||
+                                  'Voice clips are generated from the character voice samples in the Storybook character setup.'}
+                              </span>
+                            </div>
+                            <div className="connection-provider-actions">
+                              <button
+                                type="button"
+                                className="danger"
+                                onClick={onUnloadComfyModels}
+                                disabled={comfyProviderActionActive !== null}
+                              >
+                                {comfyProviderActionActive === 'unload' ? 'Unloading ...' : 'Unload Models'}
+                              </button>
+                            </div>
+                          </div>
+                          <div className="connection-field connection-field-checkbox">
+                            <label className="node-toggle nodrag">
+                              <input
+                                className="nodrag nowheel"
+                                type="checkbox"
+                                checked={editingConnection.comfyDeleteVoiceOutputs !== false}
+                                onChange={(event) => onEditConnection('comfyDeleteVoiceOutputs', event.target.checked)}
+                              />
+                              <span>Delete voice files on the server after download</span>
+                            </label>
+                            <p className="character-voice-hint">
+                              Keeps the voice clip embedded in RPGraph, then removes the generated audio and the
+                              uploaded voice sample from the ComfyUI server and verifies they are gone.
+                            </p>
+                          </div>
+                          <div className="character-voice-card">
+                            <div className="character-voice-card-header">
+                              <span className="character-voice-card-title">NARRATOR VOICE (MP3)</span>
+                              <button
+                                id="comfy-narrator-voice"
+                                type="button"
+                                className="contextual-action-button nodrag"
+                                onClick={() => void chooseNarratorVoiceSample()}
+                              >
+                                {editingConnection.comfyNarratorVoice ? 'Replace MP3 Sample' : 'Choose MP3 Sample'}
+                              </button>
+                            </div>
+                            <p className="character-voice-hint">
+                              Optional MP3 sample of 10 to 20 seconds for the narrator. It reads the
+                              narration text between the character quotes when the chat uses the
+                              read-aloud voice playback.
+                            </p>
+                            {editingConnection.comfyNarratorVoice ? (
+                              <DarkAudioPlayer
+                                src={editingConnection.comfyNarratorVoice.dataUrl}
+                                title={editingConnection.comfyNarratorVoice.name || 'Narrator voice sample'}
+                                onRemove={() => onEditConnection('comfyNarratorVoice', undefined)}
+                                className="voice-sample-player"
+                              />
+                            ) : (
+                              <div className="character-voice-empty-sample">
+                                <span>No narrator voice sample uploaded yet</span>
+                              </div>
+                            )}
+                          </div>
+                          <div className="character-voice-card">
+                            <div className="character-voice-card-header">
+                              <span className="character-voice-card-title">NARRATOR VOICE GENERATION &amp; TESTING</span>
+                              <button
+                                type="button"
+                                className="contextual-action-button nodrag"
+                                disabled={narratorVoiceTesting || !editingConnection.comfyNarratorVoice}
+                                onClick={() => void testNarratorVoice()}
+                              >
+                                {narratorVoiceTesting ? 'Testing ...' : 'Test Narrator Voice'}
+                              </button>
+                            </div>
+                            <label className="character-comfy-field">
+                              <span>TEST TEXT</span>
+                              <textarea
+                                className="node-textarea nodrag nowheel"
+                                rows={3}
+                                value={narratorVoiceTestText}
+                                placeholder="Write a sentence the narrator should read ..."
+                                onChange={(event) => setNarratorVoiceTestText(event.currentTarget.value)}
+                              />
+                            </label>
+                            {narratorVoiceTesting ? (
+                              <div className="character-voice-generating-box">
+                                <span className="character-voice-spinner" aria-hidden="true" />
+                                <span>Generating narrator voice test ...</span>
+                              </div>
+                            ) : null}
+                            {narratorVoiceTestStatus && (
+                              <p className="character-voice-hint">{narratorVoiceTestStatus}</p>
+                            )}
+                          </div>
+                        </>
+                      ) : null}
+                      {comfyWorkflowSetupConfirmed && !comfyWorkflowIncompatible && isComfyImageEditing ? (
                         <>
                           <div className="connection-field">
                             <label htmlFor="comfy-width">WIDTH</label>
@@ -2826,14 +3145,17 @@ export function StudioDialogs({
                                     <input
                                       id={`comfy-lora-strength-${slotNumber}`}
                                       type="number"
-                                      min={-2}
-                                      max={2}
+                                      min={0}
                                       step={0.05}
                                       value={slot.strength}
                                       onChange={(event) => {
+                                        const nextStrength = Number(event.target.value);
                                         const nextSlots = comfyLoraSlots.map((currentSlot, slotIndex) =>
                                           slotIndex === index
-                                            ? { ...currentSlot, strength: Number(event.target.value) }
+                                            ? {
+                                                ...currentSlot,
+                                                strength: Number.isFinite(nextStrength) ? nextStrength : currentSlot.strength,
+                                              }
                                             : currentSlot,
                                         );
                                         onEditConnection('comfyLoraSlots', nextSlots);
@@ -2894,7 +3216,7 @@ export function StudioDialogs({
                           onOpenOptions={onRefreshConnectionModels}
                         />
                       </div>
-                      <div className="connection-field">
+                      {!isVoiceOnlyModel && <div className="connection-field">
                         <label htmlFor="reasoning-effort">REASONING</label>
                         <NodeCustomSelect
                           id="reasoning-effort"
@@ -2905,7 +3227,7 @@ export function StudioDialogs({
                             label: connectionReasoningLabels[effort],
                           }))}
                         />
-                      </div>
+                      </div>}
                       <div className="connection-field connection-field-api-key">
                         <label htmlFor="api-key">API KEY (OPTIONAL)</label>
                         <div className="secret-input-row">
@@ -2933,7 +3255,11 @@ export function StudioDialogs({
                           <div className="connection-detected-capabilities">
                             <ProviderCapabilityBadges
                               capabilities={editingConnectionCapabilities}
-                              kinds={lmStudioToolsAvailable || ollamaToolsAvailable ? ['text', 'vision', 'tools'] : ['text', 'vision']}
+                              kinds={
+                                lmStudioToolsAvailable || ollamaToolsAvailable
+                                  ? ['text', 'vision', 'tools']
+                                  : ['text', 'vision', 'image', 'voice']
+                              }
                               showInactive
                             />
                             <span>
@@ -2963,7 +3289,91 @@ export function StudioDialogs({
                           </span>
                         </div>
                       )}
-                      <div className="connection-sampling-section">
+                      {isVoiceOnlyModel && (
+                        <div className={`connection-tts-section${supportsTtsTemperature ? ' has-temperature' : ''}`}>
+                          <div className="connection-field connection-tts-voice-field">
+                            <label htmlFor="tts-voice">VOICE</label>
+                            {editingConnectionSupportedVoices.length > 0 ? (
+                              <NodeCustomSelect
+                                id="tts-voice"
+                                value={editingConnection.ttsVoice ?? editingConnectionSupportedVoices[0]}
+                                onChange={(voice) => onEditConnection('ttsVoice', String(voice))}
+                                options={editingConnectionSupportedVoices.map((voice) => ({
+                                  value: voice,
+                                  label: voice,
+                                }))}
+                              />
+                            ) : (
+                              <span className="connection-field-hint">
+                                Open the model list to load the voices provided by OpenRouter.
+                              </span>
+                            )}
+                          </div>
+                          {supportsTtsTemperature && (
+                            <div className="connection-field connection-tts-temperature-field">
+                              <label htmlFor="tts-temperature">
+                                TEMPERATURE <span>{(editingConnection.ttsTemperature ?? 1).toFixed(2)}</span>
+                              </label>
+                              <input
+                                id="tts-temperature"
+                                type="range"
+                                min={0}
+                                max={2}
+                                step={0.05}
+                                value={editingConnection.ttsTemperature ?? 1}
+                                onChange={(event) => onEditConnection('ttsTemperature', Number(event.target.value))}
+                              />
+                            </div>
+                          )}
+                          {supportsGeminiVoiceDirection && (
+                            <div className="connection-tts-stream-container">
+                              <label className="node-toggle post-output-toggle connection-tts-stream-toggle nodrag">
+                                <input
+                                  className="nodrag nowheel"
+                                  type="checkbox"
+                                  checked={editingConnection.ttsStreamAudio === true}
+                                  onChange={(event) => onEditConnection('ttsStreamAudio', event.target.checked)}
+                                />
+                                <span>Stream Audio Live</span>
+                              </label>
+                            </div>
+                          )}
+                          {supportsGeminiVoiceDirection && (
+                            <div className="connection-tts-direction-grid">
+                              <div className="connection-field connection-tts-wide-field">
+                                <label htmlFor="tts-audio-profile">AUDIO PROFILE</label>
+                                <input
+                                  id="tts-audio-profile"
+                                  type="text"
+                                  placeholder="Persona, role, age, and vocal character"
+                                  value={editingConnection.ttsAudioProfile ?? ''}
+                                  onChange={(event) => onEditConnection('ttsAudioProfile', event.target.value)}
+                                />
+                              </div>
+                              {([
+                                ['ttsStyle', 'tts-style', 'STYLE', 'Conversational and intimate'],
+                                ['ttsAccent', 'tts-accent', 'ACCENT', 'Neutral German'],
+                                ['ttsPace', 'tts-pace', 'PACE', 'Calm and measured'],
+                              ] as const).map(([field, id, label, placeholder]) => (
+                                <div className="connection-field" key={field}>
+                                  <label htmlFor={id}>{label}</label>
+                                  <input
+                                    id={id}
+                                    type="text"
+                                    placeholder={placeholder}
+                                    value={editingConnection[field] ?? ''}
+                                    onChange={(event) => onEditConnection(field, event.target.value)}
+                                  />
+                                </div>
+                              ))}
+                              <span className="connection-field-hint connection-tts-wide-field">
+                                Gemini uses these directions as part of its speech prompt. Empty fields are omitted.
+                              </span>
+                            </div>
+                          )}
+                        </div>
+                      )}
+                      {!isVoiceOnlyModel && <div className="connection-sampling-section">
                         <div className="connection-sampling-header">
                           <strong>Story sampling</strong>
                           <span>
@@ -3066,7 +3476,7 @@ export function StudioDialogs({
                             />
                           </div>
                         </div>
-                      </div>
+                      </div>}
                     </>
                   )}
                   {!isComfyConnection && (
@@ -3105,7 +3515,7 @@ export function StudioDialogs({
                         <div className="connection-provider-tools" aria-label="Ollama model tools">
                           <div>
                             <strong>Ollama</strong>
-                            <span>Load selected model or unload every running Ollama model. Not tested locally.</span>
+                            <span>Load selected model or unload every running Ollama model.</span>
                           </div>
                           <div className="connection-provider-actions">
                             <button
@@ -3148,9 +3558,14 @@ export function StudioDialogs({
                       Check Models
                       </button>
                     )}
-                    {!isComfyConnection && (
+                    {!isComfyConnection && !isVoiceOnlyModel && (
                       <button type="button" onClick={onApplyConnectionToAllNodes}>
                         Apply to all nodes
+                      </button>
+                    )}
+                    {!isComfyConnection && isVoiceOnlyModel && (
+                      <button type="button" onClick={() => onSetNarratorOnlyProvider(editingConnection.id)}>
+                        Set Narrator Only model
                       </button>
                     )}
                   </div>

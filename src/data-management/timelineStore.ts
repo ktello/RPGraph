@@ -85,6 +85,7 @@ function messageToTimelineEntry(
       ? {
           from: message.phoneFrom ?? '',
           to: message.phoneTo ?? '',
+          voiceMessage: message.phoneVoiceMessage || undefined,
           imageIds: message.phoneImageIds,
           imageDescription: message.phoneImageDescription,
         }
@@ -106,6 +107,7 @@ function messageToTimelineEntry(
     inputPromptSlot: message.inputPromptSlot,
     rpDateTime: message.rpDateTime,
     workflowVariableSetCommands: message.workflowVariableSetCommands,
+    voiceClips: message.voiceClips?.length ? message.voiceClips : undefined,
   };
 }
 

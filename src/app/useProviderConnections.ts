@@ -1,12 +1,14 @@
-import { useEffect, useRef, useState } from 'react';
+import { useCallback, useEffect, useRef, useState } from 'react';
 import type { Dispatch, SetStateAction } from 'react';
 import type { ComfyGeneratedImage } from '../comfy/api';
 import type { ComfyWorkflowInspection } from '../comfy/workflowCompatibility';
 import {
+  connectionWithGeminiCapabilities as connectionWithGeminiCapabilitiesForModels,
   connectionWithLmStudioCapabilities as connectionWithLmStudioCapabilitiesForModels,
   connectionWithOllamaCapabilities as connectionWithOllamaCapabilitiesForModels,
   connectionWithOpenRouterCapabilities as connectionWithOpenRouterCapabilitiesForModels,
   createProviderConnectionId,
+  geminiCapabilitiesForConnection,
   lmStudioCapabilitiesForConnection,
   lmStudioLlmModels,
   ollamaCapabilitiesForConnection,
@@ -22,12 +24,22 @@ import {
   isLocalProviderConnection,
   isOllamaConnection,
   isOpenRouterConnection,
+  isGeminiConnection,
   llmProviderKind,
 } from '../llm/providerKind';
 import {
+  comfyConnectionRole,
+  isComfyImageConnection,
+  isComfyVoiceConnection,
+} from '../comfy/connectionRole';
+import { bundledComfyNarratorVoice } from '../comfy/defaultNarratorVoice';
+import {
   characterComfyLoraSlots,
+  bundledComfyWorkflows,
+  bundledComfyWorkflowPathForRole,
   comfySetupRequiredMessage,
   defaultComfyBaseUrl,
+  defaultComfyVoiceWorkflowPath,
   defaultComfyCheckpointName,
   defaultComfyDiffusionModelName,
   defaultComfyHeight,
@@ -46,7 +58,9 @@ import {
   validConnectionReasoningEffort,
 } from '../settings';
 import type {
+  ComfyConnectionRole,
   ConnectionPreset,
+  GeminiModelInfo,
   LmStudioModelInfo,
   OllamaModelInfo,
   OpenRouterModelInfo,
@@ -64,7 +78,29 @@ type AvailableComfyModels = {
   diffusion_models: string[];
 };
 
+const recommendedOpenRouterTtsModel = 'google/gemini-3.1-flash-tts-preview';
+
+function comfyConnectionCapabilities(connection: ConnectionPreset) {
+  return comfyConnectionRole(connection) === 'voice' ? { voice: true } : { image: true };
+}
+
 function comfySetupHealth(connection: ConnectionPreset, detail: string): ProviderConnectionHealth {
+  const role = comfyConnectionRole(connection);
+  if (role === null) {
+    return {
+      status: 'warning',
+      detail: 'Choose Image Generation or Voice Generation for this ComfyUI preset.',
+      checkedAt: providerCheckedAt(),
+    };
+  }
+  if (role === 'voice') {
+    return {
+      status: 'online',
+      detail,
+      capabilities: { voice: true },
+      checkedAt: providerCheckedAt(),
+    };
+  }
   const missingFields = missingComfySetupFields(connection);
   if (missingFields.length === 0) {
     return {
@@ -132,6 +168,8 @@ export function useProviderConnections({
   const lmStudioModelsByConnectionIdRef = useRef<Record<string, LmStudioModelInfo[]>>({});
   const [openRouterModelsByConnectionId, setOpenRouterModelsByConnectionId] = useState<Record<string, OpenRouterModelInfo[]>>({});
   const openRouterModelsByConnectionIdRef = useRef<Record<string, OpenRouterModelInfo[]>>({});
+  const [geminiModelsByConnectionId, setGeminiModelsByConnectionId] = useState<Record<string, GeminiModelInfo[]>>({});
+  const geminiModelsByConnectionIdRef = useRef<Record<string, GeminiModelInfo[]>>({});
   const [ollamaModelsByConnectionId, setOllamaModelsByConnectionId] = useState<Record<string, OllamaModelInfo[]>>({});
   const ollamaModelsByConnectionIdRef = useRef<Record<string, OllamaModelInfo[]>>({});
   const startupProviderCheckCompleteRef = useRef(false);
@@ -140,6 +178,9 @@ export function useProviderConnections({
   const [lmStudioModelActionActive, setLmStudioModelActionActive] = useState<'load' | 'unload' | null>(null);
   const [ollamaModelActionActive, setOllamaModelActionActive] = useState<'load' | 'unload' | null>(null);
   const [comfyProviderActionActive, setComfyProviderActionActive] = useState<'models' | 'generate' | 'unload' | 'repair' | 'apply-repair' | null>(null);
+  const [voiceGenerationActive, setVoiceGenerationActive] = useState(false);
+  const voiceGenerationCountRef = useRef(0);
+  const voiceCleanupWarningCountsRef = useRef<Record<string, number>>({});
 
   function isLlmConnection(connection: ConnectionPreset) {
     return connection.kind !== 'comfyui';
@@ -159,8 +200,39 @@ export function useProviderConnections({
     openRouterModelsByConnectionIdRef.current = openRouterModelsByConnectionId;
   }, [openRouterModelsByConnectionId]);
   useEffect(() => {
+    geminiModelsByConnectionIdRef.current = geminiModelsByConnectionId;
+  }, [geminiModelsByConnectionId]);
+  useEffect(() => {
     ollamaModelsByConnectionIdRef.current = ollamaModelsByConnectionId;
   }, [ollamaModelsByConnectionId]);
+
+  function beginVoiceGeneration() {
+    voiceGenerationCountRef.current += 1;
+    setVoiceGenerationActive(true);
+  }
+
+  function endVoiceGeneration() {
+    voiceGenerationCountRef.current = Math.max(0, voiceGenerationCountRef.current - 1);
+    if (voiceGenerationCountRef.current === 0) {
+      setVoiceGenerationActive(false);
+    }
+  }
+
+  // Warns at most twice per provider and session; the second warning tells the
+  // user to clean the ComfyUI folders manually, then the failure stays silent.
+  function notifyVoiceCleanupFailure(connection: ConnectionPreset) {
+    const warningCount = voiceCleanupWarningCountsRef.current[connection.id] ?? 0;
+    if (warningCount >= 2) {
+      return;
+    }
+    voiceCleanupWarningCountsRef.current[connection.id] = warningCount + 1;
+    notifySystem(
+      'warning',
+      warningCount === 0
+        ? `${connection.label}: could not delete the generated voice files on the ComfyUI server. They remain in the ComfyUI output and input folders.`
+        : `${connection.label}: deleting voice files on the ComfyUI server failed again. This ComfyUI does not seem to support file deletion — delete the rpgraph voice files in its output and input folders manually. This warning will not be shown again.`,
+    );
+  }
 
   function openConnectionManager() {
     const selected =
@@ -181,6 +253,53 @@ export function useProviderConnections({
     setConnectionStatus('');
     setShowConnections(true);
     void checkProviderConnections(connections, { showStatus: true });
+  }
+
+  function openOpenRouterTtsSetup() {
+    const template = connections.find(isOpenRouterConnection);
+    const existingTtsCount = connections.filter((connection) =>
+      isOpenRouterConnection(connection) && connection.label.startsWith('OpenRouter TTS')
+    ).length;
+    const connectionId = createProviderConnectionId();
+    const modelDetails = template
+      ? openRouterModelsByConnectionIdRef.current[template.id] ?? []
+      : [];
+    const selectedModel = modelDetails.find((model) => model.id === recommendedOpenRouterTtsModel);
+    const nextConnection = connectionWithOpenRouterCapabilities({
+      id: connectionId,
+      kind: 'llm',
+      providerKind: 'openrouter',
+      label: existingTtsCount > 0 ? `OpenRouter TTS ${existingTtsCount + 1}` : 'OpenRouter TTS',
+      baseUrl: template?.baseUrl || 'https://openrouter.ai/api/v1',
+      apiKey: template?.apiKey ?? '',
+      model: recommendedOpenRouterTtsModel,
+      ttsVoice: selectedModel?.supportedVoices[0],
+      reasoningEffort: 'none',
+      vision: false,
+      ...defaultConnectionSampling,
+    }, modelDetails);
+    if (modelDetails.length > 0) {
+      updateOpenRouterModelCache(connectionId, modelDetails);
+    }
+    setConnections((current) => [...current, nextConnection]);
+    setEditingConnection(nextConnection);
+    setConnectionDraftPending(false);
+    setAvailableConnectionModels(modelDetails.map((model) => model.id));
+    setAvailableComfyModels({
+      checkpoints: [],
+      loras: [],
+      vae: [],
+      text_encoders: [],
+      diffusion_models: [],
+    });
+    setComfyWorkflowInspection(null);
+    setPendingComfyWorkflowRepair(null);
+    setComfyWorkflowRepairStatus('');
+    setConnectionStatus(template?.apiKey
+      ? 'New OpenRouter TTS provider created. Choose its voice and delivery settings.'
+      : 'New OpenRouter TTS provider created. Add your API key, then check the models.');
+    setShowConnections(true);
+    void checkProviderConnection(nextConnection, { showStatus: false });
   }
 
   function closeConnectionManager() {
@@ -220,12 +339,17 @@ export function useProviderConnections({
           id: createProviderConnectionId(),
           ...(presetKind === 'comfyui' ? {} : defaultConnectionSampling),
           ...preset,
+          // Applying the ComfyUI type always re-enters the image/voice picker step.
+          comfyRole: undefined,
+          comfyWorkflowSetupConfirmed: presetKind === 'comfyui' ? false : undefined,
           providerKind: presetKind === 'comfyui' ? undefined : preset.providerKind,
           vision: false,
         }
       : {
           ...editingConnection,
           ...preset,
+          comfyRole: undefined,
+          comfyWorkflowSetupConfirmed: presetKind === 'comfyui' ? false : undefined,
           providerKind: presetKind === 'comfyui' ? undefined : preset.providerKind,
           vision: presetKind === 'comfyui' ? false : editingConnection.vision ?? false,
         };
@@ -264,57 +388,108 @@ export function useProviderConnections({
     setConnectionStatus(
       connectionDraftPending
         ? preset.kind === 'comfyui'
-          ? 'ComfyUI preset created. Check the Base URL. Changes are saved automatically.'
+          ? 'ComfyUI preset created. Choose Image Generation or Voice Generation.'
           : `${preset.label} preset created. Changes are saved automatically.`
         : preset.kind === 'comfyui'
-          ? 'ComfyUI type applied. Check the Base URL. Changes are saved automatically.'
+          ? 'ComfyUI type applied. Choose Image Generation or Voice Generation.'
           : `${preset.label} type applied. Add your API key if needed.`,
     );
     void checkProviderConnection(nextConnection, { showStatus: true });
-    if (nextConnection.kind === 'comfyui') {
-      void inspectComfyWorkflow(nextConnection, { showStatus: false });
-      void loadComfyModelLists(nextConnection);
+  }
+
+  function applyComfyConnectionRole(role: ComfyConnectionRole) {
+    if (editingConnection.kind !== 'comfyui') {
+      return;
     }
+    const roleLabels = ['ComfyUI Default', 'ComfyUI Image', 'ComfyUI Voice'];
+    const currentLabel = editingConnection.label.trim();
+    const currentWorkflowPath = editingConnection.comfyWorkflowPath?.trim() ?? '';
+    const roleDefaultWorkflowPath = role === 'voice' ? defaultComfyVoiceWorkflowPath : defaultComfyWorkflowPath;
+    const nextConnection: ConnectionPreset = {
+      ...editingConnection,
+      comfyRole: role,
+      label: !currentLabel || roleLabels.includes(currentLabel)
+        ? (role === 'voice' ? 'ComfyUI Voice' : 'ComfyUI Image')
+        : editingConnection.label,
+      comfyWorkflowPath: !currentWorkflowPath
+        ? roleDefaultWorkflowPath
+        : bundledComfyWorkflowPathForRole(currentWorkflowPath, role),
+      comfyWorkflowSetupConfirmed: false,
+      comfyNarratorVoice: role === 'voice'
+        ? editingConnection.comfyNarratorVoice ?? bundledComfyNarratorVoice()
+        : undefined,
+    };
+    setConnections((current) =>
+      current.map((entry) => (entry.id === nextConnection.id ? nextConnection : entry)),
+    );
+    setEditingConnection(nextConnection);
+    setComfyWorkflowInspection(null);
+    setPendingComfyWorkflowRepair(null);
+    setComfyWorkflowRepairStatus('');
+    setConnectionStatus(
+      role === 'voice'
+        ? 'ComfyUI voice generation selected. Open the normal workflow in ComfyUI first.'
+        : 'ComfyUI image generation selected. Open the normal workflow in ComfyUI first.',
+    );
   }
 
   function connectionFromEditingConnection(): ConnectionPreset {
     const kind: NonNullable<ConnectionPreset['kind']> =
       editingConnection.kind === 'comfyui' ? 'comfyui' : 'llm';
+    const comfyRole = kind === 'comfyui' ? comfyConnectionRole(editingConnection) : null;
+    const isComfyImage = comfyRole === 'image';
     return {
       ...editingConnection,
       kind,
+      comfyRole: comfyRole ?? undefined,
       providerKind: kind === 'comfyui'
         ? undefined
-        : editingConnection.providerKind ?? inferredProviderKind(editingConnection),
+        : llmProviderKind(editingConnection) ?? inferredProviderKind(editingConnection),
       label: editingConnection.label.trim() || (kind === 'comfyui' ? 'ComfyUI Default' : 'Provider'),
       baseUrl: editingConnection.baseUrl.trim() || (kind === 'comfyui' ? defaultComfyBaseUrl : defaultConnection.baseUrl),
       model: kind === 'comfyui' ? '' : editingConnection.model.trim(),
+      ttsVoice: kind === 'comfyui' ? undefined : editingConnection.ttsVoice?.trim() || undefined,
+      ttsTemperature: kind === 'comfyui' ? undefined : editingConnection.ttsTemperature,
+      ttsStreamAudio: kind === 'comfyui' ? undefined : editingConnection.ttsStreamAudio === true,
+      ttsAudioProfile: kind === 'comfyui' ? undefined : editingConnection.ttsAudioProfile?.trim() || undefined,
+      ttsStyle: kind === 'comfyui' ? undefined : editingConnection.ttsStyle?.trim() || undefined,
+      ttsAccent: kind === 'comfyui' ? undefined : editingConnection.ttsAccent?.trim() || undefined,
+      ttsPace: kind === 'comfyui' ? undefined : editingConnection.ttsPace?.trim() || undefined,
       apiKey: kind === 'comfyui' ? '' : editingConnection.apiKey.trim(),
       comfyWorkflowPath: kind === 'comfyui'
-        ? editingConnection.comfyWorkflowPath?.trim() || defaultComfyWorkflowPath
+        ? bundledComfyWorkflowPathForRole(editingConnection.comfyWorkflowPath, comfyRole)
         : undefined,
-      comfyWidth: kind === 'comfyui'
+      comfyWorkflowSetupConfirmed: kind === 'comfyui'
+        ? editingConnection.comfyWorkflowSetupConfirmed === true
+        : undefined,
+      comfyNarratorVoice: comfyRole === 'voice'
+        ? editingConnection.comfyNarratorVoice
+        : undefined,
+      comfyDeleteVoiceOutputs: comfyRole === 'voice'
+        ? editingConnection.comfyDeleteVoiceOutputs !== false
+        : undefined,
+      comfyWidth: isComfyImage
         ? validComfyDimension(editingConnection.comfyWidth, defaultComfyWidth)
         : undefined,
-      comfyHeight: kind === 'comfyui'
+      comfyHeight: isComfyImage
         ? validComfyDimension(editingConnection.comfyHeight, defaultComfyHeight)
         : undefined,
-      comfyPrompt: kind === 'comfyui'
+      comfyPrompt: isComfyImage
         ? editingConnection.comfyPrompt?.trim() || defaultComfyPrompt
         : undefined,
-      comfyCheckpointName: kind === 'comfyui'
+      comfyCheckpointName: isComfyImage
         ? editingConnection.comfyCheckpointName ?? defaultComfyCheckpointName
         : undefined,
-      comfyDiffusionModelName: kind === 'comfyui'
+      comfyDiffusionModelName: isComfyImage
         ? editingConnection.comfyDiffusionModelName ?? defaultComfyDiffusionModelName
         : undefined,
-      comfyVaeName: kind === 'comfyui'
+      comfyVaeName: isComfyImage
         ? editingConnection.comfyVaeName ?? defaultComfyVaeName
         : undefined,
-      comfyTextEncoderName: kind === 'comfyui'
+      comfyTextEncoderName: isComfyImage
         ? editingConnection.comfyTextEncoderName ?? defaultComfyTextEncoderName
         : undefined,
-      comfyLoraSlots: kind === 'comfyui'
+      comfyLoraSlots: isComfyImage
         ? validComfyLoraSlots(editingConnection.comfyLoraSlots ?? defaultComfyLoraSlots)
         : undefined,
       reasoningEffort: kind === 'comfyui'
@@ -399,6 +574,14 @@ export function useProviderConnections({
     setOpenRouterModelsByConnectionId(openRouterModelsByConnectionIdRef.current);
   }
 
+  function updateGeminiModelCache(connectionId: string, models: GeminiModelInfo[]) {
+    geminiModelsByConnectionIdRef.current = {
+      ...geminiModelsByConnectionIdRef.current,
+      [connectionId]: models,
+    };
+    setGeminiModelsByConnectionId(geminiModelsByConnectionIdRef.current);
+  }
+
   function updateOllamaModelCache(connectionId: string, models: OllamaModelInfo[]) {
     ollamaModelsByConnectionIdRef.current = {
       ...ollamaModelsByConnectionIdRef.current,
@@ -421,6 +604,13 @@ export function useProviderConnections({
     return connectionWithOpenRouterCapabilitiesForModels(connection, models);
   }
 
+  function connectionWithGeminiCapabilities(
+    connection: ConnectionPreset,
+    models = geminiModelsByConnectionIdRef.current[connection.id] ?? [],
+  ): ConnectionPreset {
+    return connectionWithGeminiCapabilitiesForModels(connection, models);
+  }
+
   function connectionWithOllamaCapabilities(
     connection: ConnectionPreset,
     models = ollamaModelsByConnectionIdRef.current[connection.id] ?? [],
@@ -435,7 +625,8 @@ export function useProviderConnections({
     if (
       !isLmStudioConnection(connection) &&
       !isOllamaConnection(connection) &&
-      !isOpenRouterConnection(connection)
+      !isOpenRouterConnection(connection) &&
+      !isGeminiConnection(connection)
     ) {
       return;
     }
@@ -446,14 +637,20 @@ export function useProviderConnections({
           ? connectionWithLmStudioCapabilities(current)
           : isOllamaConnection(current)
             ? connectionWithOllamaCapabilities(current)
-            : connectionWithOpenRouterCapabilities(current)
+            : isOpenRouterConnection(current)
+              ? connectionWithOpenRouterCapabilities(current)
+              : connectionWithGeminiCapabilities(current)
         : current,
     );
     setConnections((current) =>
       current.map((entry) =>
-        entry.id === connection.id && entry.vision !== vision
-          ? { ...entry, vision }
-          : entry,
+        entry.id !== connection.id
+          ? entry
+          : isOpenRouterConnection(entry)
+            ? connectionWithOpenRouterCapabilities(entry)
+            : entry.vision !== vision
+              ? { ...entry, vision }
+              : entry,
       ),
     );
   }
@@ -476,7 +673,7 @@ export function useProviderConnections({
           health = {
             status: 'offline',
             detail: result.error ?? 'ComfyUI is not reachable.',
-            capabilities: { image: true },
+            capabilities: comfyConnectionCapabilities(connection),
             checkedAt: providerCheckedAt(),
           };
           updateProviderHealth(connection.id, health);
@@ -601,6 +798,42 @@ export function useProviderConnections({
           setAvailableConnectionModels(models);
         }
         const capabilities = openRouterCapabilitiesForConnection(detectedConnection, modelDetails);
+        health = {
+          status: models.length > 0 ? 'online' : 'offline',
+          detail: models.length > 0
+            ? providerModelCountDetail(models.length)
+            : 'Connection succeeded, but no models were returned.',
+          capabilities,
+          checkedAt: providerCheckedAt(),
+        };
+      } else if (isGeminiConnection(connection)) {
+        const modelDetails = await window.rpgraph.listGeminiModels(connection);
+        updateGeminiModelCache(connection.id, modelDetails);
+        const models = modelDetails.map((model) => model.id);
+        const fallbackModel = models.includes(connection.model)
+          ? connection.model
+          : options.selectFallbackModel
+            ? models[0] ?? connection.model
+            : connection.model;
+        const detectedConnection = connectionWithGeminiCapabilities(
+          { ...connection, model: fallbackModel },
+          modelDetails,
+        );
+        if (options.selectFallbackModel && detectedConnection.model !== connection.model) {
+          setEditingConnection(detectedConnection);
+          setConnections((current) =>
+            current.map((entry) => (entry.id === detectedConnection.id ? detectedConnection : entry)),
+          );
+        } else {
+          applyDetectedConnectionCapabilities(
+            detectedConnection,
+            geminiCapabilitiesForConnection(detectedConnection, modelDetails),
+          );
+        }
+        if (editingConnection.id === connection.id) {
+          setAvailableConnectionModels(models);
+        }
+        const capabilities = geminiCapabilitiesForConnection(detectedConnection, modelDetails);
         health = {
           status: models.length > 0 ? 'online' : 'offline',
           detail: models.length > 0
@@ -750,7 +983,7 @@ export function useProviderConnections({
       return;
     }
     void inspectComfyWorkflowRef.current(editingConnectionRef.current, { showStatus: false });
-  }, [editingConnection.kind, editingConnection.comfyWorkflowPath, showConnections]);
+  }, [editingConnection.kind, editingConnection.comfyRole, editingConnection.comfyWorkflowPath, showConnections]);
 
   function deleteConnection() {
     if (connections.length === 1) {
@@ -827,7 +1060,7 @@ export function useProviderConnections({
 
   function connectionRequiresApiKeyForModelList(connection: ConnectionPreset) {
     const providerKind = llmProviderKind(connection);
-    return providerKind === 'openai' || providerKind === 'gemini';
+    return providerKind === 'gemini';
   }
 
   function fallbackModelsForConnection(connection: ConnectionPreset, error: unknown) {
@@ -877,12 +1110,20 @@ export function useProviderConnections({
       if (openRouterModels) {
         updateOpenRouterModelCache(editingConnection.id, openRouterModels);
       }
+      const geminiModels = !lmStudioModels && !ollamaModels && !openRouterModels && isGeminiConnection(editingConnection)
+        ? await window.rpgraph.listGeminiModels(editingConnection)
+        : null;
+      if (geminiModels) {
+        updateGeminiModelCache(editingConnection.id, geminiModels);
+      }
       const models = lmStudioModels
         ? lmStudioModels.map((model) => model.id)
         : ollamaModels
           ? ollamaModels.map((model) => model.id)
         : openRouterModels
           ? openRouterModels.map((model) => model.id)
+        : geminiModels
+          ? geminiModels.map((model) => model.id)
         : await window.rpgraph.listModels(editingConnection);
       if (models.length === 0) {
         setAvailableConnectionModels([]);
@@ -894,7 +1135,9 @@ export function useProviderConnections({
           capabilities: lmStudioModels || ollamaModels
             ? { text: false, vision: false, tools: false }
             : openRouterModels
-              ? { text: false, vision: false }
+              ? { text: false, vision: false, image: false, voice: false }
+              : geminiModels
+                ? { text: false, vision: false, image: false, voice: false }
               : undefined,
           checkedAt: providerCheckedAt(),
         });
@@ -916,6 +1159,17 @@ export function useProviderConnections({
         connection = connectionWithOllamaCapabilities(connection, ollamaModels);
       } else if (openRouterModels) {
         connection = connectionWithOpenRouterCapabilities(connection, openRouterModels);
+        const selectedModel = openRouterModels.find((model) => model.id === connection.model);
+        if (selectedModel?.supportedVoices.length) {
+          connection = {
+            ...connection,
+            ttsVoice: selectedModel.supportedVoices.includes(connection.ttsVoice ?? '')
+              ? connection.ttsVoice
+              : selectedModel.supportedVoices[0],
+          };
+        }
+      } else if (geminiModels) {
+        connection = connectionWithGeminiCapabilities(connection, geminiModels);
       }
       const capabilities = lmStudioModels
         ? lmStudioCapabilitiesForConnection(connection, lmStudioModels)
@@ -923,6 +1177,8 @@ export function useProviderConnections({
           ? ollamaCapabilitiesForConnection(connection, ollamaModels)
         : openRouterModels
           ? openRouterCapabilitiesForConnection(connection, openRouterModels)
+        : geminiModels
+          ? geminiCapabilitiesForConnection(connection, geminiModels)
         : { text: true };
       setAvailableConnectionModels(models);
       setEditingConnection(connection);
@@ -978,8 +1234,8 @@ export function useProviderConnections({
     options: { showStatus?: boolean; markActive?: boolean } = {},
   ) {
     const connection = connectionOverride ?? connectionFromEditingConnection();
-    if (connection.kind !== 'comfyui') {
-      setConnectionStatus('Choose a ComfyUI provider before loading ComfyUI models.');
+    if (!isComfyImageConnection(connection)) {
+      setConnectionStatus('Choose a ComfyUI image provider before loading ComfyUI models.');
       return;
     }
 
@@ -1062,23 +1318,28 @@ export function useProviderConnections({
     }
   }
 
+  function comfyWorkflowPathForConnection(connection: ConnectionPreset) {
+    return bundledComfyWorkflowPathForRole(connection.comfyWorkflowPath, comfyConnectionRole(connection));
+  }
+
   async function inspectComfyWorkflow(
     connectionOverride?: ConnectionPreset,
     options: { showStatus?: boolean } = {},
   ) {
     const connection = connectionOverride ?? connectionFromEditingConnection();
-    if (connection.kind !== 'comfyui') {
+    const role = comfyConnectionRole(connection);
+    if (connection.kind !== 'comfyui' || role === null) {
       setComfyWorkflowInspection(null);
       return null;
     }
 
-    const workflowPath = connection.comfyWorkflowPath || defaultComfyWorkflowPath;
+    const workflowPath = comfyWorkflowPathForConnection(connection);
     if (pendingComfyWorkflowRepair?.workflowPath !== workflowPath) {
       setPendingComfyWorkflowRepair(null);
       setComfyWorkflowRepairStatus('');
     }
     try {
-      const inspection = await window.rpgraph.inspectComfyWorkflow({ workflowPath });
+      const inspection = await window.rpgraph.inspectComfyWorkflow({ workflowPath, role });
       setComfyWorkflowInspection(inspection);
       if (inspection.ok) {
         setPendingComfyWorkflowRepair(null);
@@ -1092,6 +1353,7 @@ export function useProviderConnections({
       const inspection: ComfyWorkflowInspection = {
         ok: false,
         format: 'unknown',
+        role,
         modelSource: 'missing',
         placeholders: [],
         missing: [error instanceof Error ? error.message : String(error)],
@@ -1118,13 +1380,14 @@ export function useProviderConnections({
       return;
     }
 
-    const workflowPath = connection.comfyWorkflowPath || defaultComfyWorkflowPath;
+    const workflowPath = comfyWorkflowPathForConnection(connection);
     setComfyProviderActionActive('repair');
     setPendingComfyWorkflowRepair(null);
     setComfyWorkflowRepairStatus(`Fixing workflow with ${llmConnection.label} ...`);
     try {
       const result = await window.rpgraph.repairComfyWorkflow({
         workflowPath,
+        role: comfyConnectionRole(connection) ?? 'image',
         connection: llmConnection,
       });
       setPendingComfyWorkflowRepair({
@@ -1152,7 +1415,7 @@ export function useProviderConnections({
   async function applyComfyWorkflowRepair() {
     const connection = connectionFromEditingConnection();
     const workflowPath = connection.kind === 'comfyui'
-      ? connection.comfyWorkflowPath || defaultComfyWorkflowPath
+      ? comfyWorkflowPathForConnection(connection)
       : '';
     if (!pendingComfyWorkflowRepair || pendingComfyWorkflowRepair.workflowPath !== workflowPath) {
       setComfyWorkflowRepairStatus('Run Fix Prompt before applying a repair.');
@@ -1164,6 +1427,7 @@ export function useProviderConnections({
     try {
       const result = await window.rpgraph.applyComfyWorkflowRepair({
         workflowPath,
+        role: comfyConnectionRole(connection) ?? 'image',
         workflowJson: pendingComfyWorkflowRepair.workflowJson,
       });
       setPendingComfyWorkflowRepair(null);
@@ -1206,10 +1470,62 @@ export function useProviderConnections({
     }
   }
 
-  async function generateComfyTestImage() {
+  function selectBundledComfyWorkflow(workflowPath: string) {
     const connection = connectionFromEditingConnection();
     if (connection.kind !== 'comfyui') {
-      setConnectionStatus('Choose a ComfyUI provider before generating an image.');
+      setConnectionStatus('Choose a ComfyUI provider before selecting a workflow.');
+      return;
+    }
+    const workflow = bundledComfyWorkflows.find((entry) => entry.apiWorkflowPath === workflowPath);
+    const role = comfyConnectionRole(connection);
+    if (!workflow || workflow.role !== role) {
+      setConnectionStatus('Choose a workflow that matches the ComfyUI provider role.');
+      return;
+    }
+    const nextConnection: ConnectionPreset = {
+      ...connection,
+      comfyWorkflowPath: workflow.apiWorkflowPath,
+      comfyWorkflowSetupConfirmed: false,
+    };
+    setConnections((current) =>
+      current.map((entry) => (entry.id === nextConnection.id ? nextConnection : entry)),
+    );
+    setEditingConnection(nextConnection);
+    setComfyWorkflowInspection(null);
+    setPendingComfyWorkflowRepair(null);
+    setComfyWorkflowRepairStatus('');
+    setConnectionStatus(`ComfyUI workflow selected: ${workflow.label}. Open the normal workflow in ComfyUI first.`);
+  }
+
+  function confirmComfyWorkflowSetup() {
+    const connection = connectionFromEditingConnection();
+    if (connection.kind !== 'comfyui') {
+      setConnectionStatus('Choose a ComfyUI provider before confirming setup.');
+      return;
+    }
+    const nextConnection: ConnectionPreset = {
+      ...connection,
+      comfyWorkflowSetupConfirmed: true,
+    };
+    setConnections((current) =>
+      current.map((entry) => (entry.id === nextConnection.id ? nextConnection : entry)),
+    );
+    setEditingConnection(nextConnection);
+    setComfyWorkflowInspection(null);
+    setPendingComfyWorkflowRepair(null);
+    setComfyWorkflowRepairStatus('');
+    setConnectionStatus('ComfyUI setup confirmed. Provider settings are available.');
+    void checkProviderConnection(nextConnection, { showStatus: true });
+    void inspectComfyWorkflow(nextConnection, { showStatus: false });
+    if (isComfyImageConnection(nextConnection)) {
+      void loadComfyModelLists(nextConnection);
+    }
+  }
+
+  async function generateComfyTestImage() {
+    const connection = connectionFromEditingConnection();
+    if (!isComfyImageConnection(connection)) {
+      setConnectionStatus('Choose a ComfyUI image provider before generating an image.');
       return;
     }
     const missingFields = missingComfySetupFields(connection);
@@ -1220,7 +1536,7 @@ export function useProviderConnections({
       notifySystem('warning', message);
       return;
     }
-    const workflowPath = connection.comfyWorkflowPath || defaultComfyWorkflowPath;
+    const workflowPath = comfyWorkflowPathForConnection(connection);
     const inspection = comfyWorkflowInspection?.workflowPath === workflowPath
       ? comfyWorkflowInspection
       : await inspectComfyWorkflow(connection);
@@ -1272,9 +1588,9 @@ export function useProviderConnections({
   }
 
   async function loadCharacterComfyLoras(providerId: string) {
-    const connection = connections.find((entry) => entry.id === providerId && entry.kind === 'comfyui');
+    const connection = connections.find((entry) => entry.id === providerId && isComfyImageConnection(entry));
     if (!connection) {
-      throw new Error('Choose a ComfyUI provider first.');
+      throw new Error('Choose a ComfyUI image provider first.');
     }
     const cacheKey = `${connection.id}|${connection.baseUrl}`;
     const cachedLoras = characterComfyLoraCacheRef.current[cacheKey];
@@ -1321,9 +1637,9 @@ export function useProviderConnections({
     appearance: string;
     scenarioPrompt: string;
   }) {
-    const connection = connections.find((entry) => entry.id === request.providerId && entry.kind === 'comfyui');
+    const connection = connections.find((entry) => entry.id === request.providerId && isComfyImageConnection(entry));
     if (!connection) {
-      throw new Error('Choose a ComfyUI provider first.');
+      throw new Error('Choose a ComfyUI image provider first.');
     }
     const missingFields = missingComfySetupFields(connection);
     if (missingFields.length > 0) {
@@ -1339,7 +1655,7 @@ export function useProviderConnections({
     await unloadLocalLlmModelsForComfy('Local LLM unload before character preview failed');
     const result = await window.rpgraph.runComfyWorkflowPath({
       baseUrl: connection.baseUrl,
-      workflowPath: connection.comfyWorkflowPath || defaultComfyWorkflowPath,
+      workflowPath: comfyWorkflowPathForConnection(connection),
       width: connection.comfyWidth ?? defaultComfyWidth,
       height: connection.comfyHeight ?? defaultComfyHeight,
       prompt,
@@ -1358,6 +1674,52 @@ export function useProviderConnections({
     return result.images.map((image) => ({
       dataUrl: image.dataUrl,
       filename: image.filename,
+    }));
+  }
+
+  async function generateCharacterVoicePreview(request: {
+    providerId: string;
+    speechText: string;
+    sampleDataUrl: string;
+  }) {
+    const connection = connections.find((entry) => entry.id === request.providerId && isComfyVoiceConnection(entry));
+    if (!connection) {
+      throw new Error('Choose a ComfyUI voice provider first.');
+    }
+    const speechText = request.speechText.trim();
+    if (!speechText) {
+      throw new Error('Enter a text to speak first.');
+    }
+    if (!request.sampleDataUrl) {
+      throw new Error('Upload a voice sample for this character first.');
+    }
+    await unloadLocalLlmModelsForComfy('Local LLM unload before voice preview failed');
+    beginVoiceGeneration();
+    let result: Awaited<ReturnType<typeof window.rpgraph.runComfyVoiceWorkflowPath>>;
+    try {
+      result = await window.rpgraph.runComfyVoiceWorkflowPath({
+        baseUrl: connection.baseUrl,
+        workflowPath: comfyWorkflowPathForConnection(connection),
+        speechText,
+        sampleDataUrl: request.sampleDataUrl,
+        deleteOutputs: connection.comfyDeleteVoiceOutputs !== false,
+        timeoutMs: 300000,
+      });
+    } finally {
+      endVoiceGeneration();
+    }
+    if (result.cleanupFailed) {
+      notifyVoiceCleanupFailure(connection);
+    }
+    updateProviderHealth(connection.id, {
+      status: 'online',
+      detail: `Generated ${result.audio.length} voice clip${result.audio.length === 1 ? '' : 's'}.`,
+      capabilities: { voice: true },
+      checkedAt: providerCheckedAt(),
+    });
+    return result.audio.map((clip) => ({
+      dataUrl: clip.dataUrl,
+      filename: clip.filename,
     }));
   }
 
@@ -1396,6 +1758,32 @@ export function useProviderConnections({
       setComfyProviderActionActive(null);
     }
   }
+
+  const unloadAllProviderModelsForClose = useCallback(async () => {
+    const failures: string[] = [];
+    await Promise.all(
+      connections.map(async (connection) => {
+        try {
+          if (connection.kind === 'comfyui') {
+            await window.rpgraph.freeComfyMemory({ baseUrl: connection.baseUrl });
+            return;
+          }
+          if (isLmStudioConnection(connection)) {
+            await window.rpgraph.unloadLmStudioModels(connection);
+            return;
+          }
+          if (isOllamaConnection(connection)) {
+            await window.rpgraph.unloadOllamaModels(connection);
+          }
+        } catch (error) {
+          failures.push(`${connection.label}: ${error instanceof Error ? error.message : String(error)}`);
+        }
+      }),
+    );
+    if (failures.length > 0) {
+      notifySystem('warning', `Provider unload before close failed: ${failures.join('; ')}`);
+    }
+  }, [connections, notifySystem]);
 
   async function loadLmStudioModel() {
     const connection = connectionFromEditingConnection();
@@ -1569,9 +1957,11 @@ export function useProviderConnections({
     setComfyWorkflowRepairStatus('');
     setConnectionStatus('');
     void checkProviderConnection(connection, { showStatus: true });
-    if (connection.kind === 'comfyui') {
+    if (connection.kind === 'comfyui' && connection.comfyWorkflowSetupConfirmed === true) {
       void inspectComfyWorkflow(connection, { showStatus: false });
-      void loadComfyModelLists(connection);
+      if (isComfyImageConnection(connection)) {
+        void loadComfyModelLists(connection);
+      }
     }
   }
 
@@ -1594,9 +1984,22 @@ export function useProviderConnections({
     } else if (field === 'model' && isOpenRouterConnection(nextConnection)) {
       const modelDetails = openRouterModelsByConnectionIdRef.current[nextConnection.id] ?? [];
       nextConnection = connectionWithOpenRouterCapabilities(nextConnection, modelDetails);
+      const selectedModel = modelDetails.find((model) => model.id === nextConnection.model);
+      nextConnection.ttsVoice = selectedModel?.supportedVoices.length
+        ? selectedModel.supportedVoices.includes(nextConnection.ttsVoice ?? '')
+          ? nextConnection.ttsVoice
+          : selectedModel.supportedVoices[0]
+        : undefined;
       updateProviderHealth(nextConnection.id, {
         ...(providerHealthByIdRef.current[nextConnection.id] ?? { status: 'unknown' as const }),
         capabilities: openRouterCapabilitiesForConnection(nextConnection, modelDetails),
+      });
+    } else if (field === 'model' && isGeminiConnection(nextConnection)) {
+      const modelDetails = geminiModelsByConnectionIdRef.current[nextConnection.id] ?? [];
+      nextConnection = connectionWithGeminiCapabilities(nextConnection, modelDetails);
+      updateProviderHealth(nextConnection.id, {
+        ...(providerHealthByIdRef.current[nextConnection.id] ?? { status: 'unknown' as const }),
+        capabilities: geminiCapabilitiesForConnection(nextConnection, modelDetails),
       });
     } else if (
       nextConnection.kind === 'comfyui' &&
@@ -1641,8 +2044,20 @@ export function useProviderConnections({
       ? ollamaCapabilitiesForConnection(editingConnection, ollamaModelsByConnectionId[editingConnection.id] ?? [])
       : isOpenRouterConnection(editingConnection)
         ? openRouterCapabilitiesForConnection(editingConnection, openRouterModelsByConnectionId[editingConnection.id] ?? [])
+        : isGeminiConnection(editingConnection)
+          ? geminiCapabilitiesForConnection(editingConnection, geminiModelsByConnectionId[editingConnection.id] ?? [])
         : providerHealthById[editingConnection.id]?.capabilities;
-  const editingComfyWorkflowPath = editingConnection.comfyWorkflowPath || defaultComfyWorkflowPath;
+  const editingConnectionSupportedVoices = isOpenRouterConnection(editingConnection)
+    ? openRouterModelsByConnectionId[editingConnection.id]
+        ?.find((model) => model.id === editingConnection.model)
+        ?.supportedVoices ?? []
+    : [];
+  const editingConnectionSupportedParameters = isOpenRouterConnection(editingConnection)
+    ? openRouterModelsByConnectionId[editingConnection.id]
+        ?.find((model) => model.id === editingConnection.model)
+        ?.supportedParameters ?? []
+    : [];
+  const editingComfyWorkflowPath = comfyWorkflowPathForConnection(editingConnection);
   const comfyWorkflowRepairReady = !!pendingComfyWorkflowRepair && pendingComfyWorkflowRepair.workflowPath === editingComfyWorkflowPath;
   const comfyWorkflowRepairInspection = pendingComfyWorkflowRepair?.workflowPath === editingComfyWorkflowPath
     ? pendingComfyWorkflowRepair.inspection
@@ -1653,7 +2068,9 @@ export function useProviderConnections({
       ? 'Ollama'
       : isOpenRouterConnection(editingConnection)
         ? 'OpenRouter'
-        : undefined;
+        : isGeminiConnection(editingConnection)
+          ? 'Google Gemini'
+          : undefined;
 
   return {
     showConnections,
@@ -1671,20 +2088,26 @@ export function useProviderConnections({
     providerHealthById,
     lmStudioModelsByConnectionId,
     openRouterModelsByConnectionId,
+    geminiModelsByConnectionId,
     ollamaModelsByConnectionId,
     comfyProviderActionActive,
+    voiceGenerationActive,
     lmStudioModelActionActive,
     ollamaModelActionActive,
     editingConnectionCapabilities,
+    editingConnectionSupportedVoices,
+    editingConnectionSupportedParameters,
     comfyWorkflowRepairStatus,
     comfyWorkflowRepairReady,
     comfyWorkflowRepairInspection,
     modelCapabilitiesSourceLabel,
     openConnectionManager,
+    openOpenRouterTtsSetup,
     closeConnectionManager,
     selectConnection,
     newConnection,
     applyProviderPreset,
+    applyComfyConnectionRole,
     editConnection,
     loadConnectionModels,
     deleteConnection,
@@ -1692,6 +2115,8 @@ export function useProviderConnections({
     loadComfyModelLists,
     connectionFromEditingConnection,
     selectComfyWorkflow,
+    selectBundledComfyWorkflow,
+    confirmComfyWorkflowSetup,
     repairComfyWorkflow,
     applyComfyWorkflowRepair,
     generateComfyTestImage,
@@ -1700,12 +2125,14 @@ export function useProviderConnections({
     unloadLmStudioModels,
     loadOllamaModel,
     unloadOllamaModels,
+    unloadAllProviderModelsForClose,
     applyConnectionToAllNodes,
     checkProviderConnection,
     checkProviderConnectionById,
     checkProviderConnections,
     loadCharacterComfyLoras,
     generateCharacterComfyPreview,
+    generateCharacterVoicePreview,
     unloadCharacterComfyModels,
     resolveConnection,
   };

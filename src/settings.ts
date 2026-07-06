@@ -2,11 +2,14 @@ import { useEffect, useState, type Dispatch, type SetStateAction } from 'react';
 import type {
   AppSettings,
   ComfyLoraSlot,
+  ComfyNarratorVoice,
   ConnectionReasoningEffort,
   ConnectionPreset,
+  DialogueVoiceMode,
   RpDateTimeFormat,
   RpWeekdayLanguage,
 } from './types';
+import { bundledComfyNarratorVoice } from './comfy/defaultNarratorVoice';
 import {
   promptActionConfigs,
   promptActionRuntimeSettings,
@@ -58,6 +61,26 @@ const rpWeekdayLanguages = [
 const defaultGlassDesignEnabled = true;
 const defaultRetryFormatErrorsEnabled = true;
 const defaultGlassDesignOpacity = 0.6;
+const defaultDialogueVoiceMode: DialogueVoiceMode = 'click';
+const dialogueVoiceModes = ['click', 'preload', 'read-aloud', 'narrator-only'] as const satisfies readonly DialogueVoiceMode[];
+
+function validDialogueVoiceMode(value: unknown): DialogueVoiceMode {
+  return dialogueVoiceModes.includes(value as DialogueVoiceMode)
+    ? (value as DialogueVoiceMode)
+    : defaultDialogueVoiceMode;
+}
+
+function validComfyNarratorVoice(value: unknown): ComfyNarratorVoice | undefined {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) {
+    return undefined;
+  }
+  const voice = value as Partial<ComfyNarratorVoice>;
+  return typeof voice.name === 'string' &&
+    typeof voice.dataUrl === 'string' &&
+    voice.dataUrl.startsWith('data:audio/')
+    ? { name: voice.name, dataUrl: voice.dataUrl }
+    : undefined;
+}
 const defaultUiScale = 1;
 export const minUiScale = 0.5;
 export const maxUiScale = 2;
@@ -157,7 +180,80 @@ const connectionStorageKey = 'rpgraph.connections';
 export const defaultChatPanelWidth = 779;
 const defaultConnectionReasoningEffort: ConnectionReasoningEffort = 'none';
 export const defaultComfyBaseUrl = 'http://127.0.0.1:8188';
-export const defaultComfyWorkflowPath = 'comfy-workflows/Krea2.json';
+export type BundledComfyWorkflow = {
+  id: string;
+  label: string;
+  role: 'image' | 'voice';
+  apiWorkflowPath: string;
+  setupWorkflowPath: string;
+  description: string;
+};
+
+const discoveredImageWorkflowPaths = Object.keys(
+  import.meta.glob('/comfy-workflows/api-workflows-with-variables/image/*.json'),
+).map((path) => path.replace(/^\//, ''));
+const discoveredVoiceWorkflowPaths = Object.keys(
+  import.meta.glob('/comfy-workflows/api-workflows-with-variables/voice/*.json'),
+).map((path) => path.replace(/^\//, ''));
+
+function sortComfyWorkflowPaths(paths: string[]) {
+  return [...paths].sort((left, right) => {
+    const leftDefault = left.includes('/higgs_audio_v3-tts.json') || left.includes('/Krea2.json');
+    const rightDefault = right.includes('/higgs_audio_v3-tts.json') || right.includes('/Krea2.json');
+    if (leftDefault !== rightDefault) {
+      return leftDefault ? -1 : 1;
+    }
+    return left.localeCompare(right, undefined, { numeric: true, sensitivity: 'base' });
+  });
+}
+
+function workflowFileLabel(path: string) {
+  const fileName = path.split('/').pop()?.replace(/\.json$/i, '') ?? path;
+  return fileName
+    .replace(/[_-]+/g, ' ')
+    .replace(/\btts\b/gi, 'TTS')
+    .replace(/\bv3\b/gi, 'V3')
+    .replace(/\bpt\b/gi, 'PT')
+    .replace(/\b(\d+(?:\.\d+)?b)\b/gi, (match) => match.toUpperCase())
+    .replace(/\b[a-z]/g, (match) => match.toUpperCase())
+    .trim();
+}
+
+function comfyWorkflowFromPath(path: string, role: 'image' | 'voice'): BundledComfyWorkflow {
+  const label = workflowFileLabel(path);
+  return {
+    id: `${role}-${path.split('/').pop()?.replace(/\.json$/i, '').toLocaleLowerCase() ?? label.toLocaleLowerCase()}`,
+    label: role === 'image' && label === 'Krea2' ? 'Krea2 Image Workflow' : label,
+    role,
+    apiWorkflowPath: path,
+    setupWorkflowPath: `comfy-workflows/normal-comfyui-workflows/${role}`,
+    description: role === 'voice'
+      ? 'Voice workflow with text and voice-sample variables.'
+      : 'Image generation workflow with RPGraph variables.',
+  };
+}
+
+export const bundledComfyWorkflows: BundledComfyWorkflow[] = [
+  ...sortComfyWorkflowPaths(discoveredImageWorkflowPaths).map((path) => comfyWorkflowFromPath(path, 'image')),
+  ...sortComfyWorkflowPaths(discoveredVoiceWorkflowPaths).map((path) => comfyWorkflowFromPath(path, 'voice')),
+];
+export const defaultComfyWorkflowPath = bundledComfyWorkflows.find((workflow) => workflow.role === 'image')?.apiWorkflowPath ??
+  'comfy-workflows/api-workflows-with-variables/image/Krea2.json';
+export const defaultComfyVoiceWorkflowPath = bundledComfyWorkflows.find((workflow) => workflow.role === 'voice')?.apiWorkflowPath ??
+  'comfy-workflows/api-workflows-with-variables/voice/higgs_audio_v3-tts.json';
+
+function defaultComfyWorkflowPathForRole(role: 'image' | 'voice' | null) {
+  return role === 'voice' ? defaultComfyVoiceWorkflowPath : defaultComfyWorkflowPath;
+}
+
+export function bundledComfyWorkflowPathForRole(path: string | undefined, role: 'image' | 'voice' | null) {
+  const trimmedPath = path?.trim() ?? '';
+  return bundledComfyWorkflows.some((workflow) =>
+    workflow.role === role && workflow.apiWorkflowPath === trimmedPath
+  )
+    ? trimmedPath
+    : defaultComfyWorkflowPathForRole(role);
+}
 export const defaultComfyWidth = 832;
 export const defaultComfyHeight = 1216;
 export const defaultComfyPrompt = '';
@@ -253,7 +349,7 @@ function validComfyStrength(value: unknown, fallback = 1) {
   if (typeof value !== 'number' || !Number.isFinite(value)) {
     return fallback;
   }
-  return Math.min(2, Math.max(-2, value));
+  return Math.max(0, value);
 }
 
 function validComfyModelName(value: unknown, fallback: string) {
@@ -321,39 +417,65 @@ export function characterComfyLoraSlots(value: unknown, loraName: string): Comfy
 
 function normalizedConnectionPreset(connection: ConnectionPreset): ConnectionPreset {
   const kind = connection.kind === 'comfyui' ? 'comfyui' : 'llm';
+  // Stored ComfyUI presets without a role predate voice support and were image presets.
+  const comfyRole = kind === 'comfyui'
+    ? (connection.comfyRole === 'voice' ? 'voice' as const : 'image' as const)
+    : undefined;
+  const isComfyImage = comfyRole === 'image';
   return {
     ...connection,
     kind,
+    comfyRole,
     providerKind: kind === 'comfyui'
       ? undefined
       : validLlmProviderKind(connection.providerKind) ?? inferredProviderKind(connection),
     apiKey: kind === 'comfyui' ? '' : connection.apiKey,
     model: kind === 'comfyui' ? '' : connection.model,
+    ttsVoice: kind === 'comfyui' || typeof connection.ttsVoice !== 'string'
+      ? undefined
+      : connection.ttsVoice.trim() || undefined,
+    ttsTemperature: kind === 'comfyui'
+      ? undefined
+      : validSamplingValue(connection.ttsTemperature, 0, 2),
+    ttsStreamAudio: kind === 'comfyui' ? undefined : connection.ttsStreamAudio === true,
+    ttsAudioProfile: kind === 'comfyui' ? undefined : connection.ttsAudioProfile?.trim() || undefined,
+    ttsStyle: kind === 'comfyui' ? undefined : connection.ttsStyle?.trim() || undefined,
+    ttsAccent: kind === 'comfyui' ? undefined : connection.ttsAccent?.trim() || undefined,
+    ttsPace: kind === 'comfyui' ? undefined : connection.ttsPace?.trim() || undefined,
     comfyWorkflowPath: kind === 'comfyui'
-      ? connection.comfyWorkflowPath || defaultComfyWorkflowPath
+      ? bundledComfyWorkflowPathForRole(connection.comfyWorkflowPath, comfyRole ?? null)
       : undefined,
-    comfyWidth: kind === 'comfyui'
+    comfyWorkflowSetupConfirmed: kind === 'comfyui'
+      ? connection.comfyWorkflowSetupConfirmed === true
+      : undefined,
+    comfyNarratorVoice: comfyRole === 'voice'
+      ? validComfyNarratorVoice(connection.comfyNarratorVoice) ?? bundledComfyNarratorVoice()
+      : undefined,
+    comfyDeleteVoiceOutputs: comfyRole === 'voice'
+      ? connection.comfyDeleteVoiceOutputs !== false
+      : undefined,
+    comfyWidth: isComfyImage
       ? validComfyDimension(connection.comfyWidth, defaultComfyWidth)
       : undefined,
-    comfyHeight: kind === 'comfyui'
+    comfyHeight: isComfyImage
       ? validComfyDimension(connection.comfyHeight, defaultComfyHeight)
       : undefined,
-    comfyPrompt: kind === 'comfyui'
+    comfyPrompt: isComfyImage
       ? validCurrentComfyPrompt(connection.comfyPrompt)
       : undefined,
-    comfyCheckpointName: kind === 'comfyui'
+    comfyCheckpointName: isComfyImage
       ? validComfyModelName(connection.comfyCheckpointName, defaultComfyCheckpointName)
       : undefined,
-    comfyDiffusionModelName: kind === 'comfyui'
+    comfyDiffusionModelName: isComfyImage
       ? validComfyModelName(connection.comfyDiffusionModelName, defaultComfyDiffusionModelName)
       : undefined,
-    comfyVaeName: kind === 'comfyui'
+    comfyVaeName: isComfyImage
       ? validComfyModelName(connection.comfyVaeName, defaultComfyVaeName)
       : undefined,
-    comfyTextEncoderName: kind === 'comfyui'
+    comfyTextEncoderName: isComfyImage
       ? validComfyModelName(connection.comfyTextEncoderName, defaultComfyTextEncoderName)
       : undefined,
-    comfyLoraSlots: kind === 'comfyui'
+    comfyLoraSlots: isComfyImage
       ? validComfyLoraSlots(connection.comfyLoraSlots)
       : undefined,
     reasoningEffort: kind === 'comfyui'
@@ -407,7 +529,18 @@ function isConnectionPreset(value: unknown): value is ConnectionPreset {
     typeof connection.baseUrl === 'string' &&
     typeof connection.apiKey === 'string' &&
     typeof connection.model === 'string' &&
+    (connection.ttsVoice === undefined || typeof connection.ttsVoice === 'string') &&
+    (connection.ttsTemperature === undefined ||
+      (typeof connection.ttsTemperature === 'number' && Number.isFinite(connection.ttsTemperature))) &&
+    (connection.ttsStreamAudio === undefined || typeof connection.ttsStreamAudio === 'boolean') &&
+    (connection.ttsAudioProfile === undefined || typeof connection.ttsAudioProfile === 'string') &&
+    (connection.ttsStyle === undefined || typeof connection.ttsStyle === 'string') &&
+    (connection.ttsAccent === undefined || typeof connection.ttsAccent === 'string') &&
+    (connection.ttsPace === undefined || typeof connection.ttsPace === 'string') &&
     (connection.comfyWorkflowPath === undefined || typeof connection.comfyWorkflowPath === 'string') &&
+    (connection.comfyNarratorVoice === undefined ||
+      validComfyNarratorVoice(connection.comfyNarratorVoice) !== undefined) &&
+    (connection.comfyDeleteVoiceOutputs === undefined || typeof connection.comfyDeleteVoiceOutputs === 'boolean') &&
     (connection.comfyWidth === undefined || (typeof connection.comfyWidth === 'number' && Number.isFinite(connection.comfyWidth))) &&
     (connection.comfyHeight === undefined || (typeof connection.comfyHeight === 'number' && Number.isFinite(connection.comfyHeight))) &&
     (connection.comfyPrompt === undefined || typeof connection.comfyPrompt === 'string') &&
@@ -569,6 +702,12 @@ function isAppSettings(value: unknown): value is AppSettings {
         settings.options.uiScale <= maxUiScale)) &&
     (settings.options.retryFormatErrorsEnabled === undefined ||
       typeof settings.options.retryFormatErrorsEnabled === 'boolean') &&
+    (settings.options.dialogueVoiceMode === undefined ||
+      dialogueVoiceModes.includes(settings.options.dialogueVoiceMode)) &&
+    (settings.options.dialogueNarratorProviderId === undefined ||
+      typeof settings.options.dialogueNarratorProviderId === 'string') &&
+    (settings.options.dialogueCloneVoiceProviderId === undefined ||
+      typeof settings.options.dialogueCloneVoiceProviderId === 'string') &&
     (!settings.layout || validChatPanelWidth(settings.layout.chatPanelWidth) !== undefined)
   );
 }
@@ -632,6 +771,12 @@ type AppSettingsState = {
   setUiScale: Dispatch<SetStateAction<number>>;
   retryFormatErrorsEnabled: boolean;
   setRetryFormatErrorsEnabled: Dispatch<SetStateAction<boolean>>;
+  dialogueVoiceMode: DialogueVoiceMode;
+  setDialogueVoiceMode: Dispatch<SetStateAction<DialogueVoiceMode>>;
+  dialogueNarratorProviderId: string;
+  setDialogueNarratorProviderId: Dispatch<SetStateAction<string>>;
+  dialogueCloneVoiceProviderId: string;
+  setDialogueCloneVoiceProviderId: Dispatch<SetStateAction<string>>;
 };
 
 export function useAppSettings(): AppSettingsState {
@@ -683,6 +828,11 @@ export function useAppSettings(): AppSettingsState {
   const [retryFormatErrorsEnabled, setRetryFormatErrorsEnabled] = useState(
     defaultRetryFormatErrorsEnabled,
   );
+  const [dialogueVoiceMode, setDialogueVoiceMode] = useState<DialogueVoiceMode>(
+    defaultDialogueVoiceMode,
+  );
+  const [dialogueNarratorProviderId, setDialogueNarratorProviderId] = useState('');
+  const [dialogueCloneVoiceProviderId, setDialogueCloneVoiceProviderId] = useState('');
   const [settingsLoadComplete, setSettingsLoadComplete] = useState(false);
   const [settingsLoaded, setSettingsLoaded] = useState(false);
   const [settingsStatus, setSettingsStatus] = useState('');
@@ -768,6 +918,9 @@ export function useAppSettings(): AppSettingsState {
         setRetryFormatErrorsEnabled(
           result.settings.options.retryFormatErrorsEnabled ?? defaultRetryFormatErrorsEnabled,
         );
+        setDialogueVoiceMode(validDialogueVoiceMode(result.settings.options.dialogueVoiceMode));
+        setDialogueNarratorProviderId(result.settings.options.dialogueNarratorProviderId ?? '');
+        setDialogueCloneVoiceProviderId(result.settings.options.dialogueCloneVoiceProviderId ?? '');
         setChatPanelWidth(
           validChatPanelWidth(result.settings.layout?.chatPanelWidth) ?? defaultChatPanelWidth,
         );
@@ -828,6 +981,9 @@ export function useAppSettings(): AppSettingsState {
         nodeTextSize: validNodeTextSize(nodeTextSize),
         uiScale: validUiScale(uiScale),
         retryFormatErrorsEnabled,
+        dialogueVoiceMode,
+        dialogueNarratorProviderId,
+        dialogueCloneVoiceProviderId,
       },
       layout: {
         chatPanelWidth,
@@ -877,6 +1033,9 @@ export function useAppSettings(): AppSettingsState {
     nodeTextSize,
     uiScale,
     retryFormatErrorsEnabled,
+    dialogueVoiceMode,
+    dialogueNarratorProviderId,
+    dialogueCloneVoiceProviderId,
     settingsLoaded,
     settingsRecoveryNotice,
     apiKeyStorageNotice,
@@ -941,5 +1100,11 @@ export function useAppSettings(): AppSettingsState {
     setUiScale,
     retryFormatErrorsEnabled,
     setRetryFormatErrorsEnabled,
+    dialogueVoiceMode,
+    setDialogueVoiceMode,
+    dialogueNarratorProviderId,
+    setDialogueNarratorProviderId,
+    dialogueCloneVoiceProviderId,
+    setDialogueCloneVoiceProviderId,
   };
 }

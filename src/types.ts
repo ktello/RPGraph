@@ -22,20 +22,38 @@ export type ConnectionReasoningEffort =
 export type LlmProviderKind =
   | 'lm-studio'
   | 'ollama'
-  | 'openai'
   | 'openrouter'
-  | 'gemini'
-  | 'custom';
+  | 'gemini';
+
+export type ComfyConnectionRole = 'image' | 'voice';
+
+export type ComfyNarratorVoice = {
+  name: string;
+  dataUrl: string;
+};
+
+export type DialogueVoiceMode = 'click' | 'preload' | 'read-aloud' | 'narrator-only';
 
 export type ConnectionPreset = {
   id: string;
   kind?: 'llm' | 'comfyui';
+  comfyRole?: ComfyConnectionRole;
   providerKind?: LlmProviderKind;
   label: string;
   baseUrl: string;
   apiKey: string;
   model: string;
+  ttsVoice?: string;
+  ttsTemperature?: number;
+  ttsStreamAudio?: boolean;
+  ttsAudioProfile?: string;
+  ttsStyle?: string;
+  ttsAccent?: string;
+  ttsPace?: string;
   comfyWorkflowPath?: string;
+  comfyWorkflowSetupConfirmed?: boolean;
+  comfyNarratorVoice?: ComfyNarratorVoice;
+  comfyDeleteVoiceOutputs?: boolean;
   comfyWidth?: number;
   comfyHeight?: number;
   comfyPrompt?: string;
@@ -57,6 +75,7 @@ export type ProviderConnectionCapabilities = {
   vision?: boolean;
   tools?: boolean;
   image?: boolean;
+  voice?: boolean;
 };
 
 export type ProviderConnectionHealth = {
@@ -85,10 +104,19 @@ export type OpenRouterModelInfo = {
   id: string;
   name: string;
   vision: boolean;
+  text?: boolean;
+  image?: boolean;
+  voice?: boolean;
   inputModalities: string[];
   outputModalities: string[];
+  supportedVoices: string[];
+  supportedParameters: string[];
   contextLength?: number;
   pricing?: unknown;
+};
+
+export type GeminiModelInfo = OpenRouterModelInfo & {
+  supportedGenerationMethods: string[];
 };
 
 export type ComfyLoraSlot = {
@@ -563,6 +591,15 @@ export type OutputActionContextCapacityBar = {
   showLegend: boolean;
 };
 
+export type MessageVoiceClip = {
+  speakerName: string | null;
+  text: string;
+  dataUrl: string;
+  filename?: string;
+  source?: 'dialogue' | 'narration' | 'phone';
+  createdAt?: string;
+};
+
 export type MessageRecord = {
   id: number;
   role: 'user' | 'output' | 'error';
@@ -576,6 +613,7 @@ export type MessageRecord = {
   phoneMessage?: boolean;
   phoneFrom?: string;
   phoneTo?: string;
+  phoneVoiceMessage?: boolean;
   phoneAutoTurnSource?: 'narrator';
   embeddedPhoneMessages?: EmbeddedPhoneMessageLink[];
   embeddedPhoneTextBefore?: string;
@@ -608,6 +646,7 @@ export type MessageRecord = {
   turnPart?: 'input' | 'output';
   rpDateTime?: string;
   workflowVariableSetCommands?: WorkflowVariableSetCommand[];
+  voiceClips?: MessageVoiceClip[];
 };
 
 export type RpAppointment = {
@@ -725,6 +764,9 @@ export type AppSettings = {
     nodeTextSize?: 'small' | 'normal' | 'big';
     uiScale?: number;
     retryFormatErrorsEnabled?: boolean;
+    dialogueVoiceMode?: DialogueVoiceMode;
+    dialogueNarratorProviderId?: string;
+    dialogueCloneVoiceProviderId?: string;
   };
   layout?: {
     chatPanelWidth: number;

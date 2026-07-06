@@ -19,8 +19,10 @@ import {
   phoneConversationMessageViews,
 } from '../data-management/selectors';
 import { formatRpDateTimeParts, formatRpDayLabel } from '../workflow';
+import { dialogueSpeechText } from '../chat/dialogueVoiceSegments';
 import { phoneReplyVisibleText } from '../chat/phoneReplies';
 import { PhoneImagePicker } from './PhoneImagePicker';
+import { PhoneVoiceMessage } from './PhoneVoiceMessage';
 import { CharacterAvatar } from './CharacterAvatar';
 import { ImageContextControl } from './ImageContextControl';
 import {
@@ -80,6 +82,8 @@ type PhonePanelProps = {
   isRunning: boolean;
   canSend: boolean;
   inputLocked?: boolean;
+  voiceMessageSpeakerNames: ReadonlySet<string>;
+  onGenerateVoiceMessageClip: (request: { messageId: number; speakerName: string; text: string }) => Promise<string | null>;
   englishProcessingEnabled: boolean;
   rpTimeTrackingEnabled: boolean;
   phoneAuthorBadgesEnabled: boolean;
@@ -139,6 +143,8 @@ export function PhonePanel({
   isRunning,
   canSend,
   inputLocked = false,
+  voiceMessageSpeakerNames,
+  onGenerateVoiceMessageClip,
   englishProcessingEnabled,
   rpTimeTrackingEnabled,
   phoneAuthorBadgesEnabled,
@@ -207,6 +213,16 @@ export function PhonePanel({
     }
     const matchedCharacter = matchingPhoneName(storyCharacters, name);
     return matchedCharacter ? characterColors.get(matchedCharacter.name) : undefined;
+  }
+
+  function phoneVoiceClipDataUrl(message: MessageRecord, speakerName: string, text: string) {
+    const speechText = dialogueSpeechText(text);
+    return message.voiceClips?.find((clip) =>
+      clip.source === 'phone' &&
+      clip.speakerName === speakerName &&
+      clip.text === speechText &&
+      !!clip.dataUrl
+    )?.dataUrl;
   }
 
   return (
@@ -381,7 +397,25 @@ export function PhonePanel({
                               ))}
                             </div>
                           )}
-                          {view.visibleText && <span>{view.visibleText}</span>}
+                          {view.visibleText && (
+                            message.phoneVoiceMessage && voiceMessageSpeakerNames.has(view.senderName) ? (
+                              <PhoneVoiceMessage
+                                text={view.visibleText}
+                                clipDataUrl={phoneVoiceClipDataUrl(message, view.senderName, view.visibleText)}
+                                disabled={isRunning}
+                                disabledReason="Voice messages are unavailable while the chat is running."
+                                onGenerateClip={() =>
+                                  onGenerateVoiceMessageClip({
+                                    messageId: message.id,
+                                    speakerName: view.senderName,
+                                    text: view.visibleText,
+                                  })
+                                }
+                              />
+                            ) : (
+                              <span>{view.visibleText}</span>
+                            )
+                          )}
                           {message.phoneImageCaptionChange && (
                             <button
                               className="caption-change-chip"

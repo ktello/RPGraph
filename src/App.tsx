@@ -161,6 +161,9 @@ import {
 } from '@xyflow/react';
 import { StudioDialogs } from './dialogs/StudioDialogs';
 import { ComfyGeneratedImageDialog } from './comfy/ComfyGeneratedImageDialog';
+import { isComfyImageConnection, isComfyVoiceConnection } from './comfy/connectionRole';
+import { useDialogueVoice } from './chat/useDialogueVoice';
+import { latestOutputTurnMessages } from './chat/dialogueVoiceSegments';
 import { WelcomeDialog } from './components/WelcomeDialog';
 import {
   withSourceNodeStatusConnectionColors,
@@ -174,6 +177,7 @@ import type { NodeLlmApi } from './llm/NodeLlmApi';
 import {
   isLmStudioConnection,
   isOllamaConnection,
+  isOpenRouterConnection,
 } from './llm/providerKind';
 import { TextMetricsApi } from './llm/tokenMetrics';
 import { NodeActionsContext } from './nodes/NodeActionsContext';
@@ -245,6 +249,7 @@ import type {
   ImageCaptionChange,
   InputActionSelection,
   MessageRecord,
+  MessageVoiceClip,
   OutputActionContextCapacityBar,
   ConnectionPreset,
   RpAppointment,
@@ -665,7 +670,7 @@ type PreviewImageState = {
   image: ChatImageAttachment;
 };
 
-type WorkflowCapabilityKind = 'text' | 'vision' | 'image';
+type WorkflowCapabilityKind = 'text' | 'vision' | 'image' | 'audio';
 type WorkflowCapabilityTone = 'ready' | 'missing';
 
 type WorkflowCapabilityIndicator = {
@@ -684,6 +689,15 @@ function WorkflowCapabilityIcon({ kind }: { kind: WorkflowCapabilityKind }) {
       <svg viewBox="0 0 24 24" aria-hidden="true">
         <path d="M1 12s4-8 11-8 11 8 11 8-4 8-11 8-11-8-11-8z" />
         <circle cx="12" cy="12" r="3" />
+      </svg>
+    );
+  }
+  if (kind === 'audio') {
+    return (
+      <svg viewBox="0 0 24 24" aria-hidden="true">
+        <polygon points="4 9 8 9 13 4 13 20 8 15 4 15" />
+        <path d="M17 9.5a4 4 0 0 1 0 5" />
+        <path d="M19.5 7a7.5 7.5 0 0 1 0 10" />
       </svg>
     );
   }
@@ -796,6 +810,12 @@ function App() {
     setUiScale,
     retryFormatErrorsEnabled,
     setRetryFormatErrorsEnabled,
+    dialogueVoiceMode,
+    setDialogueVoiceMode,
+    dialogueNarratorProviderId,
+    setDialogueNarratorProviderId,
+    dialogueCloneVoiceProviderId,
+    setDialogueCloneVoiceProviderId,
   } = useAppSettings();
   const {
     appliedUiScale,
@@ -1044,6 +1064,23 @@ function App() {
     workflowVariablesRef: workflowSettingsValuesRef,
     setWorkflowVariables: replaceWorkflowSettingsValues,
   });
+  const storeMessageVoiceClip = useCallback((messageId: number, clip: MessageVoiceClip) => {
+    const existingMessage = messagesRef.current.find((message) => message.id === messageId);
+    if (!existingMessage) {
+      return;
+    }
+    const existingClips = existingMessage.voiceClips ?? [];
+    if (existingClips.some((entry) =>
+      entry.speakerName === clip.speakerName &&
+      entry.text === clip.text &&
+      entry.source === clip.source
+    )) {
+      return;
+    }
+    updateMessage(messageId, {
+      voiceClips: [...existingClips, clip],
+    });
+  }, [messagesRef, updateMessage]);
   const {
     turnTraces,
     recordTurnTrace,
@@ -1218,25 +1255,31 @@ function App() {
     connectionStatus,
     providerHealthById,
     comfyProviderActionActive,
+    voiceGenerationActive,
     lmStudioModelActionActive,
     ollamaModelActionActive,
     editingConnectionCapabilities,
+    editingConnectionSupportedVoices,
+    editingConnectionSupportedParameters,
     comfyWorkflowRepairStatus,
     comfyWorkflowRepairReady,
     comfyWorkflowRepairInspection,
     modelCapabilitiesSourceLabel,
     openConnectionManager,
+    openOpenRouterTtsSetup,
     closeConnectionManager,
     selectConnection,
     newConnection,
     applyProviderPreset,
+    applyComfyConnectionRole,
     editConnection,
     loadConnectionModels,
     deleteConnection,
     checkConnectionModels,
     loadComfyModelLists,
     connectionFromEditingConnection,
-    selectComfyWorkflow,
+    selectBundledComfyWorkflow,
+    confirmComfyWorkflowSetup,
     repairComfyWorkflow,
     applyComfyWorkflowRepair,
     generateComfyTestImage,
@@ -1245,11 +1288,14 @@ function App() {
     unloadLmStudioModels,
     loadOllamaModel,
     unloadOllamaModels,
+    unloadAllProviderModelsForClose,
     applyConnectionToAllNodes,
+    checkProviderConnection,
     checkProviderConnectionById,
     checkProviderConnections,
     loadCharacterComfyLoras,
     generateCharacterComfyPreview,
+    generateCharacterVoicePreview,
     unloadCharacterComfyModels,
     resolveConnection,
   } = useProviderConnections({
@@ -1262,6 +1308,118 @@ function App() {
     setNodes,
     notifySystem,
   });
+  const narratorProviderOptions = connections.flatMap((connection) => {
+    if (isComfyVoiceConnection(connection) && connection.comfyNarratorVoice?.dataUrl) {
+      return [{ value: connection.id, label: `${connection.label} — ComfyUI narrator` }];
+    }
+    const capabilities = providerHealthById[connection.id]?.capabilities;
+    if (
+      isOpenRouterConnection(connection) &&
+      capabilities?.voice === true &&
+      capabilities.text !== true &&
+      connection.ttsVoice
+    ) {
+      return [{ value: connection.id, label: `${connection.label} — ${connection.ttsVoice}` }];
+    }
+    return [];
+  });
+  const resolvedNarratorProviderId = narratorProviderOptions.some(
+    (option) => option.value === dialogueNarratorProviderId,
+  )
+    ? dialogueNarratorProviderId
+    : narratorProviderOptions[0]?.value ?? '';
+  const cloneVoiceProviderOptions = connections
+    .filter(isComfyVoiceConnection)
+    .map((connection) => ({ value: connection.id, label: connection.label }));
+  const resolvedCloneVoiceProviderId = cloneVoiceProviderOptions.some(
+    (option) => option.value === dialogueCloneVoiceProviderId,
+  )
+    ? dialogueCloneVoiceProviderId
+    : cloneVoiceProviderOptions[0]?.value ?? '';
+  const {
+    dialogueVoiceSpeakerNames,
+    narratorVoiceReady,
+    narratorOnlyReady,
+    apiNarratorGenerationActive,
+    activeDialogueVoiceKey,
+    readAloudActive,
+    speakDialogue,
+    preloadTurnVoices,
+    readMessagesAloud,
+    readMessagesAsNarrator,
+    readTextAsApiNarratorEarly,
+    generateVoiceMessageClip,
+    stopDialogueVoice,
+  } = useDialogueVoice({
+    storyCharacters,
+    connections,
+    messages,
+    englishProcessingEnabled,
+    cloneVoiceProviderId: resolvedCloneVoiceProviderId,
+    narratorOnlyProviderId: resolvedNarratorProviderId,
+    generateVoiceClip: generateCharacterVoicePreview,
+    generateApiNarratorClip: (connection, input, onChunk) =>
+      window.rpgraph.generateOpenRouterSpeech({ connection, input }, onChunk),
+    unloadVoiceModels: unloadCharacterComfyModels,
+    onVoiceClipGenerated: storeMessageVoiceClip,
+    notifySystem,
+  });
+  const dialogueVoicePreloadDisabledReason = !connections.some(isComfyVoiceConnection)
+    ? 'Requires a ComfyUI voice provider.'
+    : dialogueVoiceSpeakerNames.size === 0
+      ? 'Requires at least one character voice sample in the storybook.'
+      : null;
+  const charactersWithoutVoice = storyCharacters
+    .filter((character) => !character.voiceConfig?.sampleDataUrl)
+    .map((character) => character.name);
+  const dialogueVoiceReadAloudDisabledReason =
+    dialogueVoicePreloadDisabledReason ??
+    (!narratorVoiceReady
+      ? 'Requires a narrator voice sample in the ComfyUI voice provider.'
+      : charactersWithoutVoice.length > 0
+        ? `Requires a voice sample for every storybook character (missing: ${charactersWithoutVoice.join(', ')}).`
+      : null);
+  const dialogueNarratorOnlyDisabledReason = narratorOnlyReady
+    ? null
+    : 'Requires a configured ComfyUI narrator or OpenRouter TTS provider.';
+
+  useEffect(() => {
+    return window.rpgraph.onWindowCleanupBeforeClose(async () => {
+      try {
+        await unloadAllProviderModelsForClose();
+      } finally {
+        await window.rpgraph.finishWindowCloseCleanup();
+      }
+    });
+  }, [unloadAllProviderModelsForClose]);
+  const wasRunningForDialogueVoiceRef = useRef(false);
+  useEffect(() => {
+    const wasRunning = wasRunningForDialogueVoiceRef.current;
+    wasRunningForDialogueVoiceRef.current = isRunning;
+    if (isRunning === wasRunning) {
+      return;
+    }
+    if (isRunning) {
+      // Voice generation unloads local LLM models; never keep it running into a chat run.
+      stopDialogueVoice();
+      return;
+    }
+    if (dialogueVoiceMode === 'preload') {
+      void preloadTurnVoices(latestOutputTurnMessages(messages));
+    } else if (dialogueVoiceMode === 'read-aloud') {
+      void readMessagesAloud(latestOutputTurnMessages(messages));
+    } else if (dialogueVoiceMode === 'narrator-only') {
+      void readMessagesAsNarrator(latestOutputTurnMessages(messages));
+    }
+  }, [
+    isRunning,
+    dialogueVoiceMode,
+    messages,
+    preloadTurnVoices,
+    readMessagesAloud,
+    readMessagesAsNarrator,
+    stopDialogueVoice,
+  ]);
   const {
     showFiles,
     setShowFiles,
@@ -4166,6 +4324,7 @@ function App() {
       phoneMessage: true,
       phoneFrom: canonicalMessage.from,
       phoneTo: canonicalMessage.to,
+      phoneVoiceMessage: canonicalMessage.isVoiceMessage || undefined,
       phoneAutoTurnSource,
       phoneImageIds,
       phoneImageDescription: imageDescription,
@@ -4292,6 +4451,10 @@ function App() {
     nodeHasVision,
     checkProviderConnections,
     notifySystem,
+    onRpOutputReady:
+      dialogueVoiceMode === 'narrator-only' && !englishProcessingEnabled
+        ? (text) => { void readTextAsApiNarratorEarly(text); }
+        : undefined,
     updateRuntimeNode,
     clearAllRunActiveTimers,
     updateWorkflowComfyGenerationActive,
@@ -5068,6 +5231,9 @@ function App() {
     const explicitComfyProviderIds = new Set<string>();
     let usesVision = false;
     let usesImage = false;
+    const usesAudio =
+      dialogueVoiceMode === 'narrator-only' ||
+      storyCharacters.some((character) => !!character.voiceConfig?.sampleDataUrl);
 
     const connectionIdForNode = (node: WorkflowNode) => {
       const connectionId = typeof node.data.connectionId === 'string' && node.data.connectionId.trim()
@@ -5146,12 +5312,26 @@ function App() {
       (connection, connectionId) =>
         isLlmConnection(connection) && connection.vision === true && connectionIsOnline(connectionId),
     );
-    const comfyProviders = connections.filter((connection) => connection.kind === 'comfyui');
-    const anyImageConnected = comfyProviders.some((connection) => connectionIsOnline(connection.id));
+    const imageProviders = connections.filter(isComfyImageConnection);
+    const voiceProviders = connections.filter(isComfyVoiceConnection);
+    const anyImageConnected = imageProviders.some((connection) => connectionIsOnline(connection.id));
+    const anyApiVoiceConnected = connections.some((connection) => {
+      const capabilities = providerHealthById[connection.id]?.capabilities;
+      return isOpenRouterConnection(connection) &&
+        capabilities?.voice === true &&
+        capabilities.text !== true &&
+        connectionIsOnline(connection.id);
+    });
+    const selectedNarratorConnected = resolvedNarratorProviderId
+      ? connectionIsOnline(resolvedNarratorProviderId)
+      : false;
+    const anyVoiceConnected =
+      voiceProviders.some((connection) => connectionIsOnline(connection.id)) ||
+      anyApiVoiceConnected;
     const imageReady = usesImage && (
       explicitComfyProviderIds.size > 0
         ? [...explicitComfyProviderIds].every((providerId) =>
-            comfyProviders.some((connection) => connection.id === providerId && connectionIsOnline(connection.id)),
+            imageProviders.some((connection) => connection.id === providerId && connectionIsOnline(connection.id)),
           )
         : anyImageConnected
     );
@@ -5162,6 +5342,7 @@ function App() {
       node.data.kind === undefined && node.data.runVisionActive === true,
     );
     const imageActive = workflowComfyGenerationActive || comfyProviderActionActive === 'generate';
+    const audioActive = voiceGenerationActive || apiNarratorGenerationActive || readAloudActive;
     const effectiveTextReady = llmConnectionIds.size > 0 ? textReady : anyTextConnected;
 
     const indicators: WorkflowCapabilityIndicator[] = [{
@@ -5198,14 +5379,35 @@ function App() {
           : 'Image generation: required, but the ComfyUI provider is not connected',
       });
     }
+    if (usesAudio || anyVoiceConnected || audioActive) {
+      const ready = dialogueVoiceMode === 'narrator-only'
+        ? selectedNarratorConnected
+        : anyVoiceConnected;
+      indicators.push({
+        kind: 'audio',
+        tone: (ready || audioActive) ? 'ready' : 'missing',
+        active: audioActive,
+        label: ready || audioActive
+          ? usesAudio
+            ? 'Audio generation: required and connected'
+            : 'Audio generation: connected'
+          : 'Audio generation: required, but the selected voice provider is not connected',
+      });
+    }
     return indicators;
   }, [
     comfyProviderActionActive,
     connections,
     defaultConnectionId,
+    dialogueVoiceMode,
     nodeViewNodes,
     promptActionSettings,
     providerHealthById,
+    readAloudActive,
+    resolvedNarratorProviderId,
+    storyCharacters,
+    apiNarratorGenerationActive,
+    voiceGenerationActive,
     workflowComfyGenerationActive,
   ]);
 
@@ -5230,7 +5432,7 @@ function App() {
         <div className="brand">
           <h1>
             <span className="brand-name"><span className="brand-name-rp">RP</span>graph Studio</span>
-            <span className="app-version">v0.4.3 Beta</span>
+            <span className="app-version">v0.4.4 Beta</span>
           </h1>
           <div className="header-brand-actions">
             <button
@@ -5720,6 +5922,52 @@ function App() {
               isRunning={isRunning}
               englishProcessingEnabled={englishProcessingEnabled}
               dialogueHighlightEnabled={dialogueColorsEnabled}
+              dialogueVoiceSpeakerNames={dialogueVoiceSpeakerNames}
+              activeDialogueVoiceKey={activeDialogueVoiceKey}
+              onSpeakDialogue={(request) => {
+                // Voice generation unloads local LLM models first; never do that mid-run.
+                if (isRunning) {
+                  return;
+                }
+                void speakDialogue(request);
+              }}
+              onGenerateVoiceMessageClip={async ({ messageId, speakerName, text }) => {
+                // Voice generation unloads local LLM models first; never do that mid-run.
+                if (isRunning) {
+                  return null;
+                }
+                try {
+                  return await generateVoiceMessageClip(messageId, speakerName, text);
+                } catch (error) {
+                  notifySystem(
+                    'error',
+                    `Phone voice message failed: ${error instanceof Error ? error.message : String(error)}`,
+                  );
+                  return null;
+                }
+              }}
+              dialogueVoiceMode={dialogueVoiceMode}
+              onDialogueVoiceModeChange={(mode) => {
+                setDialogueVoiceMode(mode);
+                if (mode !== 'read-aloud' && mode !== 'narrator-only' && readAloudActive) {
+                  stopDialogueVoice();
+                }
+                if ((mode === 'preload' || mode === 'read-aloud') && !isRunning) {
+                  void preloadTurnVoices(latestOutputTurnMessages(messages));
+                }
+              }}
+              dialogueVoicePreloadDisabledReason={dialogueVoicePreloadDisabledReason}
+              dialogueVoiceReadAloudDisabledReason={dialogueVoiceReadAloudDisabledReason}
+              dialogueNarratorOnlyDisabledReason={dialogueNarratorOnlyDisabledReason}
+              narratorProviderOptions={narratorProviderOptions}
+              narratorProviderId={resolvedNarratorProviderId}
+              onNarratorProviderChange={setDialogueNarratorProviderId}
+              cloneVoiceProviderOptions={cloneVoiceProviderOptions}
+              cloneVoiceProviderId={resolvedCloneVoiceProviderId}
+              onCloneVoiceProviderChange={setDialogueCloneVoiceProviderId}
+              onConfigureOpenRouterTts={openOpenRouterTtsSetup}
+              voiceReadAloudActive={readAloudActive}
+              onStopVoiceReadAloud={stopDialogueVoice}
               rpTimeTrackingEnabled={rpTimeTrackingEnabled}
               chatTextSize={chatTextSize}
               onChatTextSizeChange={setChatTextSize}
@@ -5803,6 +6051,22 @@ function App() {
                 )
               }
               inputLocked={narratorSelected}
+              voiceMessageSpeakerNames={dialogueVoiceSpeakerNames}
+              onGenerateVoiceMessageClip={async ({ messageId, speakerName, text }) => {
+                // Voice generation unloads local LLM models first; never do that mid-run.
+                if (isRunning) {
+                  return null;
+                }
+                try {
+                  return await generateVoiceMessageClip(messageId, speakerName, text);
+                } catch (error) {
+                  notifySystem(
+                    'error',
+                    `Phone voice message failed: ${error instanceof Error ? error.message : String(error)}`,
+                  );
+                  return null;
+                }
+              }}
               englishProcessingEnabled={englishProcessingEnabled}
               rpTimeTrackingEnabled={rpTimeTrackingEnabled}
               phoneAuthorBadgesEnabled={phoneAuthorBadgesEnabled}
@@ -5911,6 +6175,7 @@ function App() {
           }
           onLoadCharacterComfyLoras={loadCharacterComfyLoras}
           onGenerateCharacterComfyPreview={generateCharacterComfyPreview}
+          onGenerateCharacterVoicePreview={generateCharacterVoicePreview}
           onUnloadCharacterComfyModels={unloadCharacterComfyModels}
           onImportOpeningHistory={() => importCurrentChatAsOpeningHistory(storybookCreatorNode.id)}
           onClearOpeningHistory={() => clearStorybookOpeningHistory(storybookCreatorNode.id)}
@@ -6173,6 +6438,8 @@ function App() {
         editingConnection={editingConnection}
         connectionDraftPending={connectionDraftPending}
         editingConnectionCapabilities={editingConnectionCapabilities}
+        editingConnectionSupportedVoices={editingConnectionSupportedVoices}
+        editingConnectionSupportedParameters={editingConnectionSupportedParameters}
         providerHealthById={providerHealthById}
         availableConnectionModels={availableConnectionModels}
         availableComfyModels={availableComfyModels}
@@ -6185,15 +6452,25 @@ function App() {
         onSelectConnection={selectConnection}
         onNewConnection={newConnection}
         onApplyProviderPreset={applyProviderPreset}
+        onApplyComfyConnectionRole={applyComfyConnectionRole}
         onEditConnection={editConnection}
         onRefreshConnectionModels={() => void loadConnectionModels(false)}
         onDeleteConnection={deleteConnection}
         onCheckConnectionModels={() => void checkConnectionModels()}
-        onConnectComfyProvider={() => void loadComfyModelLists(connectionFromEditingConnection())}
-        onSelectComfyWorkflow={() => void selectComfyWorkflow()}
+        onConnectComfyProvider={() => {
+          const connection = connectionFromEditingConnection();
+          if (isComfyVoiceConnection(connection)) {
+            void checkProviderConnection(connection, { showStatus: true });
+          } else {
+            void loadComfyModelLists(connection);
+          }
+        }}
+        onSelectBundledComfyWorkflow={selectBundledComfyWorkflow}
+        onConfirmComfyWorkflowSetup={confirmComfyWorkflowSetup}
         onRepairComfyWorkflow={(llmConnectionId) => void repairComfyWorkflow(llmConnectionId)}
         onApplyComfyWorkflowRepair={() => void applyComfyWorkflowRepair()}
         onGenerateComfyTestImage={() => void generateComfyTestImage()}
+        onGenerateCharacterVoicePreview={generateCharacterVoicePreview}
         onUnloadComfyModels={() => void unloadComfyModels()}
         comfyProviderActionActive={comfyProviderActionActive}
         lmStudioToolsAvailable={isLmStudioConnection(editingConnection)}
@@ -6206,6 +6483,7 @@ function App() {
         onLoadOllamaModel={() => void loadOllamaModel()}
         onUnloadOllamaModels={() => void unloadOllamaModels()}
         onApplyConnectionToAllNodes={applyConnectionToAllNodes}
+        onSetNarratorOnlyProvider={setDialogueNarratorProviderId}
       />
       {showSystemLog && (
         <SystemLogDialog

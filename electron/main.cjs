@@ -31,7 +31,38 @@ const {
 const developmentUrl = 'http://localhost:5173';
 const projectRootPath = path.join(__dirname, '..');
 const defaultWorkflowFileNamePattern = /^workflow\.default.*\.json$/i;
-const defaultComfyWorkflowPath = path.join(__dirname, '../comfy-workflows/Krea2.json');
+
+function sortComfyWorkflowPaths(paths) {
+  return [...paths].sort((left, right) => {
+    const leftDefault = left.includes('/higgs_audio_v3-tts.json') || left.includes('/Krea2.json');
+    const rightDefault = right.includes('/higgs_audio_v3-tts.json') || right.includes('/Krea2.json');
+    if (leftDefault !== rightDefault) {
+      return leftDefault ? -1 : 1;
+    }
+    return left.localeCompare(right, undefined, { numeric: true, sensitivity: 'base' });
+  });
+}
+
+function bundledComfyWorkflowsForRole(role) {
+  const relativeDir = `comfy-workflows/api-workflows-with-variables/${role}`;
+  const absoluteDir = path.join(projectRootPath, relativeDir);
+  try {
+    return sortComfyWorkflowPaths(
+      fsSync.readdirSync(absoluteDir, { withFileTypes: true })
+        .filter((entry) => entry.isFile() && entry.name.toLocaleLowerCase().endsWith('.json'))
+        .map((entry) => `${relativeDir}/${entry.name}`),
+    ).map((apiWorkflowPath) => ({ role, apiWorkflowPath }));
+  } catch {
+    return [];
+  }
+}
+
+const bundledComfyWorkflows = [
+  ...bundledComfyWorkflowsForRole('image'),
+  ...bundledComfyWorkflowsForRole('voice'),
+];
+const maxComfyVoiceSampleBytes = 24 * 1024 * 1024;
+const windowCloseCleanupTimeoutMs = 8000;
 const appIconPath = path.join(
   __dirname,
   process.platform === 'win32'
@@ -46,7 +77,21 @@ const workflowCipherAad = Buffer.from('rpgraph-encrypted-workflow:v2');
 const storybookCipherAad = Buffer.from('rpgraph-encrypted-storybook:v1');
 const approvedWorkflowPaths = new Set();
 const approvedFilePaths = new Set();
-const approvedComfyWorkflowPaths = new Set([path.resolve(defaultComfyWorkflowPath)]);
+const approvedComfyWorkflowPaths = new Set(
+  bundledComfyWorkflows.map((workflow) => path.resolve(projectRootPath, workflow.apiWorkflowPath)),
+);
+
+function resolveProjectPath(relativePath) {
+  if (typeof relativePath !== 'string' || relativePath.trim().length === 0) {
+    throw new Error('Project path is missing.');
+  }
+  const resolved = path.resolve(projectRootPath, relativePath);
+  const relative = path.relative(projectRootPath, resolved);
+  if (relative.startsWith('..') || path.isAbsolute(relative)) {
+    throw new Error('Project path must stay inside the application folder.');
+  }
+  return resolved;
+}
 
 function bundledDefaultWorkflowPath() {
   const names = fsSync
@@ -1093,11 +1138,113 @@ function openRouterNormalizedModel(model) {
   return {
     id,
     name: typeof model?.name === 'string' && model.name.trim() ? model.name.trim() : id,
+    text: outputModalities.includes('text'),
     vision: inputModalities.includes('image'),
+    image: outputModalities.includes('image'),
+    voice: outputModalities.includes('audio') || outputModalities.includes('speech') || Array.isArray(model?.supported_voices),
     inputModalities,
     outputModalities,
+    supportedVoices: stringArray(model?.supported_voices),
+    supportedParameters: stringArray(model?.supported_parameters),
     contextLength: Number.isFinite(model?.context_length) ? model.context_length : undefined,
     pricing: model?.pricing,
+  };
+}
+
+function geminiModelId(model) {
+  const name = typeof model?.name === 'string' ? model.name.trim() : '';
+  const baseModelId = typeof model?.baseModelId === 'string' ? model.baseModelId.trim() : '';
+  return (baseModelId || name.replace(/^models\//, '')).trim();
+}
+
+function geminiNativeModelsUrl(connection) {
+  const baseUrl = typeof connection?.baseUrl === 'string' && connection.baseUrl.trim()
+    ? connection.baseUrl.trim()
+    : 'https://generativelanguage.googleapis.com/v1beta';
+  const parsed = new URL(baseUrl);
+  parsed.pathname = parsed.pathname.replace(/\/openai\/?$/, '').replace(/\/+$/, '');
+  if (!parsed.pathname) {
+    parsed.pathname = '/v1beta';
+  }
+  parsed.pathname = `${parsed.pathname}/models`;
+  parsed.search = '';
+  parsed.searchParams.set('pageSize', '1000');
+  if (typeof connection?.apiKey === 'string' && connection.apiKey.trim()) {
+    parsed.searchParams.set('key', connection.apiKey.trim());
+  }
+  parsed.hash = '';
+  return parsed.toString();
+}
+
+function geminiNativeBaseUrl(connection) {
+  const baseUrl = typeof connection?.baseUrl === 'string' && connection.baseUrl.trim()
+    ? connection.baseUrl.trim()
+    : 'https://generativelanguage.googleapis.com/v1beta';
+  const parsed = new URL(baseUrl);
+  parsed.pathname = parsed.pathname.replace(/\/openai\/?$/, '').replace(/\/+$/, '');
+  if (!parsed.pathname) {
+    parsed.pathname = '/v1beta';
+  }
+  parsed.search = '';
+  parsed.hash = '';
+  return parsed.toString().replace(/\/+$/, '');
+}
+
+function geminiApiUrl(connection, route) {
+  const model = typeof connection?.model === 'string' && connection.model.trim()
+    ? connection.model.trim().replace(/^models\//, '')
+    : 'gemini-2.5-flash';
+  const url = new URL(`${geminiNativeBaseUrl(connection)}/models/${encodeURIComponent(model)}:${route}`);
+  if (typeof connection?.apiKey === 'string' && connection.apiKey.trim()) {
+    url.searchParams.set('key', connection.apiKey.trim());
+  }
+  if (route === 'streamGenerateContent') {
+    url.searchParams.set('alt', 'sse');
+  }
+  return url.toString();
+}
+
+function geminiNormalizedModel(model) {
+  const id = geminiModelId(model);
+  if (!id) {
+    return null;
+  }
+  const supportedGenerationMethods = stringArray(model?.supportedGenerationMethods);
+  const description = `${model?.displayName ?? ''} ${model?.description ?? ''} ${id}`.toLowerCase();
+  const canGenerate = supportedGenerationMethods.includes('generateContent');
+  const isImage = description.includes('image') || description.includes('imagen');
+  const isAudio = description.includes('audio') || description.includes('speech') || description.includes('tts');
+  const hasVision = canGenerate && !description.includes('embedding');
+  const inputModalities = ['text'];
+  if (hasVision || isImage) {
+    inputModalities.push('image');
+  }
+  if (isAudio) {
+    inputModalities.push('audio');
+  }
+  const outputModalities = [];
+  if (canGenerate && !isImage && !isAudio) {
+    outputModalities.push('text');
+  }
+  if (isImage) {
+    outputModalities.push('image');
+  }
+  if (isAudio) {
+    outputModalities.push('audio');
+  }
+  return {
+    id,
+    name: typeof model?.displayName === 'string' && model.displayName.trim()
+      ? model.displayName.trim()
+      : id,
+    text: outputModalities.includes('text'),
+    vision: hasVision,
+    image: outputModalities.includes('image'),
+    voice: outputModalities.includes('audio'),
+    inputModalities,
+    outputModalities,
+    contextLength: Number.isFinite(model?.inputTokenLimit) ? model.inputTokenLimit : undefined,
+    supportedGenerationMethods,
   };
 }
 
@@ -1261,6 +1408,71 @@ function chatMessageContent(prompt, images) {
   ];
 }
 
+function geminiInlineDataPart(image) {
+  if (!image || typeof image.dataUrl !== 'string') {
+    return null;
+  }
+  const match = image.dataUrl.match(/^data:([^;,]+);base64,([A-Za-z0-9+/=\s]+)$/);
+  if (!match) {
+    return null;
+  }
+  return {
+    inlineData: {
+      mimeType: match[1],
+      data: match[2].replace(/\s+/g, ''),
+    },
+  };
+}
+
+function geminiRequestBody(request) {
+  const parts = [
+    { text: request.prompt },
+    ...(Array.isArray(request.images)
+      ? request.images.map(geminiInlineDataPart).filter(Boolean)
+      : []),
+  ];
+  const generationConfig = {};
+  if (typeof request.temperature === 'number' && Number.isFinite(request.temperature)) {
+    generationConfig.temperature = request.temperature;
+  }
+  if (typeof request.topP === 'number' && Number.isFinite(request.topP)) {
+    generationConfig.topP = request.topP;
+  }
+  if (Number.isInteger(request.maxTokens) && request.maxTokens > 0) {
+    generationConfig.maxOutputTokens = request.maxTokens;
+  }
+  return {
+    contents: [{ role: 'user', parts }],
+    ...(Object.keys(generationConfig).length > 0 ? { generationConfig } : {}),
+  };
+}
+
+function textFromGeminiContent(content) {
+  if (!content || typeof content !== 'object' || !Array.isArray(content.parts)) {
+    return '';
+  }
+  return content.parts
+    .map((part) => (part && typeof part.text === 'string' ? part.text : ''))
+    .filter(Boolean)
+    .join('');
+}
+
+function textFromGeminiCandidate(candidate) {
+  if (!candidate || typeof candidate !== 'object') {
+    return '';
+  }
+  return textFromGeminiContent(candidate.content);
+}
+
+function emptyGeminiTextError(candidate) {
+  const finishReason = typeof candidate?.finishReason === 'string' ? candidate.finishReason : '';
+  return new Error(
+    finishReason
+      ? `The Gemini response does not contain any text (finishReason: ${finishReason}).`
+      : 'The Gemini response does not contain any text.',
+  );
+}
+
 const supportedReasoningEfforts = new Set([
   'none',
   'minimal',
@@ -1361,10 +1573,6 @@ function emptyChatCompletionTextError(choice) {
   );
 }
 
-function finiteNumber(value) {
-  return typeof value === 'number' && Number.isFinite(value) ? value : undefined;
-}
-
 function firstFiniteNumber(...values) {
   return values.find((value) => typeof value === 'number' && Number.isFinite(value));
 }
@@ -1379,13 +1587,18 @@ function usageReasoningTokens(usage) {
     usage.reasoning_tokens,
     usage.internal_reasoning_tokens,
     usage.internal_reasoning,
+    usage.thoughtsTokenCount,
   );
 }
 
 function llmStatsFromUsage(usage, durationMs) {
-  const inputTokens = firstFiniteNumber(usage?.prompt_tokens, usage?.input_tokens);
-  const rawOutputTokens = firstFiniteNumber(usage?.completion_tokens, usage?.output_tokens);
-  const totalTokens = finiteNumber(usage?.total_tokens);
+  const inputTokens = firstFiniteNumber(usage?.prompt_tokens, usage?.input_tokens, usage?.promptTokenCount);
+  const rawOutputTokens = firstFiniteNumber(
+    usage?.completion_tokens,
+    usage?.output_tokens,
+    usage?.candidatesTokenCount,
+  );
+  const totalTokens = firstFiniteNumber(usage?.total_tokens, usage?.totalTokenCount);
   const inferredExtraOutputTokens =
     inputTokens !== undefined && rawOutputTokens !== undefined && totalTokens !== undefined
       ? Math.max(0, totalTokens - inputTokens - rawOutputTokens)
@@ -1690,7 +1903,11 @@ function extractComfyWorkflowPlaceholders(value, placeholders = new Set()) {
   return placeholders;
 }
 
-function comfyWorkflowInspection(value, workflowPath = '') {
+function comfyWorkflowRole(role) {
+  return role === 'voice' ? 'voice' : 'image';
+}
+
+function comfyWorkflowInspection(value, workflowPath = '', role = 'image') {
   let format = 'unknown';
   let prompt = null;
   if (value && typeof value === 'object' && !Array.isArray(value) && Array.isArray(value.nodes)) {
@@ -1716,16 +1933,24 @@ function comfyWorkflowInspection(value, workflowPath = '') {
   if (placeholders.length === 0) {
     missing.push('RPGraph placeholders');
   }
-  for (const required of ['width', 'height', 'prompt', 'vae', 'text_encoder']) {
-    if (!placeholderSet.has(required)) {
-      missing.push(required);
+  if (comfyWorkflowRole(role) === 'voice') {
+    for (const required of ['speech_text', 'voice_audio']) {
+      if (!placeholderSet.has(required)) {
+        missing.push(required);
+      }
     }
-  }
-  if (!hasCheckpoint && !hasDiffusionModel) {
-    missing.push('checkpoint or diffusion_model');
-  }
-  if (!hasLora) {
-    missing.push('at least one lora placeholder');
+  } else {
+    for (const required of ['width', 'height', 'prompt', 'vae', 'text_encoder']) {
+      if (!placeholderSet.has(required)) {
+        missing.push(required);
+      }
+    }
+    if (!hasCheckpoint && !hasDiffusionModel) {
+      missing.push('checkpoint or diffusion_model');
+    }
+    if (!hasLora) {
+      missing.push('at least one lora placeholder');
+    }
   }
 
   const modelSource = hasCheckpoint && hasDiffusionModel
@@ -1739,6 +1964,7 @@ function comfyWorkflowInspection(value, workflowPath = '') {
   return {
     ok: format === 'api' && missing.length === 0,
     format,
+    role: comfyWorkflowRole(role),
     modelSource,
     placeholders,
     missing: Array.from(new Set(missing)),
@@ -1747,8 +1973,8 @@ function comfyWorkflowInspection(value, workflowPath = '') {
   };
 }
 
-function assertComfyWorkflowCompatible(value, workflowPath = '') {
-  const inspection = comfyWorkflowInspection(value, workflowPath);
+function assertComfyWorkflowCompatible(value, workflowPath = '', role = 'image') {
+  const inspection = comfyWorkflowInspection(value, workflowPath, role);
   if (!inspection.ok) {
     throw new Error(
       `ComfyUI workflow is not compatible with RPGraph. Missing: ${inspection.missing.join(', ')}.`,
@@ -1757,7 +1983,32 @@ function assertComfyWorkflowCompatible(value, workflowPath = '') {
   return inspection;
 }
 
+function comfyVoiceWorkflowRepairPrompt(workflowJson, inspection) {
+  return `You are fixing a ComfyUI voice generation workflow for RPGraph.
+
+Return only a valid RFC 6902 JSON Patch array. Do not wrap it in Markdown. Do not explain. Do not return the complete workflow.
+
+The patch must transform the provided workflow into a ComfyUI API workflow: an object whose node IDs map to nodes with class_type and inputs. Do not transform it into the ComfyUI UI graph format with nodes/links.
+
+Keep the original workflow logic as much as possible, but make it RPGraph-compatible by using these exact placeholders:
+- Text to speak: {{speech_text}} as the spoken text input of the text-to-speech node.
+- Reference voice clip: {{voice_audio}} as the audio file name of the LoadAudio node that provides the voice to clone. Remove any audioUI preview inputs from that node.
+- Do not invent other RPGraph placeholder names.
+- The workflow must save its generated audio as an output. Replace preview-only audio nodes (like PreviewAudio) with a saving node such as SaveAudioMP3 with a filename_prefix input.
+
+Current RPGraph check:
+- Format: ${inspection.format}
+- Missing: ${inspection.missing.join(', ') || 'none'}
+- Existing placeholders: ${inspection.placeholders.join(', ') || 'none'}
+
+Workflow JSON:
+${workflowJson}`;
+}
+
 function comfyWorkflowRepairPrompt(workflowJson, inspection) {
+  if (inspection.role === 'voice') {
+    return comfyVoiceWorkflowRepairPrompt(workflowJson, inspection);
+  }
   return `You are fixing a ComfyUI workflow for RPGraph.
 
 Return only a valid RFC 6902 JSON Patch array. Do not wrap it in Markdown. Do not explain. Do not return the complete workflow.
@@ -1938,10 +2189,10 @@ function applyJsonPatchDocument(value, patch) {
   return target;
 }
 
-async function repairComfyWorkflowWithLlm(workflowPath, connection, abort) {
+async function repairComfyWorkflowWithLlm(workflowPath, connection, abort, role = 'image') {
   const contents = await fs.readFile(workflowPath, 'utf8');
   const parsedWorkflow = JSON.parse(contents);
-  const inspection = comfyWorkflowInspection(parsedWorkflow, workflowPath);
+  const inspection = comfyWorkflowInspection(parsedWorkflow, workflowPath, role);
   if (inspection.ok) {
     return {
       ok: true,
@@ -1990,7 +2241,7 @@ async function repairComfyWorkflowWithLlm(workflowPath, connection, abort) {
   if (!fixedWorkflow) {
     throw new Error('The LLM must return a JSON Patch array.');
   }
-  const fixedInspection = comfyWorkflowInspection(fixedWorkflow, workflowPath);
+  const fixedInspection = comfyWorkflowInspection(fixedWorkflow, workflowPath, role);
   if (!fixedInspection.ok) {
     throw new Error(`The LLM returned a workflow that is still incompatible. Missing: ${fixedInspection.missing.join(', ')}.`);
   }
@@ -2029,7 +2280,7 @@ function comfyWorkflowVariables(request) {
         [
           `lora_strength_${suffix}`,
           typeof slot?.strength === 'number' && Number.isFinite(slot.strength)
-            ? Math.min(2, Math.max(-2, slot.strength))
+            ? Math.max(0, slot.strength)
             : fallbackStrength,
         ],
       ];
@@ -2087,6 +2338,85 @@ async function requestComfyJson(baseUrl, route, init, abort) {
   return body ? JSON.parse(body) : {};
 }
 
+// Voice generation keeps the ComfyUI voice model loaded so successive clips
+// (click-to-speak, preload, read-aloud) do not reload it every time. The
+// memory is freed lazily: right before the next local LLM request needs the
+// VRAM, plus a short settle delay so the memory is actually released before
+// the local LLM starts loading. The pending state is persisted because
+// ComfyUI keeps the model loaded across RPGraph restarts.
+let pendingComfyVoiceFreeBaseUrl = '';
+let pendingComfyVoiceFreeLoaded = false;
+const comfyVoiceFreeSettleMs = 1500;
+
+function comfyVoiceStatePath() {
+  return path.join(app.getPath('userData'), 'comfy-voice-state.json');
+}
+
+async function pendingComfyVoiceFree() {
+  if (!pendingComfyVoiceFreeLoaded) {
+    pendingComfyVoiceFreeLoaded = true;
+    try {
+      const parsed = JSON.parse(await fs.readFile(comfyVoiceStatePath(), 'utf8'));
+      if (!pendingComfyVoiceFreeBaseUrl && typeof parsed?.pendingFreeBaseUrl === 'string') {
+        pendingComfyVoiceFreeBaseUrl = parsed.pendingFreeBaseUrl;
+      }
+    } catch {
+      // First run or unreadable state file; nothing pending.
+    }
+  }
+  return pendingComfyVoiceFreeBaseUrl;
+}
+
+function setPendingComfyVoiceFree(baseUrl) {
+  pendingComfyVoiceFreeBaseUrl = typeof baseUrl === 'string' ? baseUrl : '';
+  pendingComfyVoiceFreeLoaded = true;
+  void fs
+    .writeFile(comfyVoiceStatePath(), JSON.stringify({ pendingFreeBaseUrl: pendingComfyVoiceFreeBaseUrl }))
+    .catch(() => {});
+}
+
+function isLocalLlmBaseUrl(value) {
+  try {
+    const hostname = new URL(String(value || '')).hostname;
+    return ['localhost', '127.0.0.1', '::1', '0.0.0.0'].includes(hostname);
+  } catch {
+    return false;
+  }
+}
+
+async function freeComfyVoiceMemoryForLocalLlm(connection) {
+  const comfyBaseUrl = await pendingComfyVoiceFree();
+  const providerKind = typeof connection?.providerKind === 'string' ? connection.providerKind : '';
+  const shouldFreeBeforeLlm =
+    providerKind === 'lm-studio' ||
+    providerKind === 'ollama' ||
+    isLocalLlmBaseUrl(connection?.baseUrl);
+  if (!comfyBaseUrl || !shouldFreeBeforeLlm) {
+    return;
+  }
+  const abort = { signal: new AbortController().signal };
+  try {
+    await requestComfyJson(comfyBaseUrl, 'free', {
+      method: 'POST',
+      body: JSON.stringify({
+        unload_models: true,
+        free_memory: true,
+      }),
+    }, abort);
+    setPendingComfyVoiceFree('');
+    await new Promise((resolve) => setTimeout(resolve, comfyVoiceFreeSettleMs));
+  } catch {
+    // ComfyUI may already be gone; keep the pending marker so the next local
+    // LLM request can try again if the voice model is still occupying VRAM.
+  }
+}
+
+function isGeminiProviderConnection(connection) {
+  const providerKind = typeof connection?.providerKind === 'string' ? connection.providerKind : '';
+  const baseUrl = typeof connection?.baseUrl === 'string' ? connection.baseUrl.toLowerCase() : '';
+  return providerKind === 'gemini' || baseUrl.includes('generativelanguage.googleapis.com');
+}
+
 function isComfyConnectionUnavailable(error) {
   const code = error && typeof error === 'object' ? error.code : undefined;
   if (code === 'ECONNREFUSED' ||
@@ -2119,12 +2449,12 @@ function comfyModelCategory(value) {
   return value;
 }
 
-async function requestComfyImage(baseUrl, image, abort) {
+async function requestComfyOutputFile(baseUrl, file, abort, fallbackMimeType) {
   const params = new URLSearchParams();
-  params.set('filename', image.filename);
-  params.set('type', image.type || 'output');
-  if (image.subfolder) {
-    params.set('subfolder', image.subfolder);
+  params.set('filename', file.filename);
+  params.set('type', file.type || 'output');
+  if (file.subfolder) {
+    params.set('subfolder', file.subfolder);
   }
 
   const response = await requestLlmResponse(
@@ -2139,37 +2469,198 @@ async function requestComfyImage(baseUrl, image, abort) {
   const contentType = Array.isArray(response.headers['content-type'])
     ? response.headers['content-type'][0]
     : response.headers['content-type'];
-  const mimeType = contentType || 'image/png';
+  const mimeType = contentType || fallbackMimeType;
   const buffer = await response.buffer();
   return `data:${mimeType};base64,${buffer.toString('base64')}`;
 }
 
-function comfyHistoryImages(promptId, history) {
+async function deleteComfyServerFile(baseUrl, file, abort) {
+  const body = JSON.stringify({
+    filename: file.filename,
+    subfolder: file.subfolder || '',
+    type: file.type || 'output',
+  });
+  try {
+    await requestComfyJson(baseUrl, 'delete', {
+      method: 'POST',
+      body,
+    }, abort);
+    return true;
+  } catch {
+    const params = new URLSearchParams();
+    params.set('filename', file.filename);
+    params.set('type', file.type || 'output');
+    if (file.subfolder) {
+      params.set('subfolder', file.subfolder);
+    }
+    try {
+      const response = await requestLlmResponse(
+        `${comfyEndpoint(baseUrl, 'view')}?${params.toString()}`,
+        { method: 'DELETE', headers: {} },
+        abort,
+      );
+      return response.ok;
+    } catch {
+      return false;
+    }
+  }
+}
+
+async function comfyServerFileExists(baseUrl, file, abort) {
+  const params = new URLSearchParams();
+  params.set('filename', file.filename);
+  params.set('type', file.type || 'output');
+  if (file.subfolder) {
+    params.set('subfolder', file.subfolder);
+  }
+  try {
+    const response = await requestLlmResponse(
+      `${comfyEndpoint(baseUrl, 'view')}?${params.toString()}`,
+      { method: 'GET', headers: {} },
+      abort,
+    );
+    response.body.destroy();
+    return response.ok;
+  } catch {
+    return false;
+  }
+}
+
+// ComfyUI builds without a delete route can report success while deleting
+// nothing, so only the follow-up existence check is trusted.
+async function deleteComfyServerFileVerified(baseUrl, file, abort) {
+  await deleteComfyServerFile(baseUrl, file, abort);
+  return !(await comfyServerFileExists(baseUrl, file, abort));
+}
+
+function comfyVoiceSampleFromDataUrl(dataUrl) {
+  const match = typeof dataUrl === 'string'
+    ? dataUrl.match(/^data:(audio\/[a-z0-9.+-]+);base64,([A-Za-z0-9+/=\s]+)$/i)
+    : null;
+  if (!match) {
+    throw new Error('The voice sample must be a base64 audio data URL.');
+  }
+  const buffer = Buffer.from(match[2], 'base64');
+  if (buffer.length === 0) {
+    throw new Error('The voice sample is empty.');
+  }
+  if (buffer.length > maxComfyVoiceSampleBytes) {
+    throw new Error(
+      `The voice sample is too large: ${formatMegabytes(buffer.length)}. ` +
+        `The limit is ${formatMegabytes(maxComfyVoiceSampleBytes)}.`,
+    );
+  }
+  return { buffer, mimeType: match[1].toLowerCase() };
+}
+
+// ComfyUI's upload route is named "image" for historical reasons; it stores any
+// file in the server's input directory, which is what LoadAudio reads from.
+async function uploadComfyVoiceSample(baseUrl, sampleDataUrl, abort) {
+  const sample = comfyVoiceSampleFromDataUrl(sampleDataUrl);
+  const contentHash = crypto.createHash('sha256').update(sample.buffer).digest('hex').slice(0, 16);
+  const fileName = `rpgraph-voice-${contentHash}.mp3`;
+  const boundary = `----rpgraph-${crypto.randomUUID()}`;
+  const body = Buffer.concat([
+    Buffer.from(
+      `--${boundary}\r\n` +
+        `Content-Disposition: form-data; name="image"; filename="${fileName}"\r\n` +
+        `Content-Type: ${sample.mimeType}\r\n\r\n`,
+    ),
+    sample.buffer,
+    Buffer.from(
+      `\r\n--${boundary}\r\n` +
+        'Content-Disposition: form-data; name="overwrite"\r\n\r\n' +
+        'true\r\n' +
+        `--${boundary}--\r\n`,
+    ),
+  ]);
+
+  const response = await requestLlmResponse(comfyEndpoint(baseUrl, 'upload/image'), {
+    method: 'POST',
+    headers: {
+      'Content-Type': `multipart/form-data; boundary=${boundary}`,
+      'Content-Length': String(body.length),
+    },
+    body,
+  }, abort);
+  if (!response.ok) {
+    throw new Error(await readError(response));
+  }
+  const result = JSON.parse((await response.text()) || '{}');
+  const uploadedName = typeof result?.name === 'string' && result.name.trim() ? result.name : fileName;
+  const subfolder = typeof result?.subfolder === 'string' && result.subfolder ? result.subfolder : '';
+  return {
+    voiceAudioName: subfolder ? `${subfolder}/${uploadedName}` : uploadedName,
+    file: { filename: uploadedName, subfolder, type: 'input' },
+  };
+}
+
+// ComfyUI skips execution completely when a prompt is identical to an already
+// executed one, and the new history entry then contains no outputs. Voice
+// workflows use fixed seeds, so repeated generations of the same text would
+// hit that cache; randomizing the seed inputs forces a real run every time.
+function withRandomizedComfySeeds(workflow) {
+  for (const node of Object.values(workflow)) {
+    const inputs = node && typeof node === 'object' ? node.inputs : undefined;
+    if (!inputs || typeof inputs !== 'object') {
+      continue;
+    }
+    for (const seedKey of ['seed', 'noise_seed']) {
+      if (typeof inputs[seedKey] === 'number') {
+        inputs[seedKey] = crypto.randomInt(0, 2 ** 31);
+      }
+    }
+  }
+  return workflow;
+}
+
+function comfyHistoryErrorDetail(promptId, history) {
+  const status = history?.[promptId]?.status;
+  if (!status || status.status_str !== 'error') {
+    return '';
+  }
+  const messages = Array.isArray(status.messages) ? status.messages : [];
+  for (const message of messages) {
+    if (Array.isArray(message) && message[0] === 'execution_error') {
+      const detail = message[1];
+      const nodeType = typeof detail?.node_type === 'string' ? detail.node_type : '';
+      const exceptionMessage = typeof detail?.exception_message === 'string'
+        ? detail.exception_message.trim()
+        : '';
+      if (exceptionMessage) {
+        return nodeType ? `${nodeType}: ${exceptionMessage}` : exceptionMessage;
+      }
+    }
+  }
+  return 'the ComfyUI execution failed';
+}
+
+function comfyHistoryOutputFiles(promptId, history, outputKey) {
   const promptHistory = history?.[promptId];
   const outputs = promptHistory?.outputs;
   if (!outputs || typeof outputs !== 'object') {
     return [];
   }
 
-  const images = [];
+  const files = [];
   for (const [nodeId, output] of Object.entries(outputs)) {
-    const outputImages = Array.isArray(output?.images) ? output.images : [];
-    for (const image of outputImages) {
-      if (typeof image?.filename !== 'string' || !image.filename.trim()) {
+    const outputFiles = Array.isArray(output?.[outputKey]) ? output[outputKey] : [];
+    for (const file of outputFiles) {
+      if (typeof file?.filename !== 'string' || !file.filename.trim()) {
         continue;
       }
-      images.push({
+      files.push({
         nodeId,
-        filename: image.filename,
-        subfolder: typeof image.subfolder === 'string' ? image.subfolder : '',
-        type: typeof image.type === 'string' ? image.type : 'output',
+        filename: file.filename,
+        subfolder: typeof file.subfolder === 'string' ? file.subfolder : '',
+        type: typeof file.type === 'string' ? file.type : 'output',
       });
     }
   }
-  return images;
+  return files;
 }
 
-async function runComfyPrompt(baseUrl, workflow, timeoutMs, abort) {
+async function waitForComfyPromptHistory(baseUrl, workflow, timeoutMs, abort) {
   if (!workflow || typeof workflow !== 'object' || Array.isArray(workflow)) {
     throw new Error('Choose a ComfyUI API workflow JSON before sending.');
   }
@@ -2205,20 +2696,54 @@ async function runComfyPrompt(baseUrl, workflow, timeoutMs, abort) {
     throw new Error(`Timed out waiting for ComfyUI prompt ${promptId}.`);
   }
 
-  const imageRefs = comfyHistoryImages(promptId, history);
+  return { promptId, history };
+}
+
+async function runComfyPrompt(baseUrl, workflow, timeoutMs, abort) {
+  const { promptId, history } = await waitForComfyPromptHistory(baseUrl, workflow, timeoutMs, abort);
+  const imageRefs = comfyHistoryOutputFiles(promptId, history, 'images');
   if (imageRefs.length === 0) {
-    throw new Error(`ComfyUI prompt ${promptId} finished, but no output images were found in history.`);
+    const errorDetail = comfyHistoryErrorDetail(promptId, history);
+    throw new Error(errorDetail
+      ? `ComfyUI image generation failed: ${errorDetail}`
+      : `ComfyUI prompt ${promptId} finished, but no output images were found in history.`);
   }
 
   const images = [];
   for (const image of imageRefs) {
     images.push({
       ...image,
-      dataUrl: await requestComfyImage(baseUrl, image, abort),
+      dataUrl: await requestComfyOutputFile(baseUrl, image, abort, 'image/png'),
     });
   }
 
   return { promptId, images };
+}
+
+async function runComfyVoicePrompt(baseUrl, workflow, timeoutMs, abort, options = {}) {
+  const { promptId, history } = await waitForComfyPromptHistory(baseUrl, workflow, timeoutMs, abort);
+  const audioRefs = comfyHistoryOutputFiles(promptId, history, 'audio');
+  if (audioRefs.length === 0) {
+    const errorDetail = comfyHistoryErrorDetail(promptId, history);
+    throw new Error(errorDetail
+      ? `ComfyUI voice generation failed: ${errorDetail}`
+      : `ComfyUI prompt ${promptId} finished, but no output audio was found in history.`);
+  }
+
+  const audio = [];
+  let cleanupFailed = false;
+  for (const clip of audioRefs) {
+    const dataUrl = await requestComfyOutputFile(baseUrl, clip, abort, 'audio/mpeg');
+    if (options.deleteOutputs && !(await deleteComfyServerFileVerified(baseUrl, clip, abort))) {
+      cleanupFailed = true;
+    }
+    audio.push({
+      ...clip,
+      dataUrl,
+    });
+  }
+
+  return { promptId, audio, cleanupFailed };
 }
 
 function delay(ms, abort) {
@@ -2252,6 +2777,7 @@ ipcMain.handle('lmstudio:load-model', async (_event, request) => {
     if (!model) {
       throw new Error('Choose a model ID before loading an LM Studio model.');
     }
+    await freeComfyVoiceMemoryForLocalLlm(connection);
     try {
       await requestLmStudioJson(connection, 'models/load', {
         method: 'POST',
@@ -2367,6 +2893,126 @@ ipcMain.handle('openrouter:list-models', async (_event, request) => {
   }
 });
 
+function pcm16MonoToWav(pcm, sampleRate = 24000) {
+  const header = Buffer.alloc(44);
+  header.write('RIFF', 0);
+  header.writeUInt32LE(36 + pcm.length, 4);
+  header.write('WAVE', 8);
+  header.write('fmt ', 12);
+  header.writeUInt32LE(16, 16);
+  header.writeUInt16LE(1, 20);
+  header.writeUInt16LE(1, 22);
+  header.writeUInt32LE(sampleRate, 24);
+  header.writeUInt32LE(sampleRate * 2, 28);
+  header.writeUInt16LE(2, 32);
+  header.writeUInt16LE(16, 34);
+  header.write('data', 36);
+  header.writeUInt32LE(pcm.length, 40);
+  return Buffer.concat([header, pcm]);
+}
+
+ipcMain.handle('openrouter:generate-speech', async (event, request) => {
+  const abort = createLlmAbortController(request);
+  const connection = request?.connection;
+  const input = typeof request?.input === 'string' ? request.input.trim() : '';
+  if (!connection?.model?.trim()) {
+    throw new Error('Choose an OpenRouter TTS model first.');
+  }
+  if (!connection?.ttsVoice?.trim()) {
+    throw new Error('Choose a TTS voice first.');
+  }
+  if (!input) {
+    throw new Error('Enter text to speak first.');
+  }
+  const model = connection.model.trim();
+  const requiresPcm = model.startsWith('google/gemini-');
+  const body = {
+    model,
+    input,
+    voice: connection.ttsVoice.trim(),
+    response_format: requiresPcm ? 'pcm' : 'mp3',
+    ...(Number.isFinite(connection.ttsTemperature)
+      ? { temperature: connection.ttsTemperature }
+      : {}),
+  };
+  try {
+    const response = await requestLlmResponse(endpoint(connection.baseUrl, 'audio/speech'), {
+      method: 'POST',
+      headers: requestHeaders(connection),
+      body: JSON.stringify(body),
+    }, abort);
+    if (!response.ok) {
+      throw new Error(await readError(response));
+    }
+    let responseAudio;
+    if (requiresPcm && connection.ttsStreamAudio === true && request?.requestId) {
+      const chunks = [];
+      for await (const chunk of response.body) {
+        const bytes = streamChunkBytes(chunk);
+        chunks.push(bytes);
+        if (!event.sender.isDestroyed()) {
+          event.sender.send(
+            `openrouter:speech-chunk:${request.requestId}`,
+            bytes.toString('base64'),
+          );
+        }
+      }
+      responseAudio = Buffer.concat(chunks);
+    } else {
+      responseAudio = await response.buffer();
+    }
+    if (responseAudio.length === 0) {
+      throw new Error('OpenRouter returned an empty audio response.');
+    }
+    const audio = requiresPcm ? pcm16MonoToWav(responseAudio) : responseAudio;
+    const rawContentType = response.headers['content-type'];
+    const responseContentType = (Array.isArray(rawContentType) ? rawContentType[0] : rawContentType)
+      ?.split(';')[0]?.trim();
+    const contentType = requiresPcm ? 'audio/wav' : responseContentType || 'audio/mpeg';
+    const extension = requiresPcm ? 'wav' : 'mp3';
+    return {
+      dataUrl: `data:${contentType};base64,${audio.toString('base64')}`,
+      filename: `openrouter-tts-${Date.now()}.${extension}`,
+    };
+  } finally {
+    abort.dispose();
+  }
+});
+
+ipcMain.handle('gemini:list-models', async (_event, request) => {
+  const connection = request?.connection ?? request;
+  const abort = createLlmAbortController(request);
+  try {
+    const response = await requestLlmResponse(geminiNativeModelsUrl(connection), {
+      headers: { 'Content-Type': 'application/json' },
+    }, abort);
+
+    if (!response.ok) {
+      throw new Error(await readError(response));
+    }
+
+    const result = await response.json();
+    const models = Array.isArray(result.models)
+      ? result.models.map(geminiNormalizedModel).filter(Boolean)
+      : [];
+    const seen = new Set();
+    return models.filter((model) => {
+      if (seen.has(model.id)) {
+        return false;
+      }
+      seen.add(model.id);
+      return true;
+    });
+  } catch (error) {
+    if (abort.signal.aborted) {
+      return cancelledLlmIpcResult();
+    }
+    throw normalizeLlmError(error);
+  } finally {
+    abort.dispose();
+  }
+});
+
 // The renderer polls local providers every 2 seconds; without this cache each
 // poll would issue one /api/show request per installed Ollama model.
 const ollamaCapabilitiesByModelDigest = new Map();
@@ -2432,6 +3078,7 @@ ipcMain.handle('ollama:load-model', async (_event, request) => {
     if (!model) {
       throw new Error('Choose a model ID before loading an Ollama model.');
     }
+    await freeComfyVoiceMemoryForLocalLlm(connection);
     await requestOllamaJson(connection, 'generate', {
       method: 'POST',
       body: JSON.stringify({
@@ -2517,6 +3164,31 @@ ipcMain.handle('llm:chat-completion', async (_event, request) => {
   const startedAt = performance.now();
   const abort = createLlmAbortController(request);
   try {
+    await freeComfyVoiceMemoryForLocalLlm(request.connection);
+    if (isGeminiProviderConnection(request.connection)) {
+      const response = await requestLlmResponse(geminiApiUrl(request.connection, 'generateContent'), {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(geminiRequestBody(request)),
+      }, abort);
+
+      if (!response.ok) {
+        throw new Error(await readError(response));
+      }
+
+      const result = await response.json();
+      const candidate = result.candidates?.[0];
+      const content = textFromGeminiCandidate(candidate);
+      if (!content) {
+        throw emptyGeminiTextError(candidate);
+      }
+
+      return {
+        text: content,
+        stats: llmStatsFromUsage(result.usageMetadata, Math.round(performance.now() - startedAt)),
+      };
+    }
+
     const response = await requestLlmResponse(endpoint(request.connection.baseUrl, 'chat/completions'), {
       method: 'POST',
       headers: requestHeaders(request.connection),
@@ -2563,6 +3235,81 @@ ipcMain.handle('llm:chat-completion-stream', async (event, request) => {
   const startedAt = performance.now();
   const abort = createLlmAbortController(request);
   try {
+    await freeComfyVoiceMemoryForLocalLlm(request.connection);
+    if (isGeminiProviderConnection(request.connection)) {
+      const response = await requestLlmResponse(geminiApiUrl(request.connection, 'streamGenerateContent'), {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(geminiRequestBody(request)),
+      }, abort);
+
+      if (!response.ok) {
+        throw new Error(await readError(response));
+      }
+      if (!response.body) {
+        throw new Error('The Gemini streaming response does not contain a body.');
+      }
+
+      const decoder = new TextDecoder();
+      let buffered = '';
+      let content = '';
+      let usage;
+      let finishReason = '';
+
+      function consumeGeminiLine(line) {
+        const trimmed = line.trim();
+        if (!trimmed.startsWith('data:')) {
+          return;
+        }
+        const data = trimmed.slice(5).trim();
+        if (!data || data === '[DONE]') {
+          return;
+        }
+        let chunk;
+        try {
+          chunk = JSON.parse(data);
+        } catch {
+          return;
+        }
+        const candidate = chunk.candidates?.[0];
+        const deltaText = textFromGeminiCandidate(candidate);
+        if (deltaText) {
+          content += deltaText;
+          event.sender.send(`llm:chat-stream-chunk:${request.requestId}`, deltaText);
+        }
+        if (typeof candidate?.finishReason === 'string') {
+          finishReason = candidate.finishReason;
+        }
+        if (chunk.usageMetadata) {
+          usage = chunk.usageMetadata;
+        }
+      }
+
+      for await (const value of response.body) {
+        if (abort.signal.aborted) {
+          throw cancelledLlmError();
+        }
+        buffered += decoder.decode(streamChunkBytes(value), { stream: true });
+        const lines = buffered.split(/\r?\n/);
+        buffered = lines.pop() ?? '';
+        lines.forEach(consumeGeminiLine);
+      }
+      buffered += decoder.decode();
+      buffered.split(/\r?\n/).forEach(consumeGeminiLine);
+
+      if (!content) {
+        throw new Error(
+          finishReason
+            ? `The Gemini stream finished without text (finishReason: ${finishReason}).`
+            : 'The Gemini stream finished without text.',
+        );
+      }
+      return {
+        text: content,
+        stats: llmStatsFromUsage(usage, Math.round(performance.now() - startedAt)),
+      };
+    }
+
     const response = await requestLlmResponse(endpoint(request.connection.baseUrl, 'chat/completions'), {
       method: 'POST',
       headers: requestHeaders(request.connection),
@@ -2704,16 +3451,28 @@ ipcMain.handle('comfy:select-workflow', async () => {
   };
 });
 
+ipcMain.handle('app:resolve-project-path', async (_event, relativePath) => ({
+  path: resolveProjectPath(relativePath),
+}));
+
+function defaultComfyWorkflowPathForRole(role) {
+  return comfyWorkflowRole(role) === 'voice'
+    ? 'comfy-workflows/api-workflows-with-variables/voice/higgs_audio_v3-tts.json'
+    : 'comfy-workflows/api-workflows-with-variables/image/Krea2.json';
+}
+
 ipcMain.handle('comfy:inspect-workflow', async (_event, request) => {
   let filePath = '';
+  const role = comfyWorkflowRole(request?.role);
   try {
-    filePath = validateComfyWorkflowPath(request?.workflowPath || 'comfy-workflows/Krea2.json');
+    filePath = validateComfyWorkflowPath(request?.workflowPath || defaultComfyWorkflowPathForRole(role));
     const contents = await fs.readFile(filePath, 'utf8');
-    return comfyWorkflowInspection(JSON.parse(contents), filePath);
+    return comfyWorkflowInspection(JSON.parse(contents), filePath, role);
   } catch (error) {
     return {
       ok: false,
       format: 'unknown',
+      role,
       modelSource: 'missing',
       placeholders: [],
       missing: [error instanceof Error ? error.message : String(error)],
@@ -2725,9 +3484,10 @@ ipcMain.handle('comfy:inspect-workflow', async (_event, request) => {
 
 ipcMain.handle('comfy:repair-workflow', async (_event, request) => {
   const abort = createLlmAbortController(request);
+  const role = comfyWorkflowRole(request?.role);
   try {
-    const filePath = validateComfyWorkflowPath(request?.workflowPath || 'comfy-workflows/Krea2.json');
-    return await repairComfyWorkflowWithLlm(filePath, request?.connection, abort);
+    const filePath = validateComfyWorkflowPath(request?.workflowPath || defaultComfyWorkflowPathForRole(role));
+    return await repairComfyWorkflowWithLlm(filePath, request?.connection, abort, role);
   } catch (error) {
     if (abort.signal.aborted) {
       return cancelledLlmIpcResult();
@@ -2740,9 +3500,10 @@ ipcMain.handle('comfy:repair-workflow', async (_event, request) => {
 
 ipcMain.handle('comfy:apply-workflow-repair', async (_event, request) => {
   try {
-    const filePath = validateComfyWorkflowPath(request?.workflowPath || 'comfy-workflows/Krea2.json');
+    const role = comfyWorkflowRole(request?.role);
+    const filePath = validateComfyWorkflowPath(request?.workflowPath || defaultComfyWorkflowPathForRole(role));
     const workflow = extractJsonObjectFromText(request?.workflowJson);
-    const inspection = assertComfyWorkflowCompatible(workflow, filePath);
+    const inspection = assertComfyWorkflowCompatible(workflow, filePath, role);
     const workflowJson = `${JSON.stringify(workflow, null, 2)}\n`;
     await fs.writeFile(filePath, workflowJson, 'utf8');
     return {
@@ -2759,7 +3520,7 @@ ipcMain.handle('comfy:apply-workflow-repair', async (_event, request) => {
 ipcMain.handle('comfy:run-workflow-path', async (_event, request) => {
   const abort = createLlmAbortController(request);
   try {
-    const filePath = validateComfyWorkflowPath(request?.workflowPath || 'comfy-workflows/Krea2.json');
+    const filePath = validateComfyWorkflowPath(request?.workflowPath || defaultComfyWorkflowPathForRole('image'));
     const contents = await fs.readFile(filePath, 'utf8');
     const parsedWorkflow = JSON.parse(contents);
     assertComfyWorkflowCompatible(parsedWorkflow, filePath);
@@ -2769,6 +3530,57 @@ ipcMain.handle('comfy:run-workflow-path', async (_event, request) => {
     );
     const workflow = comfyPromptFromWorkflow(workflowJson);
     return await runComfyPrompt(request?.baseUrl, workflow, request?.timeoutMs, abort);
+  } catch (error) {
+    if (abort.signal.aborted) {
+      return cancelledLlmIpcResult();
+    }
+    throw normalizeLlmError(error);
+  } finally {
+    abort.dispose();
+  }
+});
+
+ipcMain.handle('comfy:run-voice-workflow-path', async (_event, request) => {
+  const abort = createLlmAbortController(request);
+  try {
+    setPendingComfyVoiceFree(typeof request?.baseUrl === 'string' ? request.baseUrl : '');
+    const filePath = validateComfyWorkflowPath(
+      request?.workflowPath || defaultComfyWorkflowPathForRole('voice'),
+    );
+    const contents = await fs.readFile(filePath, 'utf8');
+    const parsedWorkflow = JSON.parse(contents);
+    assertComfyWorkflowCompatible(parsedWorkflow, filePath, 'voice');
+    const speechText = typeof request?.speechText === 'string' ? request.speechText.trim() : '';
+    if (!speechText) {
+      throw new Error('Enter a text to speak before generating a voice clip.');
+    }
+    const deleteServerFiles = request?.deleteOutputs === true;
+    const sampleUpload = await uploadComfyVoiceSample(request?.baseUrl, request?.sampleDataUrl, abort);
+    const workflowJson = replaceComfyWorkflowPlaceholders(parsedWorkflow, {
+      speech_text: speechText,
+      voice_audio: sampleUpload.voiceAudioName,
+    });
+    const workflow = withRandomizedComfySeeds(comfyPromptFromWorkflow(workflowJson));
+    let result;
+    let sampleCleanupFailed = false;
+    try {
+      result = await runComfyVoicePrompt(request?.baseUrl, workflow, request?.timeoutMs, abort, {
+        deleteOutputs: deleteServerFiles,
+      });
+    } finally {
+      // Remove the uploaded reference voice sample even when the run failed.
+      if (deleteServerFiles && !abort.signal.aborted) {
+        sampleCleanupFailed = !(await deleteComfyServerFileVerified(
+          request?.baseUrl,
+          sampleUpload.file,
+          abort,
+        ));
+      }
+    }
+    return {
+      ...result,
+      cleanupFailed: result.cleanupFailed || sampleCleanupFailed,
+    };
   } catch (error) {
     if (abort.signal.aborted) {
       return cancelledLlmIpcResult();
@@ -2810,6 +3622,11 @@ ipcMain.handle('comfy:free-memory', async (_event, request) => {
         free_memory: true,
       }),
     }, abort);
+    // Only clear the lazy voice-unload marker when this request freed the
+    // ComfyUI instance the voice model was loaded on.
+    if ((await pendingComfyVoiceFree()) === String(request?.baseUrl || '')) {
+      setPendingComfyVoiceFree('');
+    }
     return { ok: true };
   } catch (error) {
     if (abort.signal.aborted) {
@@ -3256,6 +4073,43 @@ ipcMain.handle('image:select', async (_event, request = {}) => {
   return { canceled: false, images };
 });
 
+ipcMain.handle('audio:select', async () => {
+  const result = await dialog.showOpenDialog({
+    title: 'Choose Voice Sample',
+    properties: ['openFile'],
+    filters: [
+      {
+        name: 'MP3 Audio',
+        extensions: ['mp3'],
+      },
+    ],
+  });
+
+  if (result.canceled || result.filePaths.length === 0) {
+    return { canceled: true };
+  }
+
+  const filePath = result.filePaths[0];
+  const stats = await fs.stat(filePath);
+  if (stats.size > maxComfyVoiceSampleBytes) {
+    throw new Error(
+      `Selected audio file is too large: ${path.basename(filePath)} is ` +
+        `${formatMegabytes(stats.size)}. The limit is ` +
+        `${formatMegabytes(maxComfyVoiceSampleBytes)}.`,
+    );
+  }
+  const contents = await fs.readFile(filePath);
+  return {
+    canceled: false,
+    audio: {
+      name: path.basename(filePath),
+      mimeType: 'audio/mpeg',
+      size: stats.size,
+      dataUrl: `data:audio/mpeg;base64,${contents.toString('base64')}`,
+    },
+  };
+});
+
 ipcMain.handle('file:select', async () => {
   const result = await dialog.showOpenDialog({
     title: 'Open RPGraph File',
@@ -3378,6 +4232,23 @@ ipcMain.handle('window:close', (event) => {
   BrowserWindow.fromWebContents(event.sender)?.close();
 });
 
+const windowCloseCleanupCompleted = new WeakSet();
+const windowCloseCleanupTimeouts = new WeakMap();
+
+ipcMain.handle('window:cleanup-complete-close', (event) => {
+  const window = BrowserWindow.fromWebContents(event.sender);
+  if (!window || window.isDestroyed()) {
+    return;
+  }
+  const timeout = windowCloseCleanupTimeouts.get(window);
+  if (timeout) {
+    clearTimeout(timeout);
+    windowCloseCleanupTimeouts.delete(window);
+  }
+  windowCloseCleanupCompleted.add(window);
+  window.close();
+});
+
 async function createWindow() {
   Menu.setApplicationMenu(null);
   const windowState = await loadWindowState();
@@ -3423,7 +4294,26 @@ async function createWindow() {
   ]) {
     window.on(eventName, () => scheduleWindowStateSave(window));
   }
-  window.on('close', () => saveWindowState(window));
+  window.on('close', (event) => {
+    saveWindowState(window);
+    if (windowCloseCleanupCompleted.has(window) || window.webContents.isDestroyed()) {
+      return;
+    }
+    event.preventDefault();
+    if (windowCloseCleanupTimeouts.has(window)) {
+      return;
+    }
+    window.webContents.send('window:cleanup-before-close');
+    const timeout = setTimeout(() => {
+      windowCloseCleanupTimeouts.delete(window);
+      if (window.isDestroyed()) {
+        return;
+      }
+      windowCloseCleanupCompleted.add(window);
+      window.close();
+    }, windowCloseCleanupTimeoutMs);
+    windowCloseCleanupTimeouts.set(window, timeout);
+  });
   window.once('ready-to-show', () => {
     if (windowState.isFullScreen) {
       window.setFullScreen(true);

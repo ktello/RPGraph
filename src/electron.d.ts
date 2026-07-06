@@ -2,6 +2,7 @@ import type {
   AppSettings,
   ChatImageAttachment,
   ConnectionPreset,
+  GeminiModelInfo,
   LmStudioModelInfo,
   LlmCompletionResult,
   OllamaModelInfo,
@@ -28,6 +29,11 @@ declare global {
       ) => Promise<string[]>;
       listLmStudioModels: (connection: ConnectionPreset) => Promise<LmStudioModelInfo[]>;
       listOpenRouterModels: (connection: ConnectionPreset) => Promise<OpenRouterModelInfo[]>;
+      generateOpenRouterSpeech: (request: {
+        connection: ConnectionPreset;
+        input: string;
+      }, onChunk?: (base64PcmChunk: string) => void) => Promise<{ dataUrl: string; filename: string }>;
+      listGeminiModels: (connection: ConnectionPreset) => Promise<GeminiModelInfo[]>;
       loadLmStudioModel: (connection: ConnectionPreset) => Promise<{
         loadedModel: string;
         method?: 'rest' | 'cli';
@@ -176,6 +182,9 @@ declare global {
         value?: unknown;
         workflow?: unknown;
       }>;
+      resolveProjectPath: (relativePath: string) => Promise<{
+        path: string;
+      }>;
       restoreDefaultWorkflow: () => Promise<{
         filePath: string;
         fileName: string;
@@ -227,9 +236,11 @@ declare global {
       }) => Promise<string[]>;
       inspectComfyWorkflow: (request: {
         workflowPath: string;
+        role?: 'image' | 'voice';
       }) => Promise<{
         ok: boolean;
         format: 'api' | 'ui' | 'unknown';
+        role: 'image' | 'voice';
         modelSource: 'checkpoint' | 'diffusion_model' | 'both' | 'missing';
         placeholders: string[];
         missing: string[];
@@ -238,6 +249,7 @@ declare global {
       }>;
       repairComfyWorkflow: (request: {
         workflowPath: string;
+        role?: 'image' | 'voice';
         connection: ConnectionPreset;
       }) => Promise<{
         ok: boolean;
@@ -245,6 +257,7 @@ declare global {
         inspection: {
           ok: boolean;
           format: 'api' | 'ui' | 'unknown';
+          role: 'image' | 'voice';
           modelSource: 'checkpoint' | 'diffusion_model' | 'both' | 'missing';
           placeholders: string[];
           missing: string[];
@@ -255,12 +268,14 @@ declare global {
       }>;
       applyComfyWorkflowRepair: (request: {
         workflowPath: string;
+        role?: 'image' | 'voice';
         workflowJson: string;
       }) => Promise<{
         ok: boolean;
         inspection: {
           ok: boolean;
           format: 'api' | 'ui' | 'unknown';
+          role: 'image' | 'voice';
           modelSource: 'checkpoint' | 'diffusion_model' | 'both' | 'missing';
           placeholders: string[];
           missing: string[];
@@ -299,6 +314,33 @@ declare global {
           type: string;
           dataUrl: string;
         }>;
+      }>;
+      runComfyVoiceWorkflowPath: (request: {
+        baseUrl: string;
+        workflowPath: string;
+        speechText: string;
+        sampleDataUrl: string;
+        deleteOutputs?: boolean;
+        timeoutMs?: number;
+      }) => Promise<{
+        promptId: string;
+        audio: Array<{
+          nodeId: string;
+          filename: string;
+          subfolder: string;
+          type: string;
+          dataUrl: string;
+        }>;
+        cleanupFailed: boolean;
+      }>;
+      selectAudio: () => Promise<{
+        canceled: boolean;
+        audio?: {
+          name: string;
+          mimeType: string;
+          size: number;
+          dataUrl: string;
+        };
       }>;
       loadSettings: () => Promise<{
         filePath: string;
@@ -347,6 +389,8 @@ declare global {
       toggleMaximizeWindow: () => Promise<{ isMaximized: boolean }>;
       toggleFullScreenWindow: () => Promise<{ isFullScreen: boolean }>;
       closeWindow: () => Promise<void>;
+      onWindowCleanupBeforeClose: (callback: () => void | Promise<void>) => () => void;
+      finishWindowCloseCleanup: () => Promise<void>;
       setZoomFactor: (zoomFactor: number) => void;
     };
   }

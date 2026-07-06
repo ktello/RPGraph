@@ -191,6 +191,7 @@ function chatMessageFromTimelineEntry(
     phoneMessage: entry.channel === 'phone',
     phoneFrom: entry.phone?.from,
     phoneTo: entry.phone?.to,
+    phoneVoiceMessage: entry.phone?.voiceMessage,
     embeddedPhoneMessages: embeddedPhoneMessages?.length ? embeddedPhoneMessages : undefined,
     embeddedPhoneTextBefore: entry.embeddedPhoneText?.before,
     embeddedPhoneTextAfter: entry.embeddedPhoneText?.after,
@@ -219,6 +220,7 @@ function chatMessageFromTimelineEntry(
     turnPart: entry.phase,
     rpDateTime: entry.rpDateTime,
     workflowVariableSetCommands: entry.workflowVariableSetCommands,
+    voiceClips: entry.voiceClips,
   };
 }
 

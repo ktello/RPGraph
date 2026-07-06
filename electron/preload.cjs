@@ -62,6 +62,17 @@ contextBridge.exposeInMainWorld('rpgraph', {
     ipcRenderer.invoke('lmstudio:list-models', { connection }).then(throwIfRpgraphIpcError),
   listOpenRouterModels: (connection) =>
     ipcRenderer.invoke('openrouter:list-models', { connection }),
+  generateOpenRouterSpeech: (request, onChunk) => {
+    const requestId = nextLlmRequestId();
+    const channel = `openrouter:speech-chunk:${requestId}`;
+    const listener = (_event, base64Chunk) => onChunk?.(base64Chunk);
+    ipcRenderer.on(channel, listener);
+    return ipcRenderer
+      .invoke('openrouter:generate-speech', { ...request, requestId })
+      .finally(() => ipcRenderer.removeListener(channel, listener));
+  },
+  listGeminiModels: (connection) =>
+    ipcRenderer.invoke('gemini:list-models', { connection }),
   loadLmStudioModel: (connection) =>
     ipcRenderer.invoke('lmstudio:load-model', { connection }),
   unloadLmStudioModels: (connection) =>
@@ -127,6 +138,7 @@ contextBridge.exposeInMainWorld('rpgraph', {
   loadJsonFile: () => ipcRenderer.invoke('json-file:load'),
   loadDefaultWorkflow: () => ipcRenderer.invoke('workflow:load-default'),
   loadStartupWorkflow: () => ipcRenderer.invoke('workflow:load-startup'),
+  resolveProjectPath: (relativePath) => ipcRenderer.invoke('app:resolve-project-path', relativePath),
   restoreDefaultWorkflow: () => ipcRenderer.invoke('workflow:restore-default'),
   reloadWorkflow: (filePath) => ipcRenderer.invoke('workflow:reload', filePath),
   saveCurrentWorkflow: (filePath, workflow) =>
@@ -140,6 +152,8 @@ contextBridge.exposeInMainWorld('rpgraph', {
   applyComfyWorkflowRepair: (request) => ipcRenderer.invoke('comfy:apply-workflow-repair', request),
   selectComfyWorkflow: () => ipcRenderer.invoke('comfy:select-workflow'),
   runComfyWorkflowPath: (request) => ipcRenderer.invoke('comfy:run-workflow-path', request),
+  runComfyVoiceWorkflowPath: (request) => ipcRenderer.invoke('comfy:run-voice-workflow-path', request),
+  selectAudio: () => ipcRenderer.invoke('audio:select'),
   loadSettings: () => ipcRenderer.invoke('settings:load'),
   saveSettings: (settings) => ipcRenderer.invoke('settings:save', settings),
   getResourceStats: () => ipcRenderer.invoke('system:resource-stats'),
@@ -153,6 +167,14 @@ contextBridge.exposeInMainWorld('rpgraph', {
   toggleMaximizeWindow: () => ipcRenderer.invoke('window:toggle-maximize'),
   toggleFullScreenWindow: () => ipcRenderer.invoke('window:toggle-full-screen'),
   closeWindow: () => ipcRenderer.invoke('window:close'),
+  onWindowCleanupBeforeClose: (callback) => {
+    const listener = () => {
+      void callback();
+    };
+    ipcRenderer.on('window:cleanup-before-close', listener);
+    return () => ipcRenderer.removeListener('window:cleanup-before-close', listener);
+  },
+  finishWindowCloseCleanup: () => ipcRenderer.invoke('window:cleanup-complete-close'),
   setZoomFactor: (zoomFactor) => {
     const safeZoomFactor = Number.isFinite(zoomFactor)
       ? Math.min(2, Math.max(0.5, zoomFactor))

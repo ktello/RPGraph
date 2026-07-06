@@ -14,9 +14,12 @@ import {
   thoughtParts,
   thoughtStyleClass,
 } from '../chat/textRendering';
+import { dialogueSpeechText } from '../chat/dialogueVoiceSegments';
+import { VoicePlaybackDialog } from '../chat/VoicePlaybackDialog';
 import type { StorybookCharacter } from '../storybook/runtime';
 import type {
   ChatImageAttachment,
+  DialogueVoiceMode,
   ImageCaptionChange,
   InputActionSelection,
   MessageRecord,
@@ -48,6 +51,7 @@ import {
   CommandPillList,
   type CommandPillComposerHandle,
 } from './CommandPillComposer';
+import { PhoneVoiceMessage } from './PhoneVoiceMessage';
 import type { CommandInputCommand } from '../chat/structuredCommands';
 
 const outsidePhoneDisplayModeStorageKey = 'rpgraph-chat-phone-display-mode';
@@ -85,6 +89,24 @@ type ChatConversationPanelProps = {
   isRunning: boolean;
   englishProcessingEnabled: boolean;
   dialogueHighlightEnabled: boolean;
+  dialogueVoiceSpeakerNames: ReadonlySet<string>;
+  activeDialogueVoiceKey: string | null;
+  onSpeakDialogue: (request: { key: string; messageId: number; speakerName: string; text: string }) => void;
+  onGenerateVoiceMessageClip: (request: { messageId: number; speakerName: string; text: string }) => Promise<string | null>;
+  dialogueVoiceMode: DialogueVoiceMode;
+  onDialogueVoiceModeChange: (mode: DialogueVoiceMode) => void;
+  dialogueVoicePreloadDisabledReason: string | null;
+  dialogueVoiceReadAloudDisabledReason: string | null;
+  dialogueNarratorOnlyDisabledReason: string | null;
+  narratorProviderOptions: Array<{ value: string; label: string }>;
+  narratorProviderId: string;
+  onNarratorProviderChange: (providerId: string) => void;
+  cloneVoiceProviderOptions: Array<{ value: string; label: string }>;
+  cloneVoiceProviderId: string;
+  onCloneVoiceProviderChange: (providerId: string) => void;
+  onConfigureOpenRouterTts: () => void;
+  voiceReadAloudActive: boolean;
+  onStopVoiceReadAloud: () => void;
   rpTimeTrackingEnabled: boolean;
   chatTextSize: number;
   onChatTextSizeChange: (value: number) => void;
@@ -135,6 +157,24 @@ export function ChatConversationPanel({
   isRunning,
   englishProcessingEnabled,
   dialogueHighlightEnabled,
+  dialogueVoiceSpeakerNames,
+  activeDialogueVoiceKey,
+  onSpeakDialogue,
+  onGenerateVoiceMessageClip,
+  dialogueVoiceMode,
+  onDialogueVoiceModeChange,
+  dialogueVoicePreloadDisabledReason,
+  dialogueVoiceReadAloudDisabledReason,
+  dialogueNarratorOnlyDisabledReason,
+  narratorProviderOptions,
+  narratorProviderId,
+  onNarratorProviderChange,
+  cloneVoiceProviderOptions,
+  cloneVoiceProviderId,
+  onCloneVoiceProviderChange,
+  onConfigureOpenRouterTts,
+  voiceReadAloudActive,
+  onStopVoiceReadAloud,
   rpTimeTrackingEnabled,
   chatTextSize,
   onChatTextSizeChange,
@@ -197,6 +237,7 @@ export function ChatConversationPanel({
       }
     });
   const [outsidePhoneMenuOpen, setOutsidePhoneMenuOpen] = useState(false);
+  const [voicePlaybackDialogOpen, setVoicePlaybackDialogOpen] = useState(false);
   const outsidePhoneMenuRef = useRef<HTMLDivElement | null>(null);
   const [expandedPhoneGroups, setExpandedPhoneGroups] = useState<Record<string, boolean>>({});
   const [phoneBubbleHeadersEnabled, setPhoneBubbleHeadersEnabled] = useState(() => {
@@ -574,29 +615,45 @@ export function ChatConversationPanel({
             rpTimeTrackingEnabled && effectiveMessageRpDateTime && messageDay !== previousDay
               ? formatRpDayLabel(effectiveMessageRpDateTime, rpDateTimeFormat, rpWeekdayLanguage)
               : '';
-          const renderDialogueTextParts = (text: string) => {
-            const textParts = llmDialogueHighlightActive && dialogue.length > 0
-              ? coloredDialogueParts(text, dialogue)
-              : quotedSpeechParts(text);
-            return textParts.map((part, index) => {
-              const speechColor =
-                'speakerName' in part && part.speakerName
-                  ? message.speakerColors?.[part.speakerName] ??
-                    characterColors.get(part.speakerName) ??
-                    dialogueColors[0]
-                  : undefined;
+          const renderDialoguePartSpans = (
+            textParts: Array<{ text: string; speakerName?: string; isSpeech?: boolean }>,
+            keyPrefix: string,
+          ) =>
+            textParts.map((part, index) => {
+              const partSpeakerName = 'speakerName' in part ? part.speakerName : undefined;
+              const speechColor = partSpeakerName
+                ? message.speakerColors?.[partSpeakerName] ??
+                  characterColors.get(partSpeakerName) ??
+                  dialogueColors[0]
+                : undefined;
               const pendingSpeech = !speechColor && 'isSpeech' in part && part.isSpeech;
+              const voiceKey =
+                partSpeakerName && dialogueVoiceSpeakerNames.has(partSpeakerName)
+                  ? `${message.id}:${keyPrefix}:${index}`
+                  : undefined;
+              const voiceActive = !!voiceKey && voiceKey === activeDialogueVoiceKey;
+              const className = [
+                speechColor ? 'dialogue-highlight' : pendingSpeech ? 'dialogue-highlight pending' : '',
+                voiceKey ? 'dialogue-voice' : '',
+                voiceActive ? 'dialogue-voice-active' : '',
+              ].filter(Boolean).join(' ');
               return (
                 <span
-                  key={index}
-                  className={
-                    speechColor
-                      ? 'dialogue-highlight'
-                      : pendingSpeech
-                        ? 'dialogue-highlight pending'
-                        : undefined
-                  }
+                  key={`${keyPrefix}:${index}`}
+                  className={className || undefined}
                   style={speechColor ? { color: speechColor } : undefined}
+                  title={
+                    voiceKey
+                      ? voiceActive
+                        ? 'Stop voice playback'
+                        : `Speak with the voice of ${partSpeakerName}`
+                      : undefined
+                  }
+                  onClick={
+                    voiceKey && partSpeakerName
+                      ? () => onSpeakDialogue({ key: voiceKey, messageId: message.id, speakerName: partSpeakerName, text: part.text })
+                      : undefined
+                  }
                 >
                   {thoughtParts(part.text).map((thoughtPart, thoughtIndex) => (
                     <span
@@ -613,6 +670,11 @@ export function ChatConversationPanel({
                 </span>
               );
             });
+          const renderDialogueTextParts = (text: string, keyPrefix: string) => {
+            const textParts = llmDialogueHighlightActive && dialogue.length > 0
+              ? coloredDialogueParts(text, dialogue)
+              : quotedSpeechParts(text);
+            return renderDialoguePartSpans(textParts, keyPrefix);
           };
           const characterNameStyle = (name: string) => {
             const color = characterColors.get(name);
@@ -647,6 +709,15 @@ export function ChatConversationPanel({
           const renderPhoneRpTime = (phoneMessageId: number) => {
             const rpDateTime = phoneMessageRpDateTime(phoneMessageId, phoneMessagesById);
             return renderRpTime(rpDateTime, 'phone-bubble-time');
+          };
+          const phoneVoiceClipDataUrl = (message: MessageRecord, speakerName: string, text: string) => {
+            const speechText = dialogueSpeechText(text);
+            return message.voiceClips?.find((clip) =>
+              clip.source === 'phone' &&
+              clip.speakerName === speakerName &&
+              clip.text === speechText &&
+              !!clip.dataUrl
+            )?.dataUrl;
           };
           const renderPhoneActionContent = (phoneMessage: EmbeddedPhoneMessageLink) => (
             <>
@@ -864,7 +935,28 @@ export function ChatConversationPanel({
                           ))}
                         </div>
                       )}
-                      {text && <span>{text}</span>}
+                      {text && linkedMessage?.phoneVoiceMessage && dialogueVoiceSpeakerNames.has(phoneMessage.from) ? (
+                        <div
+                          onClick={(event) => event.stopPropagation()}
+                          onKeyDown={(event) => event.stopPropagation()}
+                        >
+                          <PhoneVoiceMessage
+                            text={text}
+                            clipDataUrl={phoneVoiceClipDataUrl(linkedMessage, phoneMessage.from, text)}
+                            disabled={isRunning}
+                            disabledReason="Voice messages are unavailable while the chat is running."
+                            onGenerateClip={() =>
+                              onGenerateVoiceMessageClip({
+                                messageId: linkedMessage.id,
+                                speakerName: phoneMessage.from,
+                                text,
+                              })
+                            }
+                          />
+                        </div>
+                      ) : text ? (
+                        <span>{text}</span>
+                      ) : null}
                       {linkedMessage?.phoneImageCaptionChange && (
                         <button
                           className="caption-change-chip"
@@ -1231,7 +1323,7 @@ export function ChatConversationPanel({
                         >
                           {compositeTextBefore && (
                             <span className="message-composite-text">
-                              {renderDialogueTextParts(stripRecognizedSpeakerLabels(compositeTextBefore, speakerNames))}
+                              {renderDialogueTextParts(stripRecognizedSpeakerLabels(compositeTextBefore, speakerNames), 'before')}
                             </span>
                           )}
                           {outsidePhoneDisplayMode === 'bubbles' ? (
@@ -1245,7 +1337,7 @@ export function ChatConversationPanel({
                           )}
                           {compositeTextAfter && (
                             <span className="message-composite-text">
-                              {renderDialogueTextParts(stripRecognizedSpeakerLabels(compositeTextAfter, speakerNames))}
+                              {renderDialogueTextParts(stripRecognizedSpeakerLabels(compositeTextAfter, speakerNames), 'after')}
                             </span>
                           )}
                           {rpTimeTrackingEnabled &&
@@ -1254,43 +1346,7 @@ export function ChatConversationPanel({
                         </div>
                       ) : (visibleText || message.rpDateTime) && (
                         <p style={{ fontSize: chatTextSize || defaultChatTextSize }}>
-                          {parts.map((part, index) => {
-                            const speechColor =
-                              'speakerName' in part && part.speakerName
-                                ? message.speakerColors?.[part.speakerName] ??
-                                  characterColors.get(part.speakerName) ??
-                                  dialogueColors[0]
-                                : undefined;
-                            const pendingSpeech = !speechColor && 'isSpeech' in part && part.isSpeech;
-                            return (
-                              <span
-                                key={index}
-                                className={
-                                  speechColor
-                                    ? 'dialogue-highlight'
-                                    : pendingSpeech
-                                      ? 'dialogue-highlight pending'
-                                      : undefined
-                                }
-                                style={speechColor ? { color: speechColor } : undefined}
-                              >
-                                {thoughtParts(part.text).map((thoughtPart, thoughtIndex) => (
-                                  <span
-                                    className={
-                                      thoughtPart.isThought
-                                        ? thoughtStyleClass(
-                                            thoughtTextStyle || defaultThoughtTextStyle,
-                                          )
-                                        : undefined
-                                    }
-                                    key={thoughtIndex}
-                                  >
-                                    {thoughtPart.text}
-                                  </span>
-                                ))}
-                              </span>
-                            );
-                          })}
+                          {renderDialoguePartSpans(parts, 'main')}
                           {rpTimeTrackingEnabled &&
                             !message.eventInput &&
                             renderRpTime(message.rpDateTime, 'message-rp-time')}
@@ -1541,6 +1597,30 @@ export function ChatConversationPanel({
                 </div>
               )}
             </div>
+            <button
+              className={`composer-icon-button${voicePlaybackDialogOpen ? ' active' : ''}`}
+              type="button"
+              onClick={() => setVoicePlaybackDialogOpen(true)}
+              title="Voice playback settings"
+              aria-label="Voice playback settings"
+              aria-haspopup="dialog"
+            >
+              <svg aria-hidden="true" viewBox="0 0 24 24">
+                <polygon points="4 9 8 9 13 4 13 20 8 15 4 15" />
+                <path d="M17 9.5a4 4 0 0 1 0 5" />
+                <path d="M19.5 7a7.5 7.5 0 0 1 0 10" />
+              </svg>
+            </button>
+            {voiceReadAloudActive && (
+              <button
+                className="attach-image-button voice-stop-button"
+                type="button"
+                onClick={onStopVoiceReadAloud}
+                title="Stop the automatic voice read-aloud"
+              >
+                Stop Voices
+              </button>
+            )}
           </div>
           {draftCommands.length > 0 && (
             <CommandPillList
@@ -1563,6 +1643,23 @@ export function ChatConversationPanel({
           </button>
         </div>
       </form>
+      {voicePlaybackDialogOpen && (
+        <VoicePlaybackDialog
+          mode={dialogueVoiceMode}
+          onModeChange={onDialogueVoiceModeChange}
+          preloadDisabledReason={dialogueVoicePreloadDisabledReason}
+          readAloudDisabledReason={dialogueVoiceReadAloudDisabledReason}
+          narratorOnlyDisabledReason={dialogueNarratorOnlyDisabledReason}
+          narratorProviderOptions={narratorProviderOptions}
+          narratorProviderId={narratorProviderId}
+          onNarratorProviderChange={onNarratorProviderChange}
+          cloneVoiceProviderOptions={cloneVoiceProviderOptions}
+          cloneVoiceProviderId={cloneVoiceProviderId}
+          onCloneVoiceProviderChange={onCloneVoiceProviderChange}
+          onConfigureOpenRouterTts={onConfigureOpenRouterTts}
+          onClose={() => setVoicePlaybackDialogOpen(false)}
+        />
+      )}
     </>
   );
 }

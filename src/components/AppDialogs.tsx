@@ -1,4 +1,5 @@
 import { useEffect, useMemo, useRef, useState, type FormEvent, type PointerEvent as ReactPointerEvent } from 'react';
+import { DarkAudioPlayer } from './DarkAudioPlayer';
 import { outputFormatHelp, type OutputFormatHelpKind } from '../nodes/output/formatHelp';
 import { CustomNodeBody } from '../nodes/custom-node/Card';
 import {
@@ -11,6 +12,7 @@ import {
   runCustomNodeDefinition,
 } from '../nodes/custom-node/runtime';
 import {
+  defaultRpStorybookCharacterVoiceConfig,
   defaultRpStorybookImageDescriptionPrompt,
   defaultRpStorybookImageDescriptionPromptSettings,
   emptyRpStorybookV1,
@@ -25,6 +27,7 @@ import {
   storybookCharacterImageOwnerIdBase,
   withRpStorybookPhoneContactPairBlocked,
   type RpStorybookCharacterComfyConfig,
+  type RpStorybookCharacterVoiceConfig,
   type RpStorybookCharacterImage,
   type RpStorybookCharacterProfileImage,
   type RpStorybookFormattedTextSettings,
@@ -48,6 +51,7 @@ import {
 } from '../nodes/shared/promptPresets';
 import { ModelIdPicker } from './ModelIdPicker';
 import { comfyCharacterLoraName } from '../settings';
+import { isComfyImageConnection, isComfyVoiceConnection } from '../comfy/connectionRole';
 import type {
   ChatImageAttachment,
   ConnectionPreset,
@@ -1054,6 +1058,11 @@ type StorybookCreatorDialogProps = {
     appearance: string;
     scenarioPrompt: string;
   }) => Promise<Array<{ dataUrl: string; filename: string }>>;
+  onGenerateCharacterVoicePreview: (request: {
+    providerId: string;
+    speechText: string;
+    sampleDataUrl: string;
+  }) => Promise<Array<{ dataUrl: string; filename: string }>>;
   onUnloadCharacterComfyModels: (providerId: string) => Promise<void>;
   onImportOpeningHistory: () => void;
   onClearOpeningHistory: () => void;
@@ -1215,7 +1224,7 @@ function storybookCharacterComfyStatus({
       text: 'This function is not used because no ComfyUI provider is selected in the Create character phone image action.',
     };
   }
-  const comfyProviderIds = new Set(connections.filter((connection) => connection.kind === 'comfyui').map((connection) => connection.id));
+  const comfyProviderIds = new Set(connections.filter(isComfyImageConnection).map((connection) => connection.id));
   const missingProvider = selectedProviderIds.find((providerId) => !comfyProviderIds.has(providerId));
   if (missingProvider) {
     return {
@@ -1258,6 +1267,29 @@ function withStorybookCharacterComfyConfig(
     characters: storybook.characters.map((character) =>
       character.id === characterId
         ? { ...character, comfyConfig }
+        : character
+    ),
+  };
+}
+
+function storybookCharacterVoiceConfig(
+  storybook: RpStorybookV1,
+  characterId: string,
+): RpStorybookCharacterVoiceConfig {
+  return storybook.characters.find((character) => character.id === characterId)?.voiceConfig ??
+    defaultRpStorybookCharacterVoiceConfig();
+}
+
+function withStorybookCharacterVoiceConfig(
+  storybook: RpStorybookV1,
+  characterId: string,
+  voiceConfig: RpStorybookCharacterVoiceConfig,
+): RpStorybookV1 {
+  return {
+    ...storybook,
+    characters: storybook.characters.map((character) =>
+      character.id === characterId
+        ? { ...character, voiceConfig }
         : character
     ),
   };
@@ -2202,7 +2234,7 @@ function CharacterImagesDialog({
   );
 }
 
-function CharacterComfyConfigDialog({
+function CharacterSetupDialog({
   storybook,
   characterId,
   workflowNodes,
@@ -2211,6 +2243,7 @@ function CharacterComfyConfigDialog({
   onUpdateStorybook,
   onLoadCharacterComfyLoras,
   onGenerateCharacterComfyPreview,
+  onGenerateCharacterVoicePreview,
   onUnloadCharacterComfyModels,
   onClose,
 }: {
@@ -2222,6 +2255,7 @@ function CharacterComfyConfigDialog({
   onUpdateStorybook: (storybook: RpStorybookV1, status?: string) => void;
   onLoadCharacterComfyLoras: StorybookCreatorDialogProps['onLoadCharacterComfyLoras'];
   onGenerateCharacterComfyPreview: StorybookCreatorDialogProps['onGenerateCharacterComfyPreview'];
+  onGenerateCharacterVoicePreview: StorybookCreatorDialogProps['onGenerateCharacterVoicePreview'];
   onUnloadCharacterComfyModels: StorybookCreatorDialogProps['onUnloadCharacterComfyModels'];
   onClose: () => void;
 }) {
@@ -2234,10 +2268,17 @@ function CharacterComfyConfigDialog({
         character.role ? `Role: ${character.role}` : '',
       ].filter(Boolean).join('\n')
     : `Name: ${characterName}`;
-  const comfyConnections = connections.filter((connection) => connection.kind === 'comfyui');
+  const comfyConnections = connections.filter(isComfyImageConnection);
+  const voiceConnections = connections.filter(isComfyVoiceConnection);
+  const [activeSetupTab, setActiveSetupTab] = useState<'image' | 'voice'>('image');
   const [providerId, setProviderId] = useState(comfyConnections[0]?.id ?? '');
+  const [voiceProviderId, setVoiceProviderId] = useState(voiceConnections[0]?.id ?? '');
   const [loraOptions, setLoraOptions] = useState<string[]>([]);
   const [draft, setDraft] = useState(() => storybookCharacterComfyConfig(storybook, characterId));
+  const [voiceDraft, setVoiceDraft] = useState(() => storybookCharacterVoiceConfig(storybook, characterId));
+  const [voiceTestText, setVoiceTestText] = useState('');
+  const [voiceGenerating, setVoiceGenerating] = useState(false);
+  const [voiceClip, setVoiceClip] = useState<{ dataUrl: string; filename: string } | null>(null);
   const [previewScenarioId, setPreviewScenarioId] = useState<(typeof characterComfyPreviewScenarios)[number]['id']>('mirror-selfie');
   const [status, setStatus] = useState('');
   const [generating, setGenerating] = useState(false);
@@ -2306,15 +2347,74 @@ function CharacterComfyConfigDialog({
     };
   }, [onLoadCharacterComfyLoras, providerId]);
 
-  function save() {
+  function commitCharacterSetup() {
     onUpdateStorybook(
-      withStorybookCharacterComfyConfig(storybook, characterId, {
-        loraName: draft.loraName.trim(),
-        loraUrl: draft.loraUrl?.trim() ?? '',
-        appearance: draft.appearance.trim(),
-      }),
-      `ComfyUI config saved for ${characterName}.`,
+      withStorybookCharacterVoiceConfig(
+        withStorybookCharacterComfyConfig(storybook, characterId, {
+          loraName: draft.loraName.trim(),
+          loraUrl: draft.loraUrl?.trim() ?? '',
+          appearance: draft.appearance.trim(),
+        }),
+        characterId,
+        voiceDraft.sampleDataUrl ? voiceDraft : defaultRpStorybookCharacterVoiceConfig(),
+      ),
+      `Character setup saved for ${characterName}.`,
     );
+  }
+
+  async function chooseVoiceSample() {
+    try {
+      const result = await window.rpgraph.selectAudio();
+      if (result.canceled || !result.audio) {
+        return;
+      }
+      setVoiceDraft({
+        sampleName: result.audio.name,
+        sampleMimeType: result.audio.mimeType,
+        sampleDataUrl: result.audio.dataUrl,
+      });
+      setVoiceClip(null);
+      setStatus(`Voice sample selected: ${result.audio.name}. Close to keep it in the storybook.`);
+    } catch (error) {
+      setStatus(`Voice sample selection failed: ${error instanceof Error ? error.message : String(error)}`);
+    }
+  }
+
+  function removeVoiceSample() {
+    setVoiceDraft(defaultRpStorybookCharacterVoiceConfig());
+    setVoiceClip(null);
+    setStatus('Voice sample removed. Close to apply.');
+  }
+
+  async function generateVoicePreview() {
+    if (!voiceProviderId) {
+      setStatus('Choose a ComfyUI voice provider first.');
+      return;
+    }
+    if (!voiceDraft.sampleDataUrl) {
+      setStatus('Upload a voice sample for this character first.');
+      return;
+    }
+    if (!voiceTestText.trim()) {
+      setStatus('Enter a text the character should say.');
+      return;
+    }
+    setVoiceGenerating(true);
+    setVoiceClip(null);
+    setStatus('Unloading local LLM models and generating voice clip ...');
+    try {
+      const clips = await onGenerateCharacterVoicePreview({
+        providerId: voiceProviderId,
+        speechText: voiceTestText,
+        sampleDataUrl: voiceDraft.sampleDataUrl,
+      });
+      setVoiceClip(clips[0] ?? null);
+      setStatus(clips.length ? `Generated ${clips.length} voice clip${clips.length === 1 ? '' : 's'}.` : 'No voice clip returned.');
+    } catch (error) {
+      setStatus(`Voice generation failed: ${error instanceof Error ? error.message : String(error)}`);
+    } finally {
+      setVoiceGenerating(false);
+    }
   }
 
   async function copyLoraUrl() {
@@ -2336,6 +2436,7 @@ function CharacterComfyConfigDialog({
       characterComfyPreviewScenarios.find((entry) => entry.id === previewScenarioId) ??
       characterComfyPreviewScenarios[0];
     setGenerating(true);
+    setPreviewImage(null);
     setStatus('Unloading local LLM models and generating test image ...');
     try {
       const images = await onGenerateCharacterComfyPreview({
@@ -2356,6 +2457,7 @@ function CharacterComfyConfigDialog({
   }
 
   async function closeDialog() {
+    commitCharacterSetup();
     if (!providerId) {
       onClose();
       return;
@@ -2387,6 +2489,23 @@ function CharacterComfyConfigDialog({
     }
   }
 
+  async function unloadVoiceModels() {
+    if (!voiceProviderId) {
+      setStatus('Choose a ComfyUI voice provider first.');
+      return;
+    }
+    setUnloading(true);
+    setStatus('Unloading ComfyUI models ...');
+    try {
+      await onUnloadCharacterComfyModels(voiceProviderId);
+      setStatus('ComfyUI models unloaded.');
+    } catch (error) {
+      setStatus(`Unload failed: ${error instanceof Error ? error.message : String(error)}`);
+    } finally {
+      setUnloading(false);
+    }
+  }
+
   const loraPickerOptions = Array.from(
     new Set(
       [draft.loraName, ...loraOptions]
@@ -2402,20 +2521,135 @@ function CharacterComfyConfigDialog({
         className="storybook-image-dialog character-comfy-dialog"
         role="dialog"
         aria-modal="true"
-        aria-label={`${characterName} ComfyUI config`}
+        aria-label={`${characterName} character setup`}
         onClick={(event) => event.stopPropagation()}
       >
         <div className="storybook-image-dialog-header">
           <div>
-            <h3>ComfyUI Config</h3>
+            <h3>Character Setup</h3>
             <p>{characterName}</p>
           </div>
           <div className="storybook-image-dialog-actions">
-            <button type="button" className="close-button" onClick={save}>Save</button>
             <button type="button" className="close-button" onClick={() => void closeDialog()}>Close</button>
           </div>
         </div>
         {status && <span className="run-note storybook-image-status">{status}</span>}
+        <div className="character-setup-layout">
+          <div className="character-setup-tabs" role="tablist" aria-label="Character setup sections">
+            <button
+              type="button"
+              role="tab"
+              aria-selected={activeSetupTab === 'image'}
+              className={activeSetupTab === 'image' ? 'active' : ''}
+              onClick={() => setActiveSetupTab('image')}
+            >
+              <svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                <rect x="3" y="3" width="18" height="18" rx="2" ry="2" />
+                <circle cx="8.5" cy="8.5" r="1.5" />
+                <polyline points="21 15 16 10 5 21" />
+              </svg>
+              <span>Image Setup</span>
+            </button>
+            <button
+              type="button"
+              role="tab"
+              aria-selected={activeSetupTab === 'voice'}
+              className={activeSetupTab === 'voice' ? 'active' : ''}
+              onClick={() => setActiveSetupTab('voice')}
+            >
+              <svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                <polygon points="11 5 6 9 2 9 2 15 6 15 11 19 11 5" />
+                <path d="M15.54 8.46a5 5 0 0 1 0 7.07" />
+                <path d="M19.07 4.93a10 10 0 0 1 0 14.14" />
+              </svg>
+              <span>Voice Setup</span>
+            </button>
+          </div>
+          {activeSetupTab === 'voice' ? (
+            <div className="character-voice-body">
+              <div className="character-voice-card">
+                <label className="character-comfy-field">
+                  <span>VOICE PROVIDER</span>
+                  <NodeCustomSelect
+                    value={voiceProviderId}
+                    onChange={(value) => setVoiceProviderId(String(value))}
+                    options={voiceConnections.length
+                      ? voiceConnections.map((connection) => providerOption(connection, providerHealthById[connection.id]))
+                      : [{ value: '', label: 'No ComfyUI voice provider', disabled: true }]}
+                  />
+                </label>
+              </div>
+
+              <div className="character-voice-card">
+                <div className="character-voice-card-header">
+                  <span className="character-voice-card-title">VOICE SAMPLE (MP3)</span>
+                  <button type="button" className="contextual-action-button nodrag" onClick={() => void chooseVoiceSample()}>
+                    {voiceDraft.sampleDataUrl ? 'Replace MP3 Sample' : 'Choose MP3 Sample'}
+                  </button>
+                </div>
+                <p className="character-voice-hint">
+                  Upload a short MP3 voice sample of this character — ideally 10 to 20 seconds of
+                  clear speech without music or background noise. It is stored in the storybook and
+                  used as the reference voice for cloning.
+                </p>
+                {voiceDraft.sampleDataUrl ? (
+                  <DarkAudioPlayer
+                    src={voiceDraft.sampleDataUrl}
+                    title={voiceDraft.sampleName || 'Voice sample'}
+                    onRemove={removeVoiceSample}
+                    className="voice-sample-player"
+                  />
+                ) : (
+                  <div className="character-voice-empty-sample">
+                    <span>No voice sample uploaded yet</span>
+                  </div>
+                )}
+              </div>
+
+              <div className="character-voice-card">
+                <span className="character-voice-card-title">VOICE GENERATION &amp; TESTING</span>
+                <label className="character-comfy-field">
+                  <span>TEST TEXT</span>
+                  <textarea
+                    className="node-textarea nodrag nowheel"
+                    rows={3}
+                    value={voiceTestText}
+                    placeholder="Write a sentence the character should say ..."
+                    onChange={(event) => setVoiceTestText(event.currentTarget.value)}
+                  />
+                </label>
+                <div className="character-comfy-actions">
+                  <button
+                    type="button"
+                    className="contextual-action-button nodrag"
+                    disabled={voiceGenerating}
+                    onClick={() => void generateVoicePreview()}
+                  >
+                    {voiceGenerating ? 'Generating ...' : 'Generate Voice'}
+                  </button>
+                  <button type="button" className="contextual-action-button nodrag" disabled={unloading} onClick={() => void unloadVoiceModels()}>
+                    {unloading ? 'Unloading ...' : 'Unload Models'}
+                  </button>
+                </div>
+
+                {voiceGenerating ? (
+                  <div className="character-voice-generating-box">
+                    <div className="character-voice-spinner" />
+                    <span>Generating voice clip ...</span>
+                  </div>
+                ) : voiceClip ? (
+                  <div className="character-voice-result-box">
+                    <span className="character-voice-result-label">GENERATED VOICE CLIP</span>
+                    <DarkAudioPlayer
+                      src={voiceClip.dataUrl}
+                      title={voiceClip.filename || 'Generated voice clip'}
+                      className="voice-generated-player"
+                    />
+                  </div>
+                ) : null}
+              </div>
+            </div>
+          ) : (
         <div className="character-comfy-body">
           <div className="character-comfy-form">
             <label className="character-comfy-field">
@@ -2492,7 +2726,12 @@ function CharacterComfyConfigDialog({
             </div>
           </div>
           <div className="character-comfy-preview">
-            {previewImage ? (
+            {generating ? (
+              <div className="character-image-generating-box">
+                <div className="character-voice-spinner" />
+                <span>Generating test image ...</span>
+              </div>
+            ) : previewImage ? (
               <>
                 <img src={previewImage.dataUrl} alt={previewImage.filename || `${characterName} generated preview`} />
                 <span>{previewImage.filename || 'Generated preview'}</span>
@@ -2502,9 +2741,13 @@ function CharacterComfyConfigDialog({
             )}
           </div>
         </div>
-        <p className={`character-comfy-usage-status${comfyUsageStatus.active ? ' active' : ''}`}>
-          {comfyUsageStatus.text}
-        </p>
+          )}
+        </div>
+        {activeSetupTab === 'image' ? (
+          <p className={`character-comfy-usage-status${comfyUsageStatus.active ? ' active' : ''}`}>
+            {comfyUsageStatus.text}
+          </p>
+        ) : null}
       </section>
     </div>
   );
@@ -2530,6 +2773,7 @@ export function StorybookCreatorDialog({
   onDescribeCharacterImage,
   onLoadCharacterComfyLoras,
   onGenerateCharacterComfyPreview,
+  onGenerateCharacterVoicePreview,
   onUnloadCharacterComfyModels,
   onImportOpeningHistory,
   onClearOpeningHistory,
@@ -2927,7 +3171,7 @@ export function StorybookCreatorDialog({
                                   className={`character-images-button character-comfy-config-button nodrag${comfyStatus.active ? ' configured' : ''}`}
                                   onClick={() => setComfyConfigCharacterId(character.id)}
                                 >
-                                  <span>ComfyUI Config</span>
+                                  <span>Character Setup</span>
                                   {comfyStatus.active ? <span aria-hidden="true">✓</span> : null}
                                 </button>
                                 <button
@@ -3214,7 +3458,7 @@ export function StorybookCreatorDialog({
           />
         )}
         {comfyConfigCharacterId && (
-          <CharacterComfyConfigDialog
+          <CharacterSetupDialog
             storybook={storybook}
             characterId={comfyConfigCharacterId}
             workflowNodes={workflowNodes}
@@ -3223,6 +3467,7 @@ export function StorybookCreatorDialog({
             onUpdateStorybook={onUpdateStorybook}
             onLoadCharacterComfyLoras={onLoadCharacterComfyLoras}
             onGenerateCharacterComfyPreview={onGenerateCharacterComfyPreview}
+            onGenerateCharacterVoicePreview={onGenerateCharacterVoicePreview}
             onUnloadCharacterComfyModels={onUnloadCharacterComfyModels}
             onClose={() => setComfyConfigCharacterId(null)}
           />
