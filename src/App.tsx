@@ -175,6 +175,7 @@ import { useImageAttachments } from './hooks/useImageAttachments';
 import { useSystemLog } from './hooks/useSystemLog';
 import type { NodeLlmApi } from './llm/NodeLlmApi';
 import {
+  isGeminiConnection,
   isLmStudioConnection,
   isOllamaConnection,
   isOpenRouterConnection,
@@ -1315,7 +1316,7 @@ function App() {
     }
     const capabilities = providerHealthById[connection.id]?.capabilities;
     if (
-      isOpenRouterConnection(connection) &&
+      (isOpenRouterConnection(connection) || isGeminiConnection(connection)) &&
       capabilities?.voice === true &&
       capabilities.text !== true &&
       connection.ttsVoice
@@ -1379,7 +1380,9 @@ function App() {
     narratorOnlyProviderId: resolvedNarratorProviderId,
     generateVoiceClip: generateCharacterVoicePreview,
     generateApiNarratorClip: (connection, input, onChunk) =>
-      window.rpgraph.generateOpenRouterSpeech({ connection, input }, onChunk),
+      isGeminiConnection(connection)
+        ? window.rpgraph.generateGeminiSpeech({ connection, input }, onChunk)
+        : window.rpgraph.generateOpenRouterSpeech({ connection, input }, onChunk),
     unloadVoiceModels: unloadCharacterComfyModels,
     onVoiceClipGenerated: storeMessageVoiceClip,
     notifySystem,
@@ -1401,7 +1404,7 @@ function App() {
       : null);
   const dialogueNarratorOnlyDisabledReason = narratorOnlyReady
     ? null
-    : 'Requires a configured ComfyUI narrator or OpenRouter TTS provider.';
+    : 'Requires a configured ComfyUI narrator, OpenRouter TTS, or Google Gemini TTS provider.';
 
   useEffect(() => {
     return window.rpgraph.onWindowCleanupBeforeClose(async () => {
@@ -5343,7 +5346,7 @@ function App() {
     const anyImageConnected = imageProviders.some((connection) => connectionIsOnline(connection.id));
     const anyApiVoiceConnected = connections.some((connection) => {
       const capabilities = providerHealthById[connection.id]?.capabilities;
-      return isOpenRouterConnection(connection) &&
+      return (isOpenRouterConnection(connection) || isGeminiConnection(connection)) &&
         capabilities?.voice === true &&
         capabilities.text !== true &&
         connectionIsOnline(connection.id);

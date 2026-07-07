@@ -1,7 +1,10 @@
 import type { ConnectionPreset } from '../types';
 
 export function ttsNarratorPrompt(connection: ConnectionPreset, transcript: string) {
-  if (!connection.model.startsWith('google/gemini-')) {
+  if (
+    !connection.model.startsWith('google/gemini-') &&
+    !connection.model.startsWith('gemini-')
+  ) {
     return transcript;
   }
   const sections = [

@@ -1151,6 +1151,14 @@ function openRouterNormalizedModel(model) {
   };
 }
 
+const geminiTtsVoices = [
+  'Zephyr', 'Puck', 'Charon', 'Kore', 'Fenrir', 'Leda', 'Orus', 'Aoede',
+  'Callirrhoe', 'Autonoe', 'Enceladus', 'Iapetus', 'Umbriel', 'Algieba',
+  'Despina', 'Erinome', 'Algenib', 'Rasalgethi', 'Laomedeia', 'Achernar',
+  'Alnilam', 'Schedar', 'Gacrux', 'Pulcherrima', 'Achird', 'Zubenelgenubi',
+  'Vindemiatrix', 'Sadachbia', 'Sadaltager', 'Sulafat',
+];
+
 function geminiModelId(model) {
   const name = typeof model?.name === 'string' ? model.name.trim() : '';
   const baseModelId = typeof model?.baseModelId === 'string' ? model.baseModelId.trim() : '';
@@ -1214,7 +1222,7 @@ function geminiNormalizedModel(model) {
   const canGenerate = supportedGenerationMethods.includes('generateContent');
   const isImage = description.includes('image') || description.includes('imagen');
   const isAudio = description.includes('audio') || description.includes('speech') || description.includes('tts');
-  const hasVision = canGenerate && !description.includes('embedding');
+  const hasVision = canGenerate && !description.includes('embedding') && !isAudio;
   const inputModalities = ['text'];
   if (hasVision || isImage) {
     inputModalities.push('image');
@@ -1243,6 +1251,8 @@ function geminiNormalizedModel(model) {
     voice: outputModalities.includes('audio'),
     inputModalities,
     outputModalities,
+    supportedVoices: isAudio ? geminiTtsVoices : [],
+    supportedParameters: isAudio ? ['temperature'] : [],
     contextLength: Number.isFinite(model?.inputTokenLimit) ? model.inputTokenLimit : undefined,
     supportedGenerationMethods,
   };
@@ -3022,6 +3032,114 @@ ipcMain.handle('openrouter:generate-speech', async (event, request) => {
     return {
       dataUrl: `data:${contentType};base64,${audio.toString('base64')}`,
       filename: `openrouter-tts-${Date.now()}.${extension}`,
+    };
+  } finally {
+    abort.dispose();
+  }
+});
+
+ipcMain.handle('gemini:generate-speech', async (event, request) => {
+  const abort = createLlmAbortController(request);
+  const connection = request?.connection;
+  const input = typeof request?.input === 'string' ? request.input.trim() : '';
+  if (!connection?.model?.trim()) {
+    throw new Error('Choose a Gemini TTS model first.');
+  }
+  if (!connection?.ttsVoice?.trim()) {
+    throw new Error('Choose a TTS voice first.');
+  }
+  if (!input) {
+    throw new Error('Enter text to speak first.');
+  }
+  const stream = connection.ttsStreamAudio === true && request?.requestId;
+  const body = {
+    contents: [{ parts: [{ text: input }] }],
+    generationConfig: {
+      responseModalities: ['AUDIO'],
+      speechConfig: {
+        voiceConfig: {
+          prebuiltVoiceConfig: { voiceName: connection.ttsVoice.trim() },
+        },
+      },
+      ...(Number.isFinite(connection.ttsTemperature)
+        ? { temperature: connection.ttsTemperature }
+        : {}),
+    },
+  };
+  try {
+    const response = await requestLlmResponse(
+      geminiApiUrl(connection, stream ? 'streamGenerateContent' : 'generateContent'),
+      {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(body),
+      },
+      abort,
+    );
+    if (!response.ok) {
+      throw new Error(await readError(response));
+    }
+
+    const pcmChunks = [];
+    const consumeResponse = (payload) => {
+      const parts = payload?.candidates?.[0]?.content?.parts;
+      if (!Array.isArray(parts)) {
+        return;
+      }
+      for (const part of parts) {
+        const base64 = part?.inlineData?.data;
+        if (typeof base64 !== 'string' || !base64) {
+          continue;
+        }
+        const bytes = Buffer.from(base64, 'base64');
+        pcmChunks.push(bytes);
+        if (stream && !event.sender.isDestroyed()) {
+          event.sender.send(`gemini:speech-chunk:${request.requestId}`, base64);
+        }
+      }
+    };
+
+    if (stream) {
+      if (!response.body) {
+        throw new Error('The Gemini speech stream does not contain a body.');
+      }
+      const decoder = new TextDecoder();
+      let buffered = '';
+      const consumeLine = (line) => {
+        const trimmed = line.trim();
+        if (!trimmed.startsWith('data:')) {
+          return;
+        }
+        const data = trimmed.slice(5).trim();
+        if (!data || data === '[DONE]') {
+          return;
+        }
+        try {
+          consumeResponse(JSON.parse(data));
+        } catch {
+          // Ignore incomplete or non-JSON SSE lines.
+        }
+      };
+      for await (const value of response.body) {
+        buffered += decoder.decode(streamChunkBytes(value), { stream: true });
+        const lines = buffered.split(/\r?\n/);
+        buffered = lines.pop() ?? '';
+        lines.forEach(consumeLine);
+      }
+      buffered += decoder.decode();
+      buffered.split(/\r?\n/).forEach(consumeLine);
+    } else {
+      consumeResponse(await response.json());
+    }
+
+    const pcm = Buffer.concat(pcmChunks);
+    if (pcm.length === 0) {
+      throw new Error('Gemini returned no audio data.');
+    }
+    const audio = pcm16MonoToWav(pcm);
+    return {
+      dataUrl: `data:audio/wav;base64,${audio.toString('base64')}`,
+      filename: `gemini-tts-${Date.now()}.wav`,
     };
   } finally {
     abort.dispose();

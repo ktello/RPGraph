@@ -33,6 +33,10 @@ declare global {
         connection: ConnectionPreset;
         input: string;
       }, onChunk?: (base64PcmChunk: string) => void) => Promise<{ dataUrl: string; filename: string }>;
+      generateGeminiSpeech: (request: {
+        connection: ConnectionPreset;
+        input: string;
+      }, onChunk?: (base64PcmChunk: string) => void) => Promise<{ dataUrl: string; filename: string }>;
       listGeminiModels: (connection: ConnectionPreset) => Promise<GeminiModelInfo[]>;
       loadLmStudioModel: (connection: ConnectionPreset) => Promise<{
         loadedModel: string;

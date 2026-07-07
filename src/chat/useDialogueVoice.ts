@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
 import { isComfyVoiceConnection } from '../comfy/connectionRole';
-import { isOpenRouterConnection } from '../llm/providerKind';
+import { isGeminiConnection, isOpenRouterConnection } from '../llm/providerKind';
 import type { StorybookCharacter } from '../storybook/runtime';
 import type { ConnectionPreset, MessageRecord, MessageVoiceClip } from '../types';
 import {
@@ -105,7 +105,8 @@ export function useDialogueVoice({
   const narratorOnlyReady = narratorOnlyConnection
     ? isComfyVoiceConnection(narratorOnlyConnection)
       ? !!narratorOnlyConnection.comfyNarratorVoice?.dataUrl
-      : isOpenRouterConnection(narratorOnlyConnection) && !!narratorOnlyConnection.ttsVoice
+      : (isOpenRouterConnection(narratorOnlyConnection) || isGeminiConnection(narratorOnlyConnection)) &&
+        !!narratorOnlyConnection.ttsVoice
     : false;
 
   function sampleForSpeaker(speakerName: string | null) {
@@ -570,7 +571,7 @@ export function useDialogueVoice({
   async function readTextAsApiNarratorEarly(text: string) {
     if (
       !narratorOnlyConnection ||
-      !isOpenRouterConnection(narratorOnlyConnection) ||
+      (!isOpenRouterConnection(narratorOnlyConnection) && !isGeminiConnection(narratorOnlyConnection)) ||
       !narratorOnlyReady
     ) {
       return;
@@ -649,14 +650,14 @@ export function useDialogueVoice({
             speechText: text,
             sampleDataUrl,
           }))[0];
-        } else if (isOpenRouterConnection(narratorOnlyConnection)) {
+        } else if (isOpenRouterConnection(narratorOnlyConnection) || isGeminiConnection(narratorOnlyConnection)) {
           clip = await generateAndPlayApiNarration(narratorOnlyConnection, text);
         }
         if (!clip?.dataUrl || readAloudTokenRef.current !== token) {
           continue;
         }
         storeVoiceClip(message.id, null, text, clip.dataUrl, clip.filename, 'narration');
-        if (!isOpenRouterConnection(narratorOnlyConnection)) {
+        if (!isOpenRouterConnection(narratorOnlyConnection) && !isGeminiConnection(narratorOnlyConnection)) {
           await playClipAndWait(clip.dataUrl);
         }
       }

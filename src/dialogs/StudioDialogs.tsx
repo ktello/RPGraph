@@ -923,7 +923,10 @@ export function StudioDialogs({
   const supportsTtsTemperature =
     isVoiceOnlyModel && editingConnectionSupportedParameters.includes('temperature');
   const supportsGeminiVoiceDirection =
-    isVoiceOnlyModel && editingConnection.model.startsWith('google/gemini-');
+    isVoiceOnlyModel && (
+      editingConnection.model.startsWith('google/gemini-') ||
+      editingConnection.model.startsWith('gemini-')
+    );
   const editingComfyRole = comfyConnectionRole(editingConnection);
   const isComfyImageEditing = isComfyConnection && editingComfyRole === 'image';
   const isComfyVoiceEditing = isComfyConnection && editingComfyRole === 'voice';
@@ -3323,7 +3326,7 @@ export function StudioDialogs({
                               />
                             ) : (
                               <span className="connection-field-hint">
-                                Open the model list to load the voices provided by OpenRouter.
+                                Open the model list to load the voices provided by this service.
                               </span>
                             )}
                           </div>

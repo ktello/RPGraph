@@ -71,6 +71,15 @@ contextBridge.exposeInMainWorld('rpgraph', {
       .invoke('openrouter:generate-speech', { ...request, requestId })
       .finally(() => ipcRenderer.removeListener(channel, listener));
   },
+  generateGeminiSpeech: (request, onChunk) => {
+    const requestId = nextLlmRequestId();
+    const channel = `gemini:speech-chunk:${requestId}`;
+    const listener = (_event, base64Chunk) => onChunk?.(base64Chunk);
+    ipcRenderer.on(channel, listener);
+    return ipcRenderer
+      .invoke('gemini:generate-speech', { ...request, requestId })
+      .finally(() => ipcRenderer.removeListener(channel, listener));
+  },
   listGeminiModels: (connection) =>
     ipcRenderer.invoke('gemini:list-models', { connection }),
   loadLmStudioModel: (connection) =>

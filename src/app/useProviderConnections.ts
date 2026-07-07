@@ -653,6 +653,8 @@ export function useProviderConnections({
           ? entry
           : isOpenRouterConnection(entry)
             ? connectionWithOpenRouterCapabilities(entry)
+            : isGeminiConnection(entry)
+              ? connectionWithGeminiCapabilities(entry)
             : entry.vision !== vision
               ? { ...entry, vision }
               : entry,
@@ -2070,16 +2072,17 @@ export function useProviderConnections({
         : isGeminiConnection(editingConnection)
           ? geminiCapabilitiesForConnection(editingConnection, geminiModelsByConnectionId[editingConnection.id] ?? [])
         : providerHealthById[editingConnection.id]?.capabilities;
-  const editingConnectionSupportedVoices = isOpenRouterConnection(editingConnection)
+  const editingConnectionVoiceModels = isOpenRouterConnection(editingConnection)
     ? openRouterModelsByConnectionId[editingConnection.id]
+    : isGeminiConnection(editingConnection)
+      ? geminiModelsByConnectionId[editingConnection.id]
+      : undefined;
+  const editingConnectionSupportedVoices = editingConnectionVoiceModels
         ?.find((model) => model.id === editingConnection.model)
-        ?.supportedVoices ?? []
-    : [];
-  const editingConnectionSupportedParameters = isOpenRouterConnection(editingConnection)
-    ? openRouterModelsByConnectionId[editingConnection.id]
+        ?.supportedVoices ?? [];
+  const editingConnectionSupportedParameters = editingConnectionVoiceModels
         ?.find((model) => model.id === editingConnection.model)
-        ?.supportedParameters ?? []
-    : [];
+        ?.supportedParameters ?? [];
   const editingComfyWorkflowPath = comfyWorkflowPathForConnection(editingConnection);
   const comfyWorkflowRepairReady = !!pendingComfyWorkflowRepair && pendingComfyWorkflowRepair.workflowPath === editingComfyWorkflowPath;
   const comfyWorkflowRepairInspection = pendingComfyWorkflowRepair?.workflowPath === editingComfyWorkflowPath
