@@ -1,5 +1,5 @@
 import type { MessageRecord, RpAppointment, WorkflowNode } from '../../types';
-import { formatAppointments, formatChatHistory } from '../../workflow';
+import { formatAppointments } from '../../workflow';
 import { storyCharacterRefsFromNodes } from '../../storybook/runtime';
 import {
   appointmentEntitiesFromAppointments,
@@ -101,20 +101,6 @@ function parseResponse(text: string, label = 'Event Manager LLM') {
   throw new Error(
     `${label} returned invalid JSON: ${lastError instanceof Error ? lastError.message : String(lastError)}`,
   );
-}
-
-function formatMessageForAnalysis(message: MessageRecord) {
-  return {
-    messageId: message.id,
-    turn: message.turnNumber,
-    part: message.turnPart,
-    role: message.role,
-    channel: message.channel ?? 'rp',
-    from: message.phoneFrom ?? message.speakerName,
-    to: message.phoneTo,
-    text: message.originalText,
-    rpDateTime: message.rpDateTime,
-  };
 }
 
 function normalizeCharacterName(value: string) {
@@ -436,25 +422,16 @@ export async function executeEventManagerNode(node: WorkflowNode, context: Execu
 
   const referenceRpDateTime = normalizeLocalDateTime(latestHistoryRpDateTime(context.historyMessages)) ??
     currentLocalDateTime();
-  const currentTurnMessages = context.historyMessages.filter(
-    (message) =>
-      message.turnId === currentTurnId &&
-      message.includeInHistory !== false &&
-      (message.role === 'user' || message.role === 'output'),
-  );
-  const previousMessages = context.recentTurns.flatMap(
-    (turn) => [...turn.input.messages, ...turn.output.messages],
-  );
-  const currentTurnNumber = currentTurnMessages.find((message) => message.turnNumber !== undefined)?.turnNumber;
+  const currentTurnNumber = context.historyMessages.find(
+    (message) => message.turnId === currentTurnId && message.turnNumber !== undefined,
+  )?.turnNumber;
   const characterNames = storyCharacterRefsFromNodes(context.nodes).map((character) => character.label);
   const prompt = buildEventManagerPrompt(node.data.eventManagerPrompt, {
+    EventManagerContext: contextText,
     ReferenceRpTime: referenceRpDateTime,
     ReferenceWallClock: currentLocalDateTime(),
     AvailableCharacterNames: JSON.stringify(characterNames),
-    EventManagerContext: contextText ? `EVENT MANAGER CONTEXT:\n${contextText}` : '',
-    PreviousFiveTurns: formatChatHistory(previousMessages, false, 'iso', 'en-US') || '(none)',
     ExistingEvents: JSON.stringify(appointments.map(formatAppointmentForAnalysis)),
-    NewTurnJson: JSON.stringify(currentTurnMessages.map(formatMessageForAnalysis)),
   });
   let lastResponseText = '';
   const attemptEvents = async (attempt: number) => {

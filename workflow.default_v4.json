@@ -185,7 +185,7 @@
           "customText": ""
         },
         "runAfterRpOutput": true,
-        "nodeDataVersion": "1.2.0"
+        "nodeDataVersion": "1.3.0"
       },
       "measured": {
         "width": 365,

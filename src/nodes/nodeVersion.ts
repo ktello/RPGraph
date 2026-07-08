@@ -17,7 +17,7 @@ export const currentCoreNodeVersions: Record<CoreNodeType, NodeVersion> = {
   custom: '1.0.9',
   'last-user-input': '1.1.0',
   'last-rp-output': '1.1.0',
-  'event-manager': '1.2.0',
+  'event-manager': '1.3.0',
   history: '1.8.2',
   'memory-slot': '1.0.0',
   'phone-message-router': '1.1.0',
