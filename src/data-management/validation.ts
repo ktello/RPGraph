@@ -63,6 +63,47 @@ function isTimelineEntry(value: unknown): value is TimelineEntry {
         (clip.createdAt === undefined || typeof clip.createdAt === 'string')
       )
     );
+    const validSocialPost = value.socialPost === undefined || (
+      isRecord(value.socialPost) &&
+      (value.socialPost.app === 'fotogram' || value.socialPost.app === 'onlyfriends') &&
+      typeof value.socialPost.postId === 'string' &&
+      typeof value.socialPost.author === 'string' &&
+      typeof value.socialPost.authorHandle === 'string' &&
+      typeof value.socialPost.caption === 'string' &&
+      (value.socialPost.textOnly === undefined || typeof value.socialPost.textOnly === 'boolean') &&
+      (value.socialPost.imageId === undefined || typeof value.socialPost.imageId === 'string') &&
+      (value.socialPost.imageDescription === undefined || typeof value.socialPost.imageDescription === 'string')
+    );
+    const validSocialThreadAction = value.socialThreadAction === undefined || (
+      isRecord(value.socialThreadAction) &&
+      typeof value.socialThreadAction.actionId === 'string' &&
+      (value.socialThreadAction.action === 'comment' || value.socialThreadAction.action === 'load-more') &&
+      (value.socialThreadAction.app === 'fotogram' || value.socialThreadAction.app === 'onlyfriends') &&
+      typeof value.socialThreadAction.postId === 'string' &&
+      typeof value.socialThreadAction.postAuthor === 'string' &&
+      typeof value.socialThreadAction.postAuthorHandle === 'string' &&
+      typeof value.socialThreadAction.postCaption === 'string' &&
+      typeof value.socialThreadAction.actor === 'string' &&
+      typeof value.socialThreadAction.actorHandle === 'string' &&
+      (
+        value.socialThreadAction.commentText === undefined ||
+        typeof value.socialThreadAction.commentText === 'string'
+      )
+    );
+    const validSocialReactions = value.socialReactions === undefined || (
+      isRecord(value.socialReactions) &&
+      (value.socialReactions.app === 'fotogram' || value.socialReactions.app === 'onlyfriends') &&
+      typeof value.socialReactions.postId === 'string' &&
+      typeof value.socialReactions.likes === 'number' &&
+      (value.socialReactions.append === undefined || typeof value.socialReactions.append === 'boolean') &&
+      Array.isArray(value.socialReactions.comments) &&
+      value.socialReactions.comments.every((comment) =>
+        isRecord(comment) &&
+        typeof comment.from === 'string' &&
+        typeof comment.handle === 'string' &&
+        typeof comment.text === 'string'
+      )
+    );
     return (
       typeof value.turnId === 'string' &&
       typeof value.turnNumber === 'number' &&
@@ -78,7 +119,10 @@ function isTimelineEntry(value: unknown): value is TimelineEntry {
       validImages &&
       validVoiceClips &&
       validEmbeddedPhoneText &&
-      validPhone
+      validPhone &&
+      validSocialPost &&
+      validSocialThreadAction &&
+      validSocialReactions
     );
   }
   if (value.kind === 'event-change') {
@@ -171,6 +215,7 @@ export function isRpgraphSessionV2(value: unknown): value is RpgraphSessionV2 {
     isNumberRecord(value.ui.phoneSeenByConversation) &&
     isNumberRecord(value.ui.bankingSeenByCharacter) &&
     isStringArrayRecord(value.ui.bankingContactsByCharacter) &&
+    isStringArrayRecord(value.ui.socialLikesByAccount) &&
     isNumberRecord(value.ui.phoneDividerAfterByConversation)
   );
 }

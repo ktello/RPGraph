@@ -63,6 +63,7 @@ import {
   bankTransferInputText,
   bankTransferMessages,
 } from './chat/bankTransfers';
+import { socialPostInputText, socialThreadActionInputText } from './chat/socialMedia';
 import {
   extractDialogueQuotes,
 } from './chat/textRendering';
@@ -148,6 +149,7 @@ import storybookFormatVersions from './storybook/formatVersions.json';
 import {
   openingHistoryEventsFromNodes,
   openingHistoryCheckpointsFromNodes,
+  openingHistorySocialLikesFromNodes,
   openingHistoryTurnsFromNodes,
   remapOpeningTurnMessageIds,
 } from './storybook/openingHistoryRuntime';
@@ -230,6 +232,7 @@ import {
   parseRpStorybookJson,
   rpStorybookJsonText,
   withRpStorybookCharacterPhoneWallpaper,
+  withRpStorybookCharacterSocialUsername,
   withRpStorybookPhoneContactPairAllowed,
   type RpStorybookCharacterImage,
   type RpStorybookV1,
@@ -266,6 +269,9 @@ import type {
   ImageCaptionChange,
   InputActionSelection,
   MessageRecord,
+  SocialPostRecord,
+  SocialReactionComment,
+  SocialThreadActionRecord,
   MessageVoiceClip,
   OutputActionContextCapacityBar,
   ConnectionPreset,
@@ -1161,6 +1167,12 @@ function App() {
     unreadPhoneSwitchName,
     openUnreadPhoneConversation,
     openEmbeddedPhoneMessage,
+    openSocialPost,
+    socialPostOpenRequest,
+    socialImageById,
+    socialLikesByAccount,
+    setSocialLikesByAccount,
+    toggleSocialLike,
     unreadEventCount,
     unreadChatCount,
     unreadBankingCount,
@@ -1597,6 +1609,7 @@ function App() {
     setActiveStorybookProtection,
     notifySystem,
     usedStorybookImageIds,
+    currentSocialLikesByAccount: () => socialLikesByAccount,
   });
   async function describeStorybookCharacterImage(
     node: WorkflowNode,
@@ -2510,6 +2523,24 @@ function App() {
       )
     );
 
+    // Imported opening histories bring the players' likes back; when the
+    // current chat is kept, the imported likes are merged in on top.
+    const openingSocialLikes = openingHistorySocialLikesFromNodes(nextNodes);
+    setSocialLikesByAccount((current) => {
+      if (replaceCurrentChat) {
+        return openingSocialLikes;
+      }
+      const merged = { ...current };
+      Object.entries(openingSocialLikes).forEach(([accountKey, postIds]) => {
+        const existing = merged[accountKey] ?? [];
+        merged[accountKey] = [
+          ...existing,
+          ...postIds.filter((postId) => !existing.includes(postId)),
+        ];
+      });
+      return merged;
+    });
+
     const openingEvents = openingHistoryEventsFromNodes(nextNodes);
     if (openingEvents.length > 0) {
       const nodesWithOpeningEvents = nextNodes.map((node) =>
@@ -2555,6 +2586,7 @@ function App() {
       phoneSeenByConversation,
       bankingSeenByCharacter,
       bankingContactsByCharacter,
+      socialLikesByAccount,
       phoneDividerAfterByConversation,
       recentlyUsedEmojis,
     };
@@ -2612,6 +2644,7 @@ function App() {
     setPhoneSeenByConversation({});
     setBankingSeenByCharacter({});
     setBankingContactsByCharacter({});
+    setSocialLikesByAccount({});
     setPhoneDividerAfterByConversation({});
     setOpenedPhoneConversationKey('');
     setRecentlyUsedEmojis([]);
@@ -2749,6 +2782,7 @@ function App() {
     );
     setBankingSeenByCharacter(sessionState.bankingSeenByCharacter);
     setBankingContactsByCharacter(sessionState.bankingContactsByCharacter);
+    setSocialLikesByAccount(sessionState.socialLikesByAccount);
     setPhoneDividerAfterByConversation(sessionState.phoneDividerAfterByConversation);
     setRecentlyUsedEmojis(sessionState.recentlyUsedEmojis ?? []);
     setRecentChatCharacterIds([]);
@@ -2855,6 +2889,7 @@ function App() {
         bankingSeenStateFromMessages(storyCharactersFromNodes(loadedNodes), openingMessages),
       );
       setBankingContactsByCharacter({});
+      setSocialLikesByAccount({});
       setPhoneDividerAfterByConversation({});
       setOpenedPhoneConversationKey('');
       nextMessageIdRef.current =
@@ -4043,6 +4078,34 @@ function App() {
     });
   }
 
+  function saveStorybookSocialUsername(
+    character: StorybookCharacter,
+    app: 'fotogram' | 'onlyfriends',
+    username: string,
+  ) {
+    const storybookNode = nodesRef.current.find(
+      (node) => node.id === character.storybookNodeId && node.data.nodeType === 'rp-storybook-v1',
+    );
+    if (!storybookNode?.data.storybookJson) {
+      return;
+    }
+    const storybook = parseRpStorybookJson(storybookNode.data.storybookJson);
+    const nextStorybook = withRpStorybookCharacterSocialUsername(
+      storybook,
+      character.sourceId,
+      app,
+      username,
+    );
+    const nextJson = rpStorybookJsonText(nextStorybook);
+    if (nextJson === storybookNode.data.storybookJson) {
+      return;
+    }
+    updateRuntimeNode(storybookNode.id, {
+      storybookJson: nextJson,
+      storybookStatus: `${app === 'fotogram' ? 'Fotogram' : 'OnlyFriends'} account saved for ${character.name}.`,
+    });
+  }
+
   function storybookCharacterByPhoneName(name: string) {
     return storyCharacters.find((character) => phoneNamesMatch(character.name, name));
   }
@@ -4986,6 +5049,112 @@ function App() {
       false,
       2,
       0,
+    );
+  }
+
+  async function submitSocialPost(request: {
+    author: StorybookCharacter;
+    post: SocialPostRecord;
+    image?: ChatImageAttachment;
+  }) {
+    if (isRunning) {
+      return false;
+    }
+    return runGraph(
+      socialPostInputText(request.post),
+      request.image ? [request.image] : [],
+      undefined,
+      messagesRef.current,
+      undefined,
+      request.author,
+      false,
+      undefined,
+      undefined,
+      'user',
+      undefined,
+      undefined,
+      undefined,
+      false,
+      3,
+      // Each social app has its own prompt slot: 0 = Fotogram, 1 = OnlyFriends.
+      request.post.app === 'fotogram' ? 0 : 1,
+      undefined,
+      undefined,
+      request.post,
+    );
+  }
+
+  // Social posts link images by Storybook/Gallery id instead of storing their
+  // own copy. Uploaded files are imported into the acting character's Gallery
+  // first (deduplicated by image data), then the post references the saved id.
+  async function importSocialPostImage(request: {
+    owner: StorybookCharacter;
+    image: ChatImageAttachment;
+  }) {
+    const normalized = await normalizeImageAttachment(
+      {
+        name: request.image.name,
+        mimeType: request.image.mimeType,
+        size: request.image.size,
+        dataUrl: request.image.dataUrl,
+      },
+      () => `image-${uniqueId()}`,
+    );
+    const savedImages = ensureImagesForStorybookCharacter(
+      request.owner,
+      [normalized],
+      '',
+      (addedCount) =>
+        addedCount > 0
+          ? `Saved uploaded image for ${request.owner.name}.`
+          : `Uploaded image already saved for ${request.owner.name}.`,
+    );
+    if (!savedImages?.length) {
+      notifySystem('error', `Could not save the uploaded image for ${request.owner.name}.`);
+      return undefined;
+    }
+    return savedImages[0];
+  }
+
+  async function submitSocialThreadAction(request: {
+    actor: StorybookCharacter;
+    action: SocialThreadActionRecord;
+    existingComments: SocialReactionComment[];
+    likeCount: number;
+  }) {
+    if (isRunning) {
+      return false;
+    }
+    return runGraph(
+      socialThreadActionInputText(
+        request.action,
+        request.existingComments,
+        request.likeCount,
+      ),
+      [],
+      undefined,
+      messagesRef.current,
+      undefined,
+      request.actor,
+      false,
+      undefined,
+      undefined,
+      'user',
+      undefined,
+      undefined,
+      undefined,
+      false,
+      3,
+      // Both thread actions share the app's prompt slot.
+      request.action.app === 'fotogram' ? 2 : 3,
+      undefined,
+      undefined,
+      undefined,
+      request.action,
+      {
+        existingComments: request.existingComments,
+        likeCount: request.likeCount,
+      },
     );
   }
 
@@ -6171,6 +6340,9 @@ function App() {
                 setDraftImages((current) => current.filter((entry) => entry.id !== imageId))
               }
               onOpenEmbeddedPhoneMessage={openEmbeddedPhoneMessage}
+              onOpenSocialPost={openSocialPost}
+              socialImageById={socialImageById}
+              socialLikesByAccount={socialLikesByAccount}
               onOutputActionChoice={submitOutputActionChoice}
               onSubmitMessage={submitMessage}
               onDraftChange={setDraft}
@@ -6205,6 +6377,7 @@ function App() {
               unreadPhoneConversations={unreadPhoneConversations}
               unreadBankingCount={unreadBankingCount}
               phoneHomeRequestId={phoneHomeRequestId}
+              socialPostOpenRequest={socialPostOpenRequest}
               phoneImages={phoneImages}
               phoneGalleryImages={phoneGalleryImages}
               phoneDraft={phoneDraft}
@@ -6291,6 +6464,19 @@ function App() {
               onSelectPhoneGalleryImage={selectPhoneGalleryImageFromComposer}
               onAddPhoneImages={addPhoneImagesFromComposer}
               bankTransferMessages={bankTransferMessages(messages)}
+              socialMediaMessages={messages.filter(
+                (message) =>
+                  !!message.socialPost ||
+                  !!message.socialThreadAction ||
+                  !!message.socialReactions,
+              )}
+              onSubmitSocialPost={submitSocialPost}
+              onSubmitSocialThreadAction={submitSocialThreadAction}
+              onCreateSocialAccount={saveStorybookSocialUsername}
+              onImportSocialPostImage={importSocialPostImage}
+              socialImageById={socialImageById}
+              socialLikesByAccount={socialLikesByAccount}
+              onToggleSocialLike={toggleSocialLike}
               bankingContactNames={viewedPhoneCharacter
                 ? bankingContactsByCharacter[viewedPhoneCharacter.id] ?? []
                 : []}

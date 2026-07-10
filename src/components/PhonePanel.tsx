@@ -21,6 +21,9 @@ import type {
   ConnectionPreset,
   ImageCaptionChange,
   MessageRecord,
+  SocialPostRecord,
+  SocialReactionComment,
+  SocialThreadActionRecord,
   ProviderConnectionHealth,
   RpDateTimeFormat,
   RpWeekdayLanguage,
@@ -35,6 +38,8 @@ import { phoneReplyVisibleText } from '../chat/phoneReplies';
 import { PhoneImagePicker } from './PhoneImagePicker';
 import { PhoneGalleryScreen } from './PhoneGalleryScreen';
 import { PhoneBankingScreen } from './PhoneBankingScreen';
+import { PhoneSocialFeedScreen } from './phone-social/PhoneSocialFeedScreen';
+import { socialApps } from './phone-social/socialApps';
 import { PhoneVoiceMessage } from './PhoneVoiceMessage';
 import { CharacterAvatar } from './CharacterAvatar';
 import { ImageContextControl } from './ImageContextControl';
@@ -74,11 +79,14 @@ type UnreadPhoneConversation = {
   unread: boolean;
 };
 
-type PhoneScreen = 'desktop' | 'whatsup' | 'gallery' | 'chat-gallery' | 'camera' | 'banking';
+type PhoneScreen =
+  | 'desktop' | 'whatsup' | 'gallery' | 'chat-gallery' | 'camera' | 'banking'
+  | 'fotogram' | 'onlyfriends';
 
-type PhoneDesktopAppId = 'whatsup' | 'gallery' | 'camera' | 'banking';
+type PhoneDesktopAppId = 'whatsup' | 'gallery' | 'camera' | 'banking' | 'fotogram' | 'onlyfriends';
 
-const phoneDesktopAppIds: readonly PhoneDesktopAppId[] = ['whatsup', 'gallery', 'camera', 'banking'];
+const phoneDesktopAppIds: readonly PhoneDesktopAppId[] =
+  ['whatsup', 'gallery', 'camera', 'banking', 'fotogram', 'onlyfriends'];
 
 const defaultPhoneWallpapers: ChatImageAttachment[] = [
   {
@@ -128,6 +136,11 @@ type PhonePanelProps = {
   unreadPhoneConversations: UnreadPhoneConversation[];
   unreadBankingCount: number;
   phoneHomeRequestId: number;
+  socialPostOpenRequest?: {
+    requestId: number;
+    app: 'fotogram' | 'onlyfriends';
+    postId: string;
+  };
   phoneImages: ChatImageAttachment[];
   phoneGalleryImages: ChatImageAttachment[];
   phoneDraft: string;
@@ -214,6 +227,34 @@ type PhonePanelProps = {
     amount: number;
     note: string;
   }) => void;
+  socialMediaMessages: MessageRecord[];
+  onSubmitSocialPost: (request: {
+    author: StorybookCharacter;
+    post: SocialPostRecord;
+    image?: ChatImageAttachment;
+  }) => Promise<boolean>;
+  onSubmitSocialThreadAction: (request: {
+    actor: StorybookCharacter;
+    action: SocialThreadActionRecord;
+    existingComments: SocialReactionComment[];
+    likeCount: number;
+  }) => Promise<boolean>;
+  onCreateSocialAccount: (
+    character: StorybookCharacter,
+    app: 'fotogram' | 'onlyfriends',
+    username: string,
+  ) => void;
+  onImportSocialPostImage: (request: {
+    owner: StorybookCharacter;
+    image: ChatImageAttachment;
+  }) => Promise<ChatImageAttachment | undefined>;
+  socialImageById: (imageId: string) => ChatImageAttachment | undefined;
+  socialLikesByAccount: Record<string, string[]>;
+  onToggleSocialLike: (
+    characterId: string,
+    app: 'fotogram' | 'onlyfriends',
+    postId: string,
+  ) => void;
   phoneDesktopLayout: PhoneDesktopLayout;
   onPhoneDesktopLayoutChange: (layout: PhoneDesktopLayout) => void;
   phoneDesktopIconSize: PhoneDesktopIconSize;
@@ -239,6 +280,7 @@ export function PhonePanel({
   unreadPhoneConversations,
   unreadBankingCount,
   phoneHomeRequestId,
+  socialPostOpenRequest,
   phoneImages,
   phoneGalleryImages,
   phoneDraft,
@@ -300,6 +342,14 @@ export function PhonePanel({
   bankingContactNames,
   onAddBankingContact,
   onSendBankTransfer,
+  socialMediaMessages,
+  onSubmitSocialPost,
+  onSubmitSocialThreadAction,
+  onCreateSocialAccount,
+  onImportSocialPostImage,
+  socialImageById,
+  socialLikesByAccount,
+  onToggleSocialLike,
   phoneDesktopLayout,
   onPhoneDesktopLayoutChange,
   phoneDesktopIconSize,
@@ -312,14 +362,31 @@ export function PhonePanel({
 }: PhonePanelProps) {
   const commandComposerRef = useRef<CommandPillComposerHandle | null>(null);
   // Start on the conversation when the panel opens through a chat message
-  // link (the highlight is still pending); otherwise start on the desktop.
+  // link, or on a requested social post; otherwise start on the desktop.
   const [screen, setScreen] = useState<PhoneScreen>(() =>
-    highlightedPhoneMessageId !== undefined ? 'whatsup' : 'desktop');
+    socialPostOpenRequest?.app ??
+    (highlightedPhoneMessageId !== undefined ? 'whatsup' : 'desktop'));
   const [seenPhoneHomeRequestId, setSeenPhoneHomeRequestId] = useState(phoneHomeRequestId);
   if (seenPhoneHomeRequestId !== phoneHomeRequestId) {
     setSeenPhoneHomeRequestId(phoneHomeRequestId);
     if (screen !== 'desktop') {
       setScreen('desktop');
+    }
+  }
+  const [seenSocialPostOpenRequestId, setSeenSocialPostOpenRequestId] = useState(
+    socialPostOpenRequest?.requestId ?? 0,
+  );
+  // Leaving the social screen consumes the request; otherwise reopening the
+  // app from the desktop would jump back to the previously requested post.
+  const [dismissedSocialPostOpenRequestId, setDismissedSocialPostOpenRequestId] =
+    useState<number>();
+  if (
+    socialPostOpenRequest &&
+    seenSocialPostOpenRequestId !== socialPostOpenRequest.requestId
+  ) {
+    setSeenSocialPostOpenRequestId(socialPostOpenRequest.requestId);
+    if (screen !== socialPostOpenRequest.app) {
+      setScreen(socialPostOpenRequest.app);
     }
   }
   const unreadWhatsUpCount = phoneContacts.reduce(
@@ -617,6 +684,61 @@ export function PhonePanel({
     );
   }
 
+  if (screen === 'fotogram' || screen === 'onlyfriends') {
+    const socialScreen = screen;
+    return (
+      <PhoneSocialFeedScreen
+        key={`${screen}-${selectedCharacter?.id ?? 'no-account'}`}
+        app={socialApps[screen]}
+        owner={selectedCharacter}
+        storyCharacters={storyCharacters}
+        characterColors={characterColors}
+        phoneGalleryImages={phoneGalleryImages}
+        bankTransferMessages={bankTransferMessages}
+        socialMediaMessages={socialMediaMessages}
+        openPostRequest={
+          socialPostOpenRequest?.app === screen &&
+          socialPostOpenRequest.requestId !== dismissedSocialPostOpenRequestId
+            ? {
+                requestId: socialPostOpenRequest.requestId,
+                postId: socialPostOpenRequest.postId,
+              }
+            : undefined
+        }
+        isRunning={isRunning}
+        onSendBankTransfer={onSendBankTransfer}
+        onSubmitSocialPost={onSubmitSocialPost}
+        onSubmitSocialThreadAction={onSubmitSocialThreadAction}
+        onCreateSocialAccount={onCreateSocialAccount}
+        onImportPostImage={onImportSocialPostImage}
+        socialImageById={socialImageById}
+        socialLikesByAccount={socialLikesByAccount}
+        onToggleLike={(postId) => {
+          if (selectedCharacter) {
+            onToggleSocialLike(selectedCharacter.id, socialScreen, postId);
+          }
+        }}
+        onBack={() => {
+          setDismissedSocialPostOpenRequestId(socialPostOpenRequest?.requestId);
+          setScreen('desktop');
+        }}
+        connections={connections}
+        providerHealthById={providerHealthById}
+        estimatedTokenBytesPerToken={estimatedTokenBytesPerToken}
+        imageAssistantChatHistoryContext={imageAssistantChatHistoryContext}
+        imageAssistantModelStateById={imageAssistantModelStateById}
+        onSetImageAssistantLlmModelLoaded={onSetImageAssistantLlmModelLoaded}
+        onUnloadImageAssistantComfyModel={onUnloadImageAssistantComfyModel}
+        onRefreshImageAssistantModelState={onRefreshImageAssistantModelState}
+        onSubmitImageAssistantMessage={onSubmitImageAssistantMessage}
+        onGenerateImageAssistantImages={onGenerateImageAssistantImages}
+        onSaveImageAssistantImage={onSaveImageAssistantImage}
+        rpDateTimeFormat={rpDateTimeFormat}
+        rpWeekdayLanguage={rpWeekdayLanguage}
+      />
+    );
+  }
+
   if (screen === 'camera') {
     return (
       <div className="phone-desktop" style={desktopStyle} aria-label="Phone desktop">
@@ -800,6 +922,56 @@ export function PhonePanel({
               </span>
             )}
             <span>Banking</span>
+          </button>
+          <button
+            className="phone-desktop-app"
+            type="button"
+            style={{
+              gridColumn: desktopLayout.apps.fotogram.column,
+              gridRow: desktopLayout.apps.fotogram.row,
+            }}
+            onPointerDown={(event) => beginDesktopInteraction(event, { kind: 'app', appId: 'fotogram' })}
+            onClick={() => {
+              if (suppressAppClickRef.current) {
+                suppressAppClickRef.current = false;
+                return;
+              }
+              setScreen('fotogram');
+            }}
+            aria-label="Open Fotogram"
+          >
+            <span className="phone-fotogram-icon" aria-hidden="true">
+              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round">
+                <rect x="3" y="3" width="18" height="18" rx="5" />
+                <circle cx="12" cy="12" r="4" />
+                <circle cx="17.2" cy="6.8" r="1" />
+              </svg>
+            </span>
+            <span>Fotogram</span>
+          </button>
+          <button
+            className="phone-desktop-app"
+            type="button"
+            style={{
+              gridColumn: desktopLayout.apps.onlyfriends.column,
+              gridRow: desktopLayout.apps.onlyfriends.row,
+            }}
+            onPointerDown={(event) => beginDesktopInteraction(event, { kind: 'app', appId: 'onlyfriends' })}
+            onClick={() => {
+              if (suppressAppClickRef.current) {
+                suppressAppClickRef.current = false;
+                return;
+              }
+              setScreen('onlyfriends');
+            }}
+            aria-label="Open OnlyFriends"
+          >
+            <span className="phone-onlyfriends-icon" aria-hidden="true">
+              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round">
+                <path d="M19 13.5c1.2-1.3 1.8-2.7 1.8-3.9A4.1 4.1 0 0 0 12 6.9a4.1 4.1 0 0 0-8.8 2.7c0 1.2.6 2.6 1.8 3.9l7 6.8Z" />
+              </svg>
+            </span>
+            <span>OnlyFriends</span>
           </button>
         </div>
         <div className="phone-desktop-settings" ref={desktopSettingsRef}>

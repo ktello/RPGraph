@@ -1,4 +1,4 @@
-export type OutputFormatHelpKind = 'rp' | 'phone' | 'output-actions';
+export type OutputFormatHelpKind = 'rp' | 'phone' | 'output-actions' | 'social-media';
 
 export const rpOutputPrompt = `Normal RP is the main story output for the Chat tab.
 
@@ -79,6 +79,27 @@ For contextCapacity, source.index selects the first, second, etc. Context Compre
 Always use valid JSON with double quotes.
 Do not wrap the JSON in markdown.`;
 
+export const socialMediaOutputPrompt = `Social Media is the channel for reactions inside the phone social apps (Fotogram, OnlyFriends).
+
+It is used by Message Format 3 runs. Post slots are Turn Mode 0 = Fotogram and 1 = OnlyFriends. Comment-thread slots are Turn Mode 2 = Fotogram and 3 = OnlyFriends.
+
+A [SOCIAL MEDIA POST] input creates initial reactions:
+{"reactions":{"postId":"the post id from the input","likes":14,"comments":[{"from":"Name","text":"comment text"},{"from":"Another Name","text":"comment text"}]}}
+
+A [SOCIAL MEDIA THREAD ACTION] input either adds a user comment or loads more comments. Return new reactions to append plus a very short English history summary:
+{"reactions":{"postId":"the post id from the input","additionalLikes":2,"comments":[{"from":"Name","text":"new reply"}]},"summary":"Alex complimented Jamie's photo; Jamie thanked Alex while other people joined the thread."}
+
+Rules:
+- Initial-post likes is a plausible total for the app and audience. Thread additionalLikes is a small increase, usually zero to five.
+- Fotogram post reactions use zero to two fitting story characters plus two to three invented NPC friends. Thread reactions may include the post author, fitting story characters, or NPC commenters.
+- On someone else's Fotogram post, decide naturally whether the author replies, other commenters react, or the user's comment is ignored while unrelated comments appear.
+- On the actor's own Fotogram post, replies usually address the actor directly when that fits the new comment.
+- OnlyFriends uses invented fans/subscribers only; story characters never appear there. Keep the tone suggestive rather than explicit.
+- Each comment needs from (a name) and text. An optional handle field overrides the generated @handle.
+- Do not repeat existing comments. New comments stay short and natural.
+- For thread actions, summary is mandatory, one short sentence, and is the only text sent to chat history. Summarize what the actor did and any meaningful response without copying the full comment thread or listing background NPC noise.
+- Always use valid JSON with double quotes. Do not wrap the JSON in markdown. Do not add prose.`;
+
 export const outputFormatHelp = {
   rp: {
     title: 'RP Text Input Format',
@@ -97,6 +118,12 @@ export const outputFormatHelp = {
     description:
       'Use this prompt in the Simple Prompt node that writes extra app actions. Phone and chat messages are added to the timeline; choices and UI items are displayed by the app.',
     prompt: outputActionsPrompt,
+  },
+  'social-media': {
+    title: 'Social Media Format',
+    description:
+      'Use this prompt in the LLM Prompt Switch channel that reacts to social app activity (Fotogram, OnlyFriends). The JSON reactions are applied to the post in the app and recorded in the chat history.',
+    prompt: socialMediaOutputPrompt,
   },
 } satisfies Record<OutputFormatHelpKind, {
   title: string;

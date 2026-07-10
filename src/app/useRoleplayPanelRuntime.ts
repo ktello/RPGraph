@@ -21,6 +21,12 @@ import {
   unreadBankTransfersForCharacter,
 } from '../chat/bankTransfers';
 import { normalizePhoneName } from '../chat/phoneMessages';
+import {
+  socialCharacterForPost,
+  socialLikeAccountKey,
+  socialMessageHiddenFromChat,
+} from '../chat/socialMedia';
+import { storybookImageById } from '../storybook/imageLibrary';
 import { dialogueColors } from '../chat/textRendering';
 import {
   chatAttachmentFromStorybookImage,
@@ -58,6 +64,8 @@ import type {
   ChatImageAttachment,
   EmbeddedPhoneMessageLink,
   MessageRecord,
+  SocialAppKind,
+  SocialPostRecord,
   TurnRecord,
   WorkflowNode,
   WorkflowNodeData,
@@ -107,7 +115,14 @@ export function useRoleplayPanelRuntime({
   const [phoneSeenByConversation, setPhoneSeenByConversation] = useState<Record<string, number>>({});
   const [bankingSeenByCharacter, setBankingSeenByCharacter] = useState<Record<string, number>>({});
   const [bankingContactsByCharacter, setBankingContactsByCharacter] = useState<Record<string, string[]>>({});
+  // Liked post ids per "characterId/app" account key; part of the RP save.
+  const [socialLikesByAccount, setSocialLikesByAccount] = useState<Record<string, string[]>>({});
   const [phoneHomeRequestId, setPhoneHomeRequestId] = useState(0);
+  const [socialPostOpenRequest, setSocialPostOpenRequest] = useState<{
+    requestId: number;
+    app: SocialPostRecord['app'];
+    postId: string;
+  }>();
   const [phoneDividerAfterByConversation, setPhoneDividerAfterByConversation] = useState<Record<string, number>>({});
   const [recentlyUsedEmojis, setRecentlyUsedEmojis] = useState<string[]>([]);
   const [recentChatCharacterIds, setRecentChatCharacterIds] = useState<string[]>([]);
@@ -571,6 +586,49 @@ export function useRoleplayPanelRuntime({
     selectChatPanelView('phone');
   }
 
+  // Posted photos are stored as Storybook/Gallery image ids; resolve the
+  // pixels from the image library wherever a post is rendered.
+  const socialImageById = useCallback(
+    (imageId: string) => {
+      const image = storybookImageById(storybooksByNodeId.values(), imageId);
+      return image ? chatAttachmentFromStorybookImage(image) : undefined;
+    },
+    [storybooksByNodeId],
+  );
+
+  function toggleSocialLike(characterId: string, app: SocialAppKind, postId: string) {
+    const accountKey = socialLikeAccountKey(characterId, app);
+    setSocialLikesByAccount((current) => {
+      const liked = current[accountKey] ?? [];
+      return {
+        ...current,
+        [accountKey]: liked.includes(postId)
+          ? liked.filter((id) => id !== postId)
+          : [...liked, postId],
+      };
+    });
+  }
+
+  function openSocialPost(post: SocialPostRecord) {
+    if (post.app === 'onlyfriends') {
+      const author = socialCharacterForPost(post, storyCharacters);
+      if (!author) {
+        notifySystem('warning', `Could not find the OnlyFriends post author "${post.author}".`);
+        return;
+      }
+      setSelectedCharacterId(author.id);
+      setViewedPhoneCharacterId(author.id);
+      rememberChatCharacter(author.id);
+    }
+    setHighlightedPhoneMessage(undefined);
+    setSocialPostOpenRequest((current) => ({
+      requestId: (current?.requestId ?? 0) + 1,
+      app: post.app,
+      postId: post.postId,
+    }));
+    setChatPanelView('phone');
+  }
+
   const newEventIds = useMemo(
     () => upcomingEvents.flatMap((event) => (seenEventIds.has(event.id) ? [] : [event.id])),
     [seenEventIds, upcomingEvents],
@@ -585,6 +643,7 @@ export function useRoleplayPanelRuntime({
           message.channel !== 'phone' &&
           !message.isOpening &&
           !openingMessageIds.has(message.id) &&
+          !socialMessageHiddenFromChat(message) &&
           message.includeInHistory !== false
             ? Math.max(latestId, message.id)
             : latestId,
@@ -603,6 +662,7 @@ export function useRoleplayPanelRuntime({
               message.channel !== 'phone' &&
               !message.isOpening &&
               !openingMessageIds.has(message.id) &&
+              !socialMessageHiddenFromChat(message) &&
               message.includeInHistory !== false,
           ).length,
     [chatPanelView, lastSeenMessageRecordId, messages, openingMessageIds],
@@ -645,11 +705,15 @@ export function useRoleplayPanelRuntime({
       setHighlightedEventIds(new Set(newEventIds));
       setSeenEventIds(new Set(upcomingEvents.map((event) => event.id)));
     }
+    if (view === 'phone') {
+      setSocialPostOpenRequest(undefined);
+    }
     setChatPanelView(view);
   }
 
   function selectPhonePanelView() {
     setHighlightedPhoneMessage(undefined);
+    setSocialPostOpenRequest(undefined);
     if (chatPanelView !== 'phone') {
       setChatPanelView('phone');
       return;
@@ -680,6 +744,7 @@ export function useRoleplayPanelRuntime({
       }
     }
 
+    setSocialPostOpenRequest(undefined);
     setPhoneHomeRequestId((current) => current + 1);
   }
 
@@ -1017,6 +1082,12 @@ export function useRoleplayPanelRuntime({
     unreadPhoneSwitchName,
     openUnreadPhoneConversation,
     openEmbeddedPhoneMessage,
+    openSocialPost,
+    socialPostOpenRequest,
+    socialImageById,
+    socialLikesByAccount,
+    setSocialLikesByAccount,
+    toggleSocialLike,
     unreadEventCount,
     unreadChatCount,
     unreadBankingCount,

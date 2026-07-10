@@ -27,7 +27,9 @@ import {
 } from '../storybook/imageUsage';
 import {
   openingHistoryCheckpointsFromNodes,
+  openingHistorySocialLikesFromNodes,
   openingHistoryTurnsFromNodes,
+  turnsWithStorybookImageRefs,
   remapOpeningTurnMessageIds,
 } from '../storybook/openingHistoryRuntime';
 import {
@@ -84,6 +86,15 @@ import {
   latestBankTransferMessageIdForCharacter,
   unreadBankTransferCountForCharacter,
 } from '../chat/bankTransfers';
+import {
+  parseSocialReactionsOutput,
+  socialMessageHiddenFromChat,
+  socialPostEngagementByPostId,
+  socialPostTextFromInput,
+  socialReactionsByPostId,
+  socialThreadActionInputText,
+  socialThreadCommentTextFromInput,
+} from '../chat/socialMedia';
 import type { StorybookCharacter } from '../storybook/runtime';
 import {
   collectRecentReferenceImages,
@@ -162,6 +173,7 @@ export function verifyWorkflowValidationFixtures() {
     },
     phoneSettings: { wallpaperId: 'wallpaper-1' },
     banking: { startBalance: 100, fixedExpenses: [] },
+    social: { fotogramUsername: '', onlyfriendsUsername: '' },
   };
   const bankingMessages: MessageRecord[] = [
     {
@@ -197,6 +209,81 @@ export function verifyWorkflowValidationFixtures() {
       ['Taylor Reed', 'danny harper'],
     ).join('|') === 'Danny Harper|Ryan Parker|Taylor Reed',
     'Banking recipients must include transfer counterparties and deduplicated saved contacts',
+  );
+
+  const socialThreadAction = {
+    actionId: 'thread-action-1',
+    action: 'comment' as const,
+    app: 'fotogram' as const,
+    postId: 'post-1',
+    postAuthor: 'Alex',
+    postAuthorHandle: 'alex',
+    postCaption: 'A sunny afternoon.',
+    actor: 'Alex',
+    actorHandle: 'alex',
+    commentText: 'How does everyone like this place?',
+  };
+  const socialThreadInput = socialThreadActionInputText(
+    socialThreadAction,
+    [{ from: 'Background Friend', handle: 'background.friend', text: 'Looks great!' }],
+    12,
+  );
+  assertFixture(
+    socialThreadInput.includes("Post ownership: actor's own post") &&
+      socialThreadInput.includes('Likes: 12') &&
+      socialThreadInput.includes('Comment count: 1') &&
+      socialThreadInput.includes('Background Friend (@background.friend): Looks great!') &&
+      socialPostTextFromInput('[SOCIAL MEDIA POST]\nPost text: Translated caption') ===
+        'Translated caption' &&
+      socialThreadCommentTextFromInput(
+        '[SOCIAL MEDIA THREAD ACTION]\nNew comment from the actor: Translated comment',
+      ) === 'Translated comment',
+    'social inputs must expose ownership and translated user text for persistence',
+  );
+  const parsedSocialThread = parseSocialReactionsOutput(
+    '{"reactions":{"postId":"post-1","additionalLikes":2,"comments":[{"from":"Jamie","text":"Love it!"}]},"summary":"Alex asked the thread about the location; Jamie responded positively."}',
+    { app: 'fotogram', postId: 'post-1', append: true },
+  );
+  const socialReactionMessages: MessageRecord[] = [
+    {
+      id: 20,
+      role: 'output',
+      originalText: 'Initial reactions',
+      socialReactions: {
+        app: 'fotogram',
+        postId: 'post-1',
+        likes: 10,
+        comments: [{ from: 'Robin', handle: 'robin', text: 'Beautiful.' }],
+      },
+    },
+    {
+      id: 21,
+      role: 'output',
+      originalText: 'Thread reactions',
+      socialThreadAction,
+      socialReactions: parsedSocialThread.reactions,
+    },
+  ];
+  const combinedSocialReactions = socialReactionsByPostId('fotogram', socialReactionMessages);
+  const combinedSocialEngagement = socialPostEngagementByPostId(
+    'fotogram',
+    socialReactionMessages,
+    // Persisted player likes: one per liking account, only for this app.
+    {
+      'alex/fotogram': ['post-1'],
+      'robin/fotogram': ['post-1', 'post-2'],
+      'alex/onlyfriends': ['post-1'],
+    },
+  );
+  assertFixture(
+    parsedSocialThread.historySummary?.startsWith('Alex asked') === true &&
+      combinedSocialReactions['post-1']?.likes === 12 &&
+      combinedSocialReactions['post-1']?.comments.length === 2 &&
+      combinedSocialEngagement['post-1']?.likeCount === 14 &&
+      combinedSocialEngagement['post-1']?.commentCount === 3 &&
+      combinedSocialEngagement['post-2']?.likeCount === 1 &&
+      socialReactionMessages.every(socialMessageHiddenFromChat),
+    'social thread output must aggregate engagement while reaction history stays hidden in Chat',
   );
 
   const assistantStorybook = {
@@ -303,10 +390,24 @@ export function verifyWorkflowValidationFixtures() {
       originalText: 'Ignored error',
       phoneImageIds: ['ignored_image_01'],
     },
+    {
+      id: 4,
+      role: 'output',
+      originalText: '[Fotogram] Sarah posted a photo',
+      socialPost: {
+        app: 'fotogram',
+        postId: 'post-1',
+        author: 'Sarah Miller',
+        authorHandle: 'sarah',
+        caption: 'Party!',
+        imageId: 'sarah_miller_image_02',
+      },
+    },
   ]);
   assertFixture(
     usedImageIds.has('emily_miller_image_01') &&
       usedImageIds.has('sarah_miller_image_01') &&
+      usedImageIds.has('sarah_miller_image_02') &&
       !usedImageIds.has('ignored_image_01'),
     'chat history image usage must include RP attachments and Phone image IDs',
   );
@@ -680,7 +781,33 @@ export function verifyWorkflowValidationFixtures() {
         replyToMessageId: 1,
       }],
     },
+  }, {
+    id: 'opening-turn-3',
+    number: 3,
+    createdAt: '2026-06-01T12:10:00.000Z',
+    input: { graphText: '', messages: [] },
+    output: {
+      graphText: 'Social post',
+      messages: [{
+        id: 4,
+        role: 'output',
+        originalText: '[Fotogram] Emily Miller (@emily) posted a photo: "Party!"',
+        includeInHistory: true,
+        socialPost: {
+          app: 'fotogram',
+          postId: 'post-import-1',
+          author: 'Emily Miller',
+          authorHandle: 'emily',
+          caption: 'Party!',
+          imageId: 'emily_miller_image_01',
+          imageDescription: 'Emily at the party.',
+        },
+      }],
+    },
   }];
+  openingHistoryStorybook.openingHistory.socialLikes = {
+    'emily-miller/fotogram': ['post-import-1'],
+  };
   openingHistoryStorybook.openingHistory.checkpoints = [{
     turnId: 'opening-turn-2',
     createdTimelineEntryIds: [],
@@ -697,6 +824,20 @@ export function verifyWorkflowValidationFixtures() {
   if (!openingHistoryNode || openingHistoryNode.data.nodeType !== 'rp-storybook-v1') {
     throw new Error('Workflow validation fixture failed: default Storybook node is missing');
   }
+  // Import stores gallery-backed images as id-only references (no base64
+  // copy); attachments without a gallery entry keep their embedded data.
+  openingHistoryNode.data.storybookJson = rpStorybookJsonText(openingHistoryStorybook);
+  openingHistoryStorybook.openingHistory.turns = turnsWithStorybookImageRefs(
+    openingHistoryStorybook.openingHistory.turns,
+    [openingHistoryNode],
+  );
+  const storedOpeningAttachment = openingHistoryStorybook.openingHistory.turns[0]
+    ?.output.messages[0]?.imageAttachments?.[0];
+  assertFixture(
+    storedOpeningAttachment?.id === 'emily_miller_image_01' &&
+      storedOpeningAttachment.dataUrl === '',
+    'importing the current chat must strip gallery-backed image copies to id references',
+  );
   openingHistoryNode.data.storybookJson = rpStorybookJsonText(openingHistoryStorybook);
   const restoredOpeningMessages = openingHistoryTurnsFromNodes([openingHistoryNode])
     .flatMap((turn) => [...turn.input.messages, ...turn.output.messages]);
@@ -706,7 +847,7 @@ export function verifyWorkflowValidationFixtures() {
     restoredPhoneImage?.phoneImageIds?.[0] === 'emily_miller_image_01' &&
       restoredPhoneImage.imageAttachments?.[0]?.dataUrl === 'data:image/jpeg;base64,AA==' &&
       restoredPhoneImage.includeInHistory === true,
-    'Phone Opening History turns must preserve full image attachments and normal history behavior',
+    'Phone Opening History image references must rehydrate from the Storybook image library',
   );
   assertFixture(
     restoredRpImage?.imageAttachments?.[0]?.id === 'emily_miller_image_01' &&
@@ -729,6 +870,14 @@ export function verifyWorkflowValidationFixtures() {
   assertFixture(
     openingHistoryCheckpointsFromNodes([openingHistoryNode])[0]?.turnId === restoredOpeningTurns[1]?.id,
     'Opening History checkpoints must follow their namespaced runtime turn ids',
+  );
+  const restoredSocialPostMessage = restoredOpeningMessages.find((message) => message.socialPost);
+  assertFixture(
+    restoredSocialPostMessage?.socialPost?.imageId === 'emily_miller_image_01' &&
+      restoredSocialPostMessage.socialPost.postId === 'post-import-1' &&
+      openingHistorySocialLikesFromNodes([openingHistoryNode])['emily-miller/fotogram']?.[0] ===
+        'post-import-1',
+    'Opening History must carry social post image ids and imported player likes',
   );
 
   assertFixture(isWorkflowFile(currentWorkflow), 'workflow.default.json must load');
@@ -834,10 +983,48 @@ export function verifyWorkflowValidationFixtures() {
       phoneSeenByConversation: {},
       bankingSeenByCharacter: {},
       bankingContactsByCharacter: {},
+      socialLikesByAccount: {},
       phoneDividerAfterByConversation: {},
     },
   };
   assertFixture(isRpSaveFile(currentSession), 'current RP Save Format v2 must load');
+  assertFixture(
+    isRpSaveFile({
+      ...currentSession,
+      timeline: [
+        {
+          id: 'turn-1-output-1',
+          kind: 'message',
+          turnId: 'turn-1',
+          turnNumber: 1,
+          phase: 'output',
+          channel: 'rp',
+          role: 'assistant',
+          text: { original: '[Fotogram] Alex commented and received a reply.' },
+          socialThreadAction: {
+            actionId: 'social-thread-fotogram-1',
+            action: 'comment',
+            app: 'fotogram',
+            postId: 'post-1',
+            postAuthor: 'Jamie',
+            postAuthorHandle: 'jamie',
+            postCaption: 'A sunny afternoon.',
+            actor: 'Alex',
+            actorHandle: 'alex',
+            commentText: 'Great photo!',
+          },
+          socialReactions: {
+            app: 'fotogram',
+            postId: 'post-1',
+            likes: 2,
+            comments: [{ from: 'Jamie', handle: 'jamie', text: 'Thank you!' }],
+            append: true,
+          },
+        },
+      ],
+    }),
+    'current RP Save Format must accept persisted social thread actions',
+  );
   assertFixture(
     !isRpSaveFile({ ...currentSession, formatVersion: '1.1' }),
     'a different session format version must be rejected during beta',
@@ -914,6 +1101,7 @@ export function verifyWorkflowValidationFixtures() {
             sourceTurnId: 'turn-1',
             sourceTurnNumber: 1,
           }],
+          socialLikes: { 'alex/fotogram': ['post-1'] },
         },
       }),
     },

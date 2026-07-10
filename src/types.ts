@@ -619,6 +619,56 @@ export type BankTransferRecord = {
   note?: string;
 };
 
+export type SocialAppKind = 'fotogram' | 'onlyfriends';
+
+/** A post a character published in a social app; persisted on the message. */
+export type SocialPostRecord = {
+  app: SocialAppKind;
+  postId: string;
+  author: string;
+  authorHandle: string;
+  caption: string;
+  textOnly?: boolean;
+  /**
+   * Storybook/Gallery image id of the posted photo. The post links the image
+   * instead of storing its own copy; the pixels live once in the Storybook
+   * image library and are resolved by id wherever the post is shown.
+   */
+  imageId?: string;
+  /** Stored description of the attached image (from the phone gallery), for the LLM. */
+  imageDescription?: string;
+};
+
+export type SocialReactionComment = {
+  from: string;
+  handle: string;
+  text: string;
+};
+
+/** A user action inside one social post's comment thread. */
+export type SocialThreadActionRecord = {
+  actionId: string;
+  action: 'comment' | 'load-more';
+  app: SocialAppKind;
+  postId: string;
+  postAuthor: string;
+  postAuthorHandle: string;
+  postCaption: string;
+  actor: string;
+  actorHandle: string;
+  commentText?: string;
+};
+
+/** LLM-generated reactions (likes and comments) to one social post. */
+export type SocialReactionsRecord = {
+  app: SocialAppKind;
+  postId: string;
+  likes: number;
+  comments: SocialReactionComment[];
+  /** Append records add their likes and comments to earlier reactions. */
+  append?: boolean;
+};
+
 export type MessageRecord = {
   id: number;
   role: 'user' | 'output' | 'error';
@@ -667,6 +717,9 @@ export type MessageRecord = {
   workflowVariableSetCommands?: WorkflowVariableSetCommand[];
   voiceClips?: MessageVoiceClip[];
   bankTransfer?: BankTransferRecord;
+  socialPost?: SocialPostRecord;
+  socialThreadAction?: SocialThreadActionRecord;
+  socialReactions?: SocialReactionsRecord;
 };
 
 export type RpAppointment = {
@@ -804,7 +857,7 @@ export type PhoneDesktopLayout = {
     width: number;
     height: number;
   };
-  apps: Record<'whatsup' | 'gallery' | 'camera' | 'banking', {
+  apps: Record<'whatsup' | 'gallery' | 'camera' | 'banking' | 'fotogram' | 'onlyfriends', {
     column: number;
     row: number;
   }>;

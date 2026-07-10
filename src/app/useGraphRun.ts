@@ -9,6 +9,8 @@ import type {
   EmbeddedPhoneMessageLink,
   ImageCaptionChange,
   MessageRecord,
+  SocialPostRecord,
+  SocialThreadActionRecord,
   ChatDialogueQuote,
   OutputActionContextCapacityBar,
   ProviderConnectionHealth,
@@ -71,6 +73,17 @@ import {
   bankTransferHistoryText,
   bankTransferPartyMatches,
 } from '../chat/bankTransfers';
+import {
+  parseSocialReactionsOutput,
+  socialPostInputText,
+  socialPostHistoryText,
+  socialPostTextFromInput,
+  socialReactionsHistoryText,
+  socialThreadActionInputText,
+  socialThreadCommentTextFromInput,
+  socialThreadHistoryText,
+  type SocialThreadRunContext,
+} from '../chat/socialMedia';
 import { recentInputHistoryContext } from '../chat/inputTransforms';
 import { withSpeakerPrefix } from '../chat/instructions';
 import { executeGraph } from '../graph/executeGraph';
@@ -394,10 +407,14 @@ export function useGraphRun(options: UseGraphRunOptions) {
     turnModeOverride?: number,
     phoneReplyToOverride?: MessageRecord,
     structuredInput?: StructuredInputPayload,
+    socialPost?: SocialPostRecord,
+    socialThreadAction?: SocialThreadActionRecord,
+    socialThreadContext?: SocialThreadRunContext,
   ) {
     const isAutoTurn = turnMode === 'auto-turn';
     const isNarratorTurn = turnMode === 'narrator';
-    const shouldRestoreCancelledInput = !isAutoTurn && !narratorAutoTurn;
+    const shouldRestoreCancelledInput =
+      !isAutoTurn && !narratorAutoTurn && messageFormatOverride !== 3;
     const runtimeNodes = nodesRef.current;
     const { inputNode, outputNode } = findChatEndpoints(runtimeNodes);
     if (!outputNode || !inputNode) {
@@ -476,6 +493,9 @@ export function useGraphRun(options: UseGraphRunOptions) {
         turnModeOverride,
         phoneReplyToOverride,
         structuredInput,
+        socialPost,
+        socialThreadAction,
+        socialThreadContext,
       );
     };
     const finishRun = () => {
@@ -847,8 +867,8 @@ export function useGraphRun(options: UseGraphRunOptions) {
       displayText.trim()
     ) {
       try {
-        inputText = await translateText(
-          displayText,
+        const translateSocialText = (text: string) => translateText(
+          text,
           'to-english',
           inputNode.data.connectionId ?? defaultConnectionId,
           inputNode.id,
@@ -857,6 +877,26 @@ export function useGraphRun(options: UseGraphRunOptions) {
           runSignal,
           inputHistoryContext,
         );
+        if (socialPost) {
+          const translatedCaption = await translateSocialText(socialPost.caption);
+          inputText = socialPostInputText({
+            ...socialPost,
+            caption: translatedCaption || socialPost.caption,
+          });
+        } else if (socialThreadAction && socialThreadContext) {
+          const translatedComment = socialThreadAction.action === 'comment'
+            ? await translateSocialText(socialThreadAction.commentText ?? '')
+            : undefined;
+          inputText = socialThreadActionInputText(
+            translatedComment
+              ? { ...socialThreadAction, commentText: translatedComment }
+              : socialThreadAction,
+            socialThreadContext.existingComments,
+            socialThreadContext.likeCount,
+          );
+        } else {
+          inputText = await translateSocialText(displayText);
+        }
       } catch (error) {
         const message = error instanceof Error ? error.message : String(error);
         const cancelled = isRunCancelledError(error);
@@ -1088,7 +1128,9 @@ export function useGraphRun(options: UseGraphRunOptions) {
         turnContext,
       });
     }
-    if (shouldAppendInputMessage && !isAutoTurn && !isPhoneMessage && messageFormat !== 2) {
+    // Output-actions (2) and social-media (3) runs do not append the raw input
+    // text; their results are recorded as dedicated history messages instead.
+    if (shouldAppendInputMessage && !isAutoTurn && !isPhoneMessage && messageFormat !== 2 && messageFormat !== 3) {
       appendMessage({
         role: 'user',
         originalText: narratorAutoTurn ? 'Narrator AutoTurn' : originalInput,
@@ -1136,6 +1178,7 @@ export function useGraphRun(options: UseGraphRunOptions) {
       let outputHighlightingContext = '';
       let phoneMessageOutput = '';
       let outputActionsText = '';
+      let socialMediaOutputText = '';
       const graphOutput = await executeGraph({
         outputNodeId: outputNode.id,
         nodes: executionNodes,
@@ -1172,7 +1215,7 @@ export function useGraphRun(options: UseGraphRunOptions) {
           runTraceEvents.push({ kind: 'format', ...result });
         },
         trackRunCompletion: true,
-        auxiliaryOutputHandles: ['output-actions', 'highlighting-context', 'phone-message'],
+        auxiliaryOutputHandles: ['output-actions', 'highlighting-context', 'phone-message', 'social-media'],
         onAuxiliaryOutput: (handle, text) => {
           if (handle === 'highlighting-context') {
             outputHighlightingContext = text;
@@ -1182,6 +1225,9 @@ export function useGraphRun(options: UseGraphRunOptions) {
           }
           if (handle === 'output-actions') {
             outputActionsText = text;
+          }
+          if (handle === 'social-media') {
+            socialMediaOutputText = text;
           }
         },
         streamOutput:
@@ -1784,6 +1830,105 @@ export function useGraphRun(options: UseGraphRunOptions) {
             translatedText,
             includeInHistory: true,
             bankTransfer: canonicalTransfer,
+          });
+        }
+
+        // Social-media runs record the post itself plus the generated
+        // reactions as history messages, mirroring how bank transfers land in
+        // the timeline. The post is only persisted when the run succeeds.
+        if (socialPost) {
+          // The whole input block was translated to English for the run. The
+          // persisted record uses that text too, so the app and history agree.
+          const englishCaption = socialPostTextFromInput(originalInput) ?? socialPost.caption;
+          const persistedSocialPost = { ...socialPost, caption: englishCaption };
+          const postHistoryText = socialPostHistoryText(persistedSocialPost);
+          const translatedPostText = await translateOutputActionText(postHistoryText, {
+            text: postHistoryText,
+          });
+          appendMessage({
+            role: 'output',
+            originalText: postHistoryText,
+            translatedText: translatedPostText,
+            includeInHistory: true,
+            socialPost: persistedSocialPost,
+          });
+          const parsedReactions = parseSocialReactionsOutput(socialMediaOutputText, socialPost);
+          reportFormatResult({
+            name: 'Social Media JSON',
+            status: parsedReactions.reactions && parsedReactions.warnings.length === 0 ? 'ok' : 'error',
+            detail: parsedReactions.warnings.length
+              ? parsedReactions.warnings.join(' ')
+              : `${parsedReactions.reactions?.likes ?? 0} like(s), ${parsedReactions.reactions?.comments.length ?? 0} comment(s) parsed.`,
+            preview: parsedReactions.warnings.length ? socialMediaOutputText : undefined,
+          });
+          parsedReactions.warnings.forEach((warning) => reportRunWarning(warning, outputNodeTraceInfo));
+          if (parsedReactions.reactions) {
+            // Only comments from real Storybook characters matter to the
+            // story; generated NPC comments stay in the app but are left out
+            // of the chat-history line.
+            const characterComments = parsedReactions.reactions.comments.filter((comment) =>
+              storyCharacters.some((character) => bankTransferPartyMatches(character, comment.from)),
+            );
+            const reactionsText = socialReactionsHistoryText(
+              { ...parsedReactions.reactions, comments: characterComments },
+              persistedSocialPost,
+            );
+            const translatedReactionsText = await translateOutputActionText(reactionsText, {
+              text: reactionsText,
+            });
+            appendMessage({
+              role: 'output',
+              originalText: reactionsText,
+              translatedText: translatedReactionsText,
+              includeInHistory: true,
+              socialReactions: parsedReactions.reactions,
+            });
+          }
+        }
+        if (socialThreadAction) {
+          const persistedThreadAction = socialThreadAction.action === 'comment'
+            ? {
+                ...socialThreadAction,
+                commentText:
+                  socialThreadCommentTextFromInput(originalInput) ?? socialThreadAction.commentText,
+              }
+            : socialThreadAction;
+          const parsedReactions = parseSocialReactionsOutput(socialMediaOutputText, {
+            app: persistedThreadAction.app,
+            postId: persistedThreadAction.postId,
+            append: true,
+          });
+          reportFormatResult({
+            name: 'Social Media Thread JSON',
+            status: parsedReactions.reactions && parsedReactions.warnings.length === 0 ? 'ok' : 'error',
+            detail: parsedReactions.warnings.length
+              ? parsedReactions.warnings.join(' ')
+              : `${parsedReactions.reactions?.likes ?? 0} additional like(s), ${parsedReactions.reactions?.comments.length ?? 0} comment(s) parsed.`,
+            preview: parsedReactions.warnings.length ? socialMediaOutputText : undefined,
+          });
+          parsedReactions.warnings.forEach((warning) => reportRunWarning(warning, outputNodeTraceInfo));
+          const historyReactions = parsedReactions.reactions ?? {
+            app: persistedThreadAction.app,
+            postId: persistedThreadAction.postId,
+            likes: 0,
+            comments: [],
+            append: true,
+          };
+          const historyText = socialThreadHistoryText(
+            persistedThreadAction,
+            historyReactions,
+            parsedReactions.historySummary,
+          );
+          const translatedHistoryText = await translateOutputActionText(historyText, {
+            text: historyText,
+          });
+          appendMessage({
+            role: 'output',
+            originalText: historyText,
+            translatedText: translatedHistoryText,
+            includeInHistory: true,
+            socialThreadAction: persistedThreadAction,
+            socialReactions: parsedReactions.reactions,
           });
         }
       }
