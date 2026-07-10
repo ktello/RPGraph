@@ -192,7 +192,7 @@ export function OutputNodeCard({ id, data }: NodeProps<WorkflowNode>) {
         </button>
       </div>
       <div className="workflow-ports">
-        <div className="workflow-port workflow-port-input">
+        <div className="workflow-port workflow-port-input output-format-port">
           <Handle type="target" position={Position.Left} />
           <PortLabel data={data} direction="input" label="Normal RP" valueType="text" />
           <button
@@ -204,7 +204,7 @@ export function OutputNodeCard({ id, data }: NodeProps<WorkflowNode>) {
             ?
           </button>
         </div>
-        <div className="workflow-port workflow-port-input">
+        <div className="workflow-port workflow-port-input output-format-port">
           <Handle id="phone-message" type="target" position={Position.Left} />
           <PortLabel data={data} direction="input" handle="phone-message" label="Phone Message" valueType="text" />
           <button
@@ -216,7 +216,7 @@ export function OutputNodeCard({ id, data }: NodeProps<WorkflowNode>) {
             ?
           </button>
         </div>
-        <div className="workflow-port workflow-port-input">
+        <div className="workflow-port workflow-port-input output-format-port">
           <Handle id="output-actions" type="target" position={Position.Left} />
           <PortLabel data={data} direction="input" handle="output-actions" label="Output Actions" valueType="mixed" />
           <button

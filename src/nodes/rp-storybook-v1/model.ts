@@ -40,6 +40,20 @@ export type RpStorybookCharacterVoiceConfig = {
   sampleDataUrl: string;
 };
 
+export type RpStorybookCharacterPhoneSettings = {
+  wallpaperId: string;
+};
+
+export type RpStorybookBankingFixedExpense = {
+  label: string;
+  amount: number;
+};
+
+export type RpStorybookCharacterBanking = {
+  startBalance: number;
+  fixedExpenses: RpStorybookBankingFixedExpense[];
+};
+
 export type RpStorybookV1Character = {
   id: string;
   name: string;
@@ -50,6 +64,8 @@ export type RpStorybookV1Character = {
   comfyConfig?: RpStorybookCharacterComfyConfig;
   voiceConfig?: RpStorybookCharacterVoiceConfig;
   profileImage?: RpStorybookCharacterProfileImage;
+  phoneSettings?: RpStorybookCharacterPhoneSettings;
+  banking?: RpStorybookCharacterBanking;
 } & RpStorybookCharacterImageOwner;
 
 export type RpStorybookPhoneContactBlock = {
@@ -62,7 +78,7 @@ export type RpStorybookImageDescriptionPromptSettings = {
   customText?: string;
 };
 
-export const currentRpStorybookVersion = '1.16.0' as const;
+export const currentRpStorybookVersion = '1.17.0' as const;
 
 export type RpStorybookV1 = {
   format: 'rpgraph-storybook';
@@ -368,6 +384,48 @@ export function defaultRpStorybookCharacterVoiceConfig(): RpStorybookCharacterVo
   };
 }
 
+export function defaultRpStorybookCharacterPhoneSettings(): RpStorybookCharacterPhoneSettings {
+  return { wallpaperId: 'wallpaper-1' };
+}
+
+export const defaultRpStorybookCharacterStartBalance = 1000;
+
+export function defaultRpStorybookCharacterBanking(): RpStorybookCharacterBanking {
+  return { startBalance: defaultRpStorybookCharacterStartBalance, fixedExpenses: [] };
+}
+
+function centsAmount(value: unknown) {
+  return typeof value === 'number' && Number.isFinite(value) && value > 0
+    ? Math.round(value * 100) / 100
+    : undefined;
+}
+
+export function rpStorybookCharacterBanking(value: unknown): RpStorybookCharacterBanking {
+  const banking = recordValue(value);
+  const startBalance = banking.startBalance;
+  const fixedExpenses = Array.isArray(banking.fixedExpenses) ? banking.fixedExpenses : [];
+  return {
+    startBalance: typeof startBalance === 'number' && Number.isFinite(startBalance) && startBalance >= 0
+      ? Math.round(startBalance * 100) / 100
+      : defaultRpStorybookCharacterStartBalance,
+    fixedExpenses: fixedExpenses.flatMap((entry) => {
+      const expense = recordValue(entry);
+      const label = stringValue(expense.label);
+      const amount = centsAmount(expense.amount);
+      return label && amount !== undefined ? [{ label, amount }] : [];
+    }),
+  };
+}
+
+export function rpStorybookCharacterPhoneSettings(
+  value: unknown,
+): RpStorybookCharacterPhoneSettings {
+  const settings = recordValue(value);
+  return {
+    wallpaperId: stringValue(settings.wallpaperId) || defaultRpStorybookCharacterPhoneSettings().wallpaperId,
+  };
+}
+
 export function rpStorybookCharacterVoiceConfig(value: unknown): RpStorybookCharacterVoiceConfig {
   const config = recordValue(value);
   const sampleDataUrl = stringValue(config.sampleDataUrl);
@@ -398,6 +456,8 @@ function normalizeCharacter(value: unknown, index: number, usedImageIds: Set<str
     role: stringValue(character.role),
     comfyConfig: rpStorybookCharacterComfyConfig(character.comfyConfig),
     voiceConfig: rpStorybookCharacterVoiceConfig(character.voiceConfig),
+    phoneSettings: rpStorybookCharacterPhoneSettings(character.phoneSettings),
+    banking: rpStorybookCharacterBanking(character.banking),
     ...(profileImage ? { profileImage } : {}),
     images,
   };
@@ -844,16 +904,19 @@ export function rpStorybookPromptJsonText(storybook: RpStorybookV1) {
   });
   return JSON.stringify({
     ...storybook,
-    characters: storybook.characters.map((character) => ({
-      ...character,
-      ...(character.profileImage
-        ? { profileImage: { ...character.profileImage, dataUrl: 'data:image/jpeg;base64,...' } }
-        : {}),
-      ...(character.voiceConfig?.sampleDataUrl
-        ? { voiceConfig: { ...character.voiceConfig, sampleDataUrl: 'data:audio/mpeg;base64,...' } }
-        : {}),
-      images: character.images.map(({ dataUrl: _dataUrl, ...image }) => image),
-    })),
+    characters: storybook.characters.map((character) => {
+      const { phoneSettings: _phoneSettings, ...characterWithoutPhoneSettings } = character;
+      return {
+        ...characterWithoutPhoneSettings,
+        ...(character.profileImage
+          ? { profileImage: { ...character.profileImage, dataUrl: 'data:image/jpeg;base64,...' } }
+          : {}),
+        ...(character.voiceConfig?.sampleDataUrl
+          ? { voiceConfig: { ...character.voiceConfig, sampleDataUrl: 'data:audio/mpeg;base64,...' } }
+          : {}),
+        images: character.images.map(({ dataUrl: _dataUrl, ...image }) => image),
+      };
+    }),
     openingHistory: {
       ...storybook.openingHistory,
       checkpoints: [],
@@ -892,6 +955,9 @@ function withPreservedCharacterImages(
       voiceConfig: fallbackCharacters.get(character.id)?.voiceConfig ??
         character.voiceConfig ??
         defaultRpStorybookCharacterVoiceConfig(),
+      phoneSettings: fallbackCharacters.get(character.id)?.phoneSettings ??
+        character.phoneSettings ??
+        defaultRpStorybookCharacterPhoneSettings(),
       images: fallbackCharacters.get(character.id)?.images ?? character.images,
     })),
   };
@@ -999,6 +1065,22 @@ export function withRpStorybookPhoneContactPairAllowed(
   return withRpStorybookPhoneContactPairBlocked(storybook, leftRef, rightRef, false);
 }
 
+export function withRpStorybookCharacterPhoneWallpaper(
+  storybook: RpStorybookV1,
+  characterId: string,
+  wallpaperId: string,
+): RpStorybookV1 {
+  const nextWallpaperId = wallpaperId.trim() || defaultRpStorybookCharacterPhoneSettings().wallpaperId;
+  return {
+    ...storybook,
+    characters: storybook.characters.map((character) =>
+      character.id === characterId
+        ? { ...character, phoneSettings: { wallpaperId: nextWallpaperId } }
+        : character,
+    ),
+  };
+}
+
 export function parseNodeStorybookJson(text: string | undefined): RpStorybookV1 | undefined {
   if (!text) {
     return undefined;
@@ -1023,17 +1105,20 @@ export function rpStorybookEditPrompt(currentJson: string, instruction: string) 
     '{"reply":"short user-facing answer","changedFields":["title","scenario.openingSituation"],"patch":[{"op":"replace","path":"/title","value":"New title"}]}',
     'Do not return the complete storybook. Do not replace the document root. Patch only the exact fields or array entries needed for the user request.',
     'Keep the exact storybook shape below:',
-    '{"format":"rpgraph-storybook","version":"1.16.0","title":"","introduction":"","imageDescriptionPrompt":{"mode":"default"},"scenario":{"summary":"","openingSituation":"","currentSituation":""},"characters":[{"id":"","name":"","description":"","personality":"","speechStyle":"","role":"","comfyConfig":{"loraName":"","loraUrl":"","appearance":""},"profileImage":{"imageId":"robert_miller_image_01","dataUrl":"data:image/jpeg;base64,...","crop":{"x":25,"y":20,"size":50}},"images":[{"id":"robert_miller_image_01","name":"robert_miller_image_01","mimeType":"image/jpeg","size":0,"dataUrl":"data:image/jpeg;base64,...","width":0,"height":0,"description":"","receivedFrom":"","imageAccess":false}]}],"phoneContacts":{"blocked":[{"owner":"character-id","contact":"other-character-id"}]},"openingHistory":{"summary":"","turns":[],"checkpoints":[],"events":[]}}',
+    '{"format":"rpgraph-storybook","version":"1.17.0","title":"","introduction":"","imageDescriptionPrompt":{"mode":"default"},"scenario":{"summary":"","openingSituation":"","currentSituation":""},"characters":[{"id":"","name":"","description":"","personality":"","speechStyle":"","role":"","banking":{"startBalance":1000,"fixedExpenses":[{"label":"Mobile plan","amount":24.99}]},"comfyConfig":{"loraName":"","loraUrl":"","appearance":""},"profileImage":{"imageId":"robert_miller_image_01","dataUrl":"data:image/jpeg;base64,...","crop":{"x":25,"y":20,"size":50}},"images":[{"id":"robert_miller_image_01","name":"robert_miller_image_01","mimeType":"image/jpeg","size":0,"dataUrl":"data:image/jpeg;base64,...","width":0,"height":0,"description":"","receivedFrom":"","imageAccess":false}]}],"phoneContacts":{"blocked":[{"owner":"character-id","contact":"other-character-id"}]},"openingHistory":{"summary":"","turns":[],"checkpoints":[],"events":[]}}',
     'If the user asks a question, answer it in reply, keep changedFields empty, and return an empty patch array.',
-    'If the user asks for edits or provides new story facts, edit only the required fields. Preserve all existing values, including imageDescriptionPrompt, characters[].comfyConfig, characters[].voiceConfig, characters[].profileImage, and characters[].images dataUrl values, unless the user explicitly changes them.',
+    'If the user asks for edits or provides new story facts, edit only the required fields. Preserve all existing values, including imageDescriptionPrompt, characters[].comfyConfig, characters[].voiceConfig, characters[].profileImage, characters[].phoneSettings, and characters[].images dataUrl values, unless the user explicitly changes them.',
     'Do not create, rewrite, append, delete, reorder, summarize, or otherwise patch openingHistory or any of its fields. Opening History contains imported runtime memory with assigned ids and message slots that you cannot generate correctly. If the user asks for Opening History changes, explain in reply that Opening History must be imported or reset by the app controls instead, and return an empty patch unless another editable storybook text field was requested.',
     'For character renames, replace only characters/{index}/name and keep the character id stable.',
-    'For new characters, add one complete character object at /characters/- with id, name, description, personality, speechStyle, role, comfyConfig, and images.',
+    'For new characters, add one complete character object at /characters/- with id, name, description, personality, speechStyle, role, banking, comfyConfig, and images.',
+    'characters[].banking.startBalance is the character\'s bank account start balance in US dollars for the phone Banking app. Always set a value that fits the character\'s life situation (for example a student low, an engineer or doctor high). Use 1000 only when nothing about the character suggests a better value. Keep existing balances unless the user asks to change them.',
+    'characters[].banking.fixedExpenses lists recurring payments shown in the Banking app history, each as {"label":"Mobile plan","amount":24.99} with a US dollar amount. Always include exactly one mobile plan entry with a realistic amount that fits the character. Add further fixed expenses in the same format only when the user asks for them; the app fills the rest of the history with generated everyday spending automatically.',
     'characters[].comfyConfig is optional image-generation configuration. loraName is a ComfyUI LoRA file name for that character. loraUrl is an optional download/source URL for that LoRA. appearance is a concise visual description for generated images. Leave them empty unless the user explicitly provides image-generation details.',
     'characters[].voiceConfig stores a binary voice sample managed by the app. Never create, edit, or remove it.',
     'For edits, changedFields must list compact field paths that changed, for example "title", "scenario", "characters".',
     'Every playable person, npc, or roleplay participant belongs in characters. Do not create any other character container fields.',
     'phoneContacts.blocked stores bidirectional hidden phone contact pairs for the Phone UI only. It is not story context. Default is everyone can see everyone, so keep blocked empty unless the user explicitly says two characters should not appear as phone contacts.',
+    'characters[].phoneSettings is app-only Phone UI state. It is intentionally omitted from the current JSON and must never be created or patched by the assistant.',
     'Use character ids for owner and contact. Store each hidden pair once only. If you add or rename characters, keep character ids stable and update phoneContacts.blocked only when needed.',
     'Use concise but useful roleplay authoring text. Answer in the same language as the user when practical.',
     '',

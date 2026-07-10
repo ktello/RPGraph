@@ -1,12 +1,21 @@
 import {
   Fragment,
+  type CSSProperties,
   type FormEvent,
+  type PointerEvent as ReactPointerEvent,
   type RefObject,
+  useEffect,
   useMemo,
   useRef,
+  useState,
 } from 'react';
-import { defaultPhoneChatTextSize } from '../settings';
+import {
+  defaultPhoneChatTextSize,
+  phoneDesktopGridColumns,
+  phoneDesktopGridRows,
+} from '../settings';
 import type { StorybookCharacter } from '../storybook/runtime';
+import type { PhoneDesktopIconSize, PhoneDesktopLayout } from '../types';
 import type {
   ChatImageAttachment,
   ConnectionPreset,
@@ -24,6 +33,8 @@ import { formatRpDateTimeParts, formatRpDayLabel } from '../workflow';
 import { dialogueSpeechText } from '../chat/dialogueVoiceSegments';
 import { phoneReplyVisibleText } from '../chat/phoneReplies';
 import { PhoneImagePicker } from './PhoneImagePicker';
+import { PhoneGalleryScreen } from './PhoneGalleryScreen';
+import { PhoneBankingScreen } from './PhoneBankingScreen';
 import { PhoneVoiceMessage } from './PhoneVoiceMessage';
 import { CharacterAvatar } from './CharacterAvatar';
 import { ImageContextControl } from './ImageContextControl';
@@ -40,6 +51,8 @@ import type {
   ImageAssistantModelState,
 } from '../chat/imageGenerationAssistant';
 import { imageGenerationCharacterContext } from '../chat/imageGenerationAssistant';
+import wallpaper1Url from '../assets/wallpapers/Wallpaper 1.jpg';
+import wallpaper2Url from '../assets/wallpapers/Wallpaper 2.jpg';
 
 type PhoneContact = {
   character: StorybookCharacter;
@@ -61,11 +74,44 @@ type UnreadPhoneConversation = {
   unread: boolean;
 };
 
+type PhoneScreen = 'desktop' | 'whatsup' | 'gallery' | 'chat-gallery' | 'camera' | 'banking';
+
+type PhoneDesktopAppId = 'whatsup' | 'gallery' | 'camera' | 'banking';
+
+const phoneDesktopAppIds: readonly PhoneDesktopAppId[] = ['whatsup', 'gallery', 'camera', 'banking'];
+
+const defaultPhoneWallpapers: ChatImageAttachment[] = [
+  {
+    id: 'wallpaper-1',
+    name: 'Wallpaper 1',
+    mimeType: 'image/jpeg',
+    size: 0,
+    dataUrl: wallpaper1Url,
+  },
+  {
+    id: 'wallpaper-2',
+    name: 'Wallpaper 2',
+    mimeType: 'image/jpeg',
+    size: 0,
+    dataUrl: wallpaper2Url,
+  },
+];
+
+const phoneDesktopIconSizePx: Record<PhoneDesktopIconSize, number> = {
+  medium: 52,
+  large: 68,
+};
+const phoneDesktopIconLabelHeight = 18;
+
 function phoneReplySizeClass(text: string) {
   if (text.length > 120) {
     return ' long';
   }
   return text.length > 60 ? ' medium' : '';
+}
+
+function desktopBadgeLabel(count: number) {
+  return count > 99 ? '99+' : String(count);
 }
 
 type PhonePanelProps = {
@@ -80,6 +126,8 @@ type PhonePanelProps = {
   highlightedPhoneMessageId?: number;
   highlightedPhoneMessagePulseKey: number;
   unreadPhoneConversations: UnreadPhoneConversation[];
+  unreadBankingCount: number;
+  phoneHomeRequestId: number;
   phoneImages: ChatImageAttachment[];
   phoneGalleryImages: ChatImageAttachment[];
   phoneDraft: string;
@@ -109,6 +157,8 @@ type PhonePanelProps = {
   phoneEmojiPickerRef: RefObject<HTMLDivElement | null>;
   phoneImageInputRef: RefObject<HTMLInputElement | null>;
   onOpenPhoneContact: (contact: PhoneContact) => void;
+  onMarkSelectedPhoneConversationSeen: () => void;
+  onMarkBankingSeen: () => void;
   onOpenUnreadPhoneConversation: (conversation: UnreadPhoneConversation) => void;
   unreadPhoneSwitchName: (conversation: UnreadPhoneConversation) => string;
   onSwitchToViewedCharacter: () => void;
@@ -154,6 +204,21 @@ type PhonePanelProps = {
     dataUrl: string;
     description: string;
   }) => Promise<void>;
+  onPhoneWallpaperChange: (character: StorybookCharacter, wallpaperId: string) => void;
+  bankTransferMessages: MessageRecord[];
+  bankingContactNames: string[];
+  onAddBankingContact: (characterId: string, contactName: string) => void;
+  onSendBankTransfer: (request: {
+    from: StorybookCharacter;
+    to: string;
+    amount: number;
+    note: string;
+  }) => void;
+  phoneDesktopLayout: PhoneDesktopLayout;
+  onPhoneDesktopLayoutChange: (layout: PhoneDesktopLayout) => void;
+  phoneDesktopIconSize: PhoneDesktopIconSize;
+  onPhoneDesktopIconSizeChange: (size: PhoneDesktopIconSize) => void;
+  phoneClockRpDateTime?: string;
   imageAssistantModelStateById: Record<string, ImageAssistantModelState>;
   onSetImageAssistantLlmModelLoaded: (providerId: string, loaded: boolean) => Promise<void>;
   onUnloadImageAssistantComfyModel: (providerId: string) => Promise<void>;
@@ -172,6 +237,8 @@ export function PhonePanel({
   highlightedPhoneMessageId,
   highlightedPhoneMessagePulseKey,
   unreadPhoneConversations,
+  unreadBankingCount,
+  phoneHomeRequestId,
   phoneImages,
   phoneGalleryImages,
   phoneDraft,
@@ -201,6 +268,8 @@ export function PhonePanel({
   phoneEmojiPickerRef,
   phoneImageInputRef,
   onOpenPhoneContact,
+  onMarkSelectedPhoneConversationSeen,
+  onMarkBankingSeen,
   onOpenUnreadPhoneConversation,
   unreadPhoneSwitchName,
   onSwitchToViewedCharacter,
@@ -226,18 +295,130 @@ export function PhonePanel({
   onSubmitImageAssistantMessage,
   onGenerateImageAssistantImages,
   onSaveImageAssistantImage,
+  onPhoneWallpaperChange,
+  bankTransferMessages,
+  bankingContactNames,
+  onAddBankingContact,
+  onSendBankTransfer,
+  phoneDesktopLayout,
+  onPhoneDesktopLayoutChange,
+  phoneDesktopIconSize,
+  onPhoneDesktopIconSizeChange,
+  phoneClockRpDateTime,
   imageAssistantModelStateById,
   onSetImageAssistantLlmModelLoaded,
   onUnloadImageAssistantComfyModel,
   onRefreshImageAssistantModelState,
 }: PhonePanelProps) {
   const commandComposerRef = useRef<CommandPillComposerHandle | null>(null);
+  // Start on the conversation when the panel opens through a chat message
+  // link (the highlight is still pending); otherwise start on the desktop.
+  const [screen, setScreen] = useState<PhoneScreen>(() =>
+    highlightedPhoneMessageId !== undefined ? 'whatsup' : 'desktop');
+  const [seenPhoneHomeRequestId, setSeenPhoneHomeRequestId] = useState(phoneHomeRequestId);
+  if (seenPhoneHomeRequestId !== phoneHomeRequestId) {
+    setSeenPhoneHomeRequestId(phoneHomeRequestId);
+    if (screen !== 'desktop') {
+      setScreen('desktop');
+    }
+  }
+  const unreadWhatsUpCount = phoneContacts.reduce(
+    (count, contact) => count + contact.unreadCount,
+    0,
+  );
+
+  useEffect(() => {
+    if (screen === 'whatsup' && selectedPhoneContact) {
+      onMarkSelectedPhoneConversationSeen();
+    }
+  }, [
+    onMarkSelectedPhoneConversationSeen,
+    screen,
+    selectedPhoneContact,
+  ]);
+
+  useEffect(() => {
+    if (screen === 'banking' && unreadBankingCount > 0) {
+      onMarkBankingSeen();
+    }
+  }, [onMarkBankingSeen, screen, unreadBankingCount]);
+
+  // Jump straight to the conversation when a chat message links into the
+  // phone (each click bumps the highlight pulse key).
+  const [seenHighlightPulseKey, setSeenHighlightPulseKey] = useState(highlightedPhoneMessagePulseKey);
+  if (seenHighlightPulseKey !== highlightedPhoneMessagePulseKey) {
+    setSeenHighlightPulseKey(highlightedPhoneMessagePulseKey);
+    if (highlightedPhoneMessageId !== undefined && screen !== 'whatsup') {
+      setScreen('whatsup');
+    }
+  }
+  const [desktopLayoutOverride, setDesktopLayoutOverride] = useState<PhoneDesktopLayout | undefined>(undefined);
+  const desktopLayout = desktopLayoutOverride ?? phoneDesktopLayout;
+  const desktopLayoutRef = useRef(phoneDesktopLayout);
+  const desktopRef = useRef<HTMLDivElement | null>(null);
+  const desktopInteractionRef = useRef<{
+    kind: 'clock' | 'app' | 'resize';
+    appId?: PhoneDesktopAppId;
+    startedAt: { x: number; y: number };
+    moved: boolean;
+  } | undefined>(undefined);
+  const suppressAppClickRef = useRef(false);
+  const [desktopSettingsOpen, setDesktopSettingsOpen] = useState(false);
+  const desktopSettingsRef = useRef<HTMLDivElement | null>(null);
+  const desktopIconPx = phoneDesktopIconSizePx[phoneDesktopIconSize];
+  const desktopGridGap = desktopIconPx / 2;
+  const desktopCellWidth = desktopIconPx;
+  const desktopCellHeight = desktopIconPx + phoneDesktopIconLabelHeight;
+
+  useEffect(() => {
+    if (!desktopSettingsOpen) {
+      return;
+    }
+    const closeMenu = (event: PointerEvent) => {
+      if (event.target instanceof Node && !desktopSettingsRef.current?.contains(event.target)) {
+        setDesktopSettingsOpen(false);
+      }
+    };
+    document.addEventListener('pointerdown', closeMenu);
+    return () => document.removeEventListener('pointerdown', closeMenu);
+  }, [desktopSettingsOpen]);
+
+  const [clockNow, setClockNow] = useState(() => new Date());
+
+  useEffect(() => {
+    if (screen !== 'desktop') {
+      return;
+    }
+    const updateClock = () => setClockNow(new Date());
+    const kickoff = window.setTimeout(updateClock, 0);
+    const timer = window.setInterval(updateClock, 30_000);
+    return () => {
+      window.clearTimeout(kickoff);
+      window.clearInterval(timer);
+    };
+  }, [screen]);
+
+  const pad2 = (value: number) => String(value).padStart(2, '0');
+  const localClockDateTime = `${clockNow.getFullYear()}-${pad2(clockNow.getMonth() + 1)}-` +
+    `${pad2(clockNow.getDate())}T${pad2(clockNow.getHours())}:${pad2(clockNow.getMinutes())}`;
+  const clockDateTime = rpTimeTrackingEnabled && phoneClockRpDateTime
+    ? phoneClockRpDateTime
+    : localClockDateTime;
+  const clockParts = formatRpDateTimeParts(clockDateTime, rpDateTimeFormat, rpWeekdayLanguage);
+  const clockDayLabel = formatRpDayLabel(clockDateTime, rpDateTimeFormat, rpWeekdayLanguage);
+
   const isImageInContext = (image: ChatImageAttachment) =>
     !!image.id.trim() && contextualReferenceImageIds.has(image.id.trim());
   const isImageManuallySelected = (image: ChatImageAttachment) =>
     !!image.id.trim() && selectedReferenceImageIds.has(image.id.trim());
   const phoneOwnerName = selectedCharacter?.name.trim().split(/\s+/)[0];
   const phoneListTitle = phoneOwnerName ? `${phoneOwnerName}'s Chats` : 'Phone Chats';
+  const wallpaperImageId = selectedCharacter?.phoneSettings.wallpaperId ?? 'wallpaper-1';
+  const wallpaperImage = [...defaultPhoneWallpapers, ...phoneGalleryImages]
+    .find((image) => image.id === wallpaperImageId) ?? defaultPhoneWallpapers[0];
+  const desktopStyle = wallpaperImage?.dataUrl
+    ? { backgroundImage: `url("${wallpaperImage.dataUrl}")` }
+    : undefined;
   const selectedReplyText = replyToMessage
     ? phoneReplyVisibleText(replyToMessage, englishProcessingEnabled) || 'Image'
     : '';
@@ -256,6 +437,123 @@ export function PhonePanel({
     selectedPhoneConversation,
     selectedPhoneDividerAfterId,
   ]);
+
+  function desktopGridPoint(clientX: number, clientY: number) {
+    const bounds = desktopRef.current?.getBoundingClientRect();
+    const pitchX = desktopCellWidth + desktopGridGap;
+    const pitchY = desktopCellHeight + desktopGridGap;
+    if (!bounds) {
+      return { column: 1, row: 1, fitColumns: 1, fitRows: 1 };
+    }
+    const padding = desktopIconPx * 0.75;
+    const fitColumns = Math.min(
+      phoneDesktopGridColumns,
+      Math.max(1, Math.floor((bounds.width - padding * 2 + desktopGridGap) / pitchX)),
+    );
+    const fitRows = Math.min(
+      phoneDesktopGridRows,
+      Math.max(1, Math.floor((bounds.height - padding * 2 + desktopGridGap) / pitchY)),
+    );
+    return {
+      column: Math.min(fitColumns, Math.max(1, Math.floor((clientX - bounds.left - padding) / pitchX) + 1)),
+      row: Math.min(fitRows, Math.max(1, Math.floor((clientY - bounds.top - padding) / pitchY) + 1)),
+      fitColumns,
+      fitRows,
+    };
+  }
+
+  function beginDesktopInteraction(
+    event: ReactPointerEvent<HTMLElement>,
+    interaction: { kind: 'clock' | 'app' | 'resize'; appId?: PhoneDesktopAppId },
+  ) {
+    event.preventDefault();
+    event.stopPropagation();
+    event.currentTarget.setPointerCapture(event.pointerId);
+    desktopLayoutRef.current = desktopLayout;
+    desktopInteractionRef.current = {
+      ...interaction,
+      startedAt: { x: event.clientX, y: event.clientY },
+      moved: false,
+    };
+  }
+
+  function moveDesktopInteraction(event: ReactPointerEvent<HTMLDivElement>) {
+    const interaction = desktopInteractionRef.current;
+    if (!interaction) {
+      return;
+    }
+    if (Math.hypot(event.clientX - interaction.startedAt.x, event.clientY - interaction.startedAt.y) > 5) {
+      interaction.moved = true;
+    }
+    const point = desktopGridPoint(event.clientX, event.clientY);
+    setDesktopLayoutOverride((previous) => {
+      const current = previous ?? phoneDesktopLayout;
+      if (interaction.kind === 'app' && interaction.appId) {
+        const cellOccupied = phoneDesktopAppIds.some((app) =>
+          app !== interaction.appId &&
+          current.apps[app].column === point.column &&
+          current.apps[app].row === point.row,
+        );
+        if (cellOccupied) {
+          desktopLayoutRef.current = current;
+          return current;
+        }
+        const next = {
+          ...current,
+          apps: {
+            ...current.apps,
+            [interaction.appId]: { column: point.column, row: point.row },
+          },
+        };
+        desktopLayoutRef.current = next;
+        return next;
+      }
+      if (interaction.kind === 'clock') {
+        const next = {
+          ...current,
+          clock: {
+            ...current.clock,
+            column: Math.max(1, Math.min(point.fitColumns - current.clock.width + 1, point.column)),
+            row: Math.max(1, Math.min(point.fitRows - current.clock.height + 1, point.row)),
+          },
+        };
+        desktopLayoutRef.current = next;
+        return next;
+      }
+      const next = {
+        ...current,
+        clock: {
+          ...current.clock,
+          width: Math.max(2, Math.min(point.fitColumns - current.clock.column + 1, point.column - current.clock.column + 1)),
+          height: Math.max(1, Math.min(point.fitRows - current.clock.row + 1, point.row - current.clock.row + 1)),
+        },
+      };
+      desktopLayoutRef.current = next;
+      return next;
+    });
+  }
+
+  function endDesktopInteraction() {
+    const interaction = desktopInteractionRef.current;
+    if (!interaction) {
+      return;
+    }
+    desktopInteractionRef.current = undefined;
+    suppressAppClickRef.current = interaction.kind === 'app' || interaction.moved;
+    if (interaction.moved) {
+      onPhoneDesktopLayoutChange(desktopLayoutRef.current);
+    }
+    if (interaction.kind === 'app' && interaction.appId && !interaction.moved) {
+      setScreen(interaction.appId);
+    }
+  }
+
+  function selectWallpaper(image?: ChatImageAttachment) {
+    if (!selectedCharacter) {
+      return;
+    }
+    onPhoneWallpaperChange(selectedCharacter, image?.id ?? 'wallpaper-1');
+  }
 
   function phoneCharacterColor(name: string) {
     const directColor = characterColors.get(name);
@@ -276,10 +574,310 @@ export function PhonePanel({
     )?.dataUrl;
   }
 
+  if (screen === 'gallery' || screen === 'chat-gallery') {
+    const wallpaperMode = screen === 'gallery';
+    return (
+      <PhoneGalleryScreen
+        title={`${phoneOwnerName ?? 'Phone'}'s Gallery`}
+        images={phoneGalleryImages}
+        action={wallpaperMode ? 'wallpaper' : 'select'}
+        selectedWallpaperId={wallpaperMode ? wallpaperImageId : undefined}
+        onBack={() => setScreen(wallpaperMode ? 'desktop' : 'whatsup')}
+        onSelectImage={(image) => {
+          if (wallpaperMode) {
+            selectWallpaper(image);
+            setScreen('desktop');
+          } else {
+            onSelectPhoneGalleryImage(image);
+            setScreen('whatsup');
+          }
+        }}
+      />
+    );
+  }
+
+  if (screen === 'banking') {
+    return (
+      <PhoneBankingScreen
+        key={selectedCharacter?.id ?? 'no-account'}
+        owner={selectedCharacter}
+        storyCharacters={storyCharacters}
+        characterColors={characterColors}
+        bankTransferMessages={bankTransferMessages}
+        bankingContactNames={bankingContactNames}
+        clockDateTime={clockDateTime}
+        rpDateTimeFormat={rpDateTimeFormat}
+        rpWeekdayLanguage={rpWeekdayLanguage}
+        sendLocked={inputLocked}
+        isRunning={isRunning}
+        onBack={() => setScreen('desktop')}
+        onAddBankingContact={onAddBankingContact}
+        onSendBankTransfer={onSendBankTransfer}
+      />
+    );
+  }
+
+  if (screen === 'camera') {
+    return (
+      <div className="phone-desktop" style={desktopStyle} aria-label="Phone desktop">
+        <div className="phone-desktop-scrim" />
+        <PhoneImagePicker
+          hideLauncher
+          openCameraOnMount
+          onCameraClose={() => setScreen('desktop')}
+          onUploadFromComputer={() => {}}
+          connections={connections}
+          providerHealthById={providerHealthById}
+          availableCharacterLoras={storyCharacters.flatMap((character) => {
+            const loraName = character.comfyConfig?.loraName.trim();
+            return loraName ? [`${character.name}: ${loraName}`] : [];
+          })}
+          characterContext={imageGenerationCharacterContext(storyCharacters)}
+          characterCount={storyCharacters.length}
+          chatHistoryContext={imageAssistantChatHistoryContext}
+          estimatedTokenBytesPerToken={estimatedTokenBytesPerToken}
+          saveCharacters={storyCharacters}
+          preferredSaveCharacterId={selectedCharacter?.id}
+          onSubmitImageAssistantMessage={onSubmitImageAssistantMessage}
+          onGenerateImageAssistantImages={onGenerateImageAssistantImages}
+          onSaveImageAssistantImage={onSaveImageAssistantImage}
+          imageAssistantModelStateById={imageAssistantModelStateById}
+          onSetImageAssistantLlmModelLoaded={onSetImageAssistantLlmModelLoaded}
+          onUnloadImageAssistantComfyModel={onUnloadImageAssistantComfyModel}
+          onRefreshImageAssistantModelState={onRefreshImageAssistantModelState}
+        />
+      </div>
+    );
+  }
+
+  if (screen === 'desktop') {
+    return (
+      <div
+        className="phone-desktop"
+        ref={desktopRef}
+        style={{ ...desktopStyle, '--phone-icon': `${desktopIconPx}px` } as CSSProperties}
+        aria-label="Phone desktop"
+        onPointerMove={moveDesktopInteraction}
+        onPointerUp={endDesktopInteraction}
+        onPointerCancel={endDesktopInteraction}
+      >
+        <div className="phone-desktop-scrim" />
+        <div
+          className="phone-clock-widget"
+          style={{
+            gridColumn: `${desktopLayout.clock.column} / span ${desktopLayout.clock.width}`,
+            gridRow: `${desktopLayout.clock.row} / span ${desktopLayout.clock.height}`,
+          }}
+          onPointerDown={(event) => beginDesktopInteraction(event, { kind: 'clock' })}
+        >
+          <strong>{clockParts?.time ?? '--:--'}</strong>
+          <span>{clockDayLabel || clockParts?.date || ''}</span>
+          <button
+            className="phone-clock-resize-handle"
+            type="button"
+            onPointerDown={(event) => beginDesktopInteraction(event, { kind: 'resize' })}
+            aria-label="Resize clock widget"
+            title="Resize clock widget"
+          >
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" aria-hidden="true">
+              <path d="M8 16h8M12 12h4M16 8h1" />
+            </svg>
+          </button>
+        </div>
+        <div className="phone-desktop-apps">
+          <button
+            className="phone-desktop-app"
+            type="button"
+            style={{
+              gridColumn: desktopLayout.apps.whatsup.column,
+              gridRow: desktopLayout.apps.whatsup.row,
+            }}
+            onPointerDown={(event) => beginDesktopInteraction(event, { kind: 'app', appId: 'whatsup' })}
+            onClick={() => {
+              if (suppressAppClickRef.current) {
+                suppressAppClickRef.current = false;
+                return;
+              }
+              setScreen('whatsup');
+            }}
+            aria-label={unreadWhatsUpCount > 0
+              ? `Open WhatsUp, ${unreadWhatsUpCount} unread`
+              : 'Open WhatsUp'}
+          >
+            <span className="phone-whatsup-icon" aria-hidden="true">
+              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                <path d="M18.8 5.2A8.9 8.9 0 0 0 4.7 15.9L3.4 20.4l4.7-1.2A8.9 8.9 0 1 0 18.8 5.2Z" />
+              </svg>
+            </span>
+            {unreadWhatsUpCount > 0 && (
+              <span className="phone-desktop-app-badge" aria-hidden="true">
+                {desktopBadgeLabel(unreadWhatsUpCount)}
+              </span>
+            )}
+            <span>WhatsUp</span>
+          </button>
+          <button
+            className="phone-desktop-app"
+            type="button"
+            style={{
+              gridColumn: desktopLayout.apps.gallery.column,
+              gridRow: desktopLayout.apps.gallery.row,
+            }}
+            onPointerDown={(event) => beginDesktopInteraction(event, { kind: 'app', appId: 'gallery' })}
+            onClick={() => {
+              if (suppressAppClickRef.current) {
+                suppressAppClickRef.current = false;
+                return;
+              }
+              setScreen('gallery');
+            }}
+            aria-label="Open Gallery"
+          >
+            <span className="phone-gallery-icon" aria-hidden="true">
+              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round">
+                <rect x="3" y="3" width="18" height="18" rx="4" />
+                <circle cx="8.5" cy="8.5" r="1.4" />
+                <path d="m4.5 18 5.5-5.5 3.2 3.2 2.1-2.1 4.2 4.4" />
+              </svg>
+            </span>
+            <span>Gallery</span>
+          </button>
+          <button
+            className="phone-desktop-app"
+            type="button"
+            style={{
+              gridColumn: desktopLayout.apps.camera.column,
+              gridRow: desktopLayout.apps.camera.row,
+            }}
+            onPointerDown={(event) => beginDesktopInteraction(event, { kind: 'app', appId: 'camera' })}
+            onClick={() => {
+              if (suppressAppClickRef.current) {
+                suppressAppClickRef.current = false;
+                return;
+              }
+              setScreen('camera');
+            }}
+            aria-label="Open Camera"
+          >
+            <span className="phone-camera-icon" aria-hidden="true">
+              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round">
+                <path d="M4 7h3l1.2-2h7.6L17 7h3a1 1 0 0 1 1 1v10a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V8a1 1 0 0 1 1-1Z" />
+                <circle cx="12" cy="13" r="4" />
+              </svg>
+            </span>
+            <span>Camera</span>
+          </button>
+          <button
+            className="phone-desktop-app"
+            type="button"
+            style={{
+              gridColumn: desktopLayout.apps.banking.column,
+              gridRow: desktopLayout.apps.banking.row,
+            }}
+            onPointerDown={(event) => beginDesktopInteraction(event, { kind: 'app', appId: 'banking' })}
+            onClick={() => {
+              if (suppressAppClickRef.current) {
+                suppressAppClickRef.current = false;
+                return;
+              }
+              setScreen('banking');
+            }}
+            aria-label={unreadBankingCount > 0
+              ? `Open Banking, ${unreadBankingCount} new transactions`
+              : 'Open Banking'}
+          >
+            <span className="phone-banking-icon" aria-hidden="true">
+              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round">
+                <path d="M3 9 12 4l9 5" />
+                <path d="M4 9h16" />
+                <path d="M6 11v7M10 11v7M14 11v7M18 11v7" />
+                <path d="M3 20h18" />
+              </svg>
+            </span>
+            {unreadBankingCount > 0 && (
+              <span className="phone-desktop-app-badge banking" aria-hidden="true">
+                {desktopBadgeLabel(unreadBankingCount)}
+              </span>
+            )}
+            <span>Banking</span>
+          </button>
+        </div>
+        <div className="phone-desktop-settings" ref={desktopSettingsRef}>
+          {desktopSettingsOpen && (
+            <div className="phone-desktop-settings-menu" role="menu" aria-label="Desktop settings">
+              <span className="phone-desktop-settings-label">Wallpaper</span>
+              <div className="phone-desktop-wallpaper-options">
+                {defaultPhoneWallpapers.map((wallpaper) => (
+                  <button
+                    className={`phone-desktop-wallpaper-option${
+                      wallpaperImageId === wallpaper.id ? ' active' : ''
+                    }`}
+                    type="button"
+                    key={wallpaper.id}
+                    onClick={() => selectWallpaper(wallpaper)}
+                    title={`Use ${wallpaper.name}`}
+                    aria-label={`Use ${wallpaper.name}`}
+                  >
+                    <img src={wallpaper.dataUrl} alt={wallpaper.name} />
+                  </button>
+                ))}
+                <button
+                  className="phone-desktop-wallpaper-gallery"
+                  type="button"
+                  onClick={() => {
+                    setDesktopSettingsOpen(false);
+                    setScreen('gallery');
+                  }}
+                >
+                  Select Image from Gallery
+                </button>
+              </div>
+              <span className="phone-desktop-settings-label">Icon Size</span>
+              <div className="phone-desktop-icon-size-options">
+                {(['medium', 'large'] as const).map((size) => (
+                  <button
+                    className={phoneDesktopIconSize === size ? 'active' : ''}
+                    type="button"
+                    key={size}
+                    onClick={() => onPhoneDesktopIconSizeChange(size)}
+                  >
+                    {size === 'medium' ? 'Medium' : 'Large'}
+                  </button>
+                ))}
+              </div>
+            </div>
+          )}
+          <button
+            className="phone-desktop-settings-button"
+            type="button"
+            onClick={() => setDesktopSettingsOpen((open) => !open)}
+            aria-label="Desktop settings"
+            aria-expanded={desktopSettingsOpen}
+            title="Desktop settings"
+          >
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+              <circle cx="12" cy="12" r="3" />
+              <path d="M19.4 15a1.7 1.7 0 0 0 .34 1.87l.06.06a2 2 0 1 1-2.83 2.83l-.06-.06a1.7 1.7 0 0 0-1.87-.34 1.7 1.7 0 0 0-1.03 1.56V21a2 2 0 1 1-4 0v-.09A1.7 1.7 0 0 0 8.98 19.4a1.7 1.7 0 0 0-1.87.34l-.06.06a2 2 0 1 1-2.83-2.83l.06-.06a1.7 1.7 0 0 0 .34-1.87 1.7 1.7 0 0 0-1.56-1.03H3a2 2 0 1 1 0-4h.09A1.7 1.7 0 0 0 4.6 8.98a1.7 1.7 0 0 0-.34-1.87l-.06-.06a2 2 0 1 1 2.83-2.83l.06.06a1.7 1.7 0 0 0 1.87.34h.02a1.7 1.7 0 0 0 1.02-1.56V3a2 2 0 1 1 4 0v.09a1.7 1.7 0 0 0 1.03 1.56 1.7 1.7 0 0 0 1.87-.34l.06-.06a2 2 0 1 1 2.83 2.83l-.06.06a1.7 1.7 0 0 0-.34 1.87v.02a1.7 1.7 0 0 0 1.56 1.02H21a2 2 0 1 1 0 4h-.09a1.7 1.7 0 0 0-1.56 1.03Z" />
+            </svg>
+          </button>
+        </div>
+      </div>
+    );
+  }
+
   return (
     <div className="phone-surface">
       <div className="phone-list" aria-label="Phone chats">
         <div className="phone-list-header">
+          <button
+            className="phone-home-button"
+            type="button"
+            onClick={() => setScreen('desktop')}
+            aria-label="Back to phone desktop"
+            title="Phone desktop"
+          >
+            ←
+          </button>
           <strong>{phoneListTitle}</strong>
           <span>{phoneContacts.length}</span>
         </div>
@@ -674,11 +1272,9 @@ export function PhonePanel({
                       )}
                     </div>
                     <PhoneImagePicker
-                      galleryTitle={`${phoneOwnerName ?? 'Phone'}'s Images`}
-                      images={phoneGalleryImages}
                       uploadDisabled={!imageUploadEnabled}
                       uploadDisabledReason={imageUploadDisabledReason}
-                      onSelectImage={onSelectPhoneGalleryImage}
+                      onOpenGallery={() => setScreen('chat-gallery')}
                       onUploadFromComputer={onSelectPhoneImages}
                       connections={connections}
                       providerHealthById={providerHealthById}

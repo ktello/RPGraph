@@ -149,6 +149,23 @@ export function phoneSeenStateFromMessages(messages: MessageRecord[]) {
   }, {});
 }
 
+const rpDateTimePattern = /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}$/;
+
+export function latestHistoryRpDateTime(messages: MessageRecord[]) {
+  for (let index = messages.length - 1; index >= 0; index -= 1) {
+    const message = messages[index];
+    if (
+      message.includeInHistory !== false &&
+      (message.role === 'user' || message.role === 'output') &&
+      !!message.rpDateTime &&
+      rpDateTimePattern.test(message.rpDateTime)
+    ) {
+      return message.rpDateTime;
+    }
+  }
+  return undefined;
+}
+
 export function viewerHasUnreadPhoneMessages(
   conversations: Map<string, PhoneConversationInfo>,
   viewerName: string,

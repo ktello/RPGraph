@@ -1,4 +1,5 @@
 import type {
+  BankTransferRecord,
   OutputActionChoiceGroup,
   OutputActionInfoBox,
   OutputActionProgressBar,
@@ -43,6 +44,7 @@ export type OutputActionUiItem =
 
 export type ParsedOutputActions = {
   phoneMessages: OutputActionPhoneMessage[];
+  bankTransfers: BankTransferRecord[];
   chatMessages: OutputActionChatMessage[];
   choiceGroups: OutputActionChoiceGroup[];
   infoBoxes: OutputActionInfoBox[];
@@ -55,6 +57,7 @@ export type ParsedOutputActions = {
 
 const emptyOutputActions = (): ParsedOutputActions => ({
   phoneMessages: [],
+  bankTransfers: [],
   chatMessages: [],
   choiceGroups: [],
   infoBoxes: [],
@@ -214,12 +217,35 @@ function parseAction(entry: unknown, result: ParsedOutputActions) {
   }
 
   const type = compactType(entry.type ?? entry.action ?? entry.kind);
+  const typelessBankTransfer =
+    !type &&
+    !!entry.from &&
+    !!entry.to &&
+    numberValue(entry, ['amount', 'value', 'sum']) !== undefined;
   const phoneMessage =
-    type === 'phonemessage' || type === 'phone' || (!type && entry.from && entry.to && entry.message)
+    type === 'phonemessage' || type === 'phone' ||
+    (!type && !typelessBankTransfer && entry.from && entry.to && entry.message)
       ? parsePhoneMessage(entry)
       : undefined;
   if (phoneMessage) {
     result.phoneMessages.push(phoneMessage);
+    return;
+  }
+
+  if (type === 'banktransfer' || type === 'sendmoney' || type === 'moneytransfer' || typelessBankTransfer) {
+    const from = stringValue(entry, ['from', 'sender']);
+    const to = stringValue(entry, ['to', 'recipient', 'target']);
+    const amount = numberValue(entry, ['amount', 'value', 'sum']);
+    if (!from || !to || amount === undefined || amount <= 0) {
+      result.warnings.push('Output Actions bankTransfer needs from, to, and a positive amount.');
+      return;
+    }
+    result.bankTransfers.push({
+      from,
+      to,
+      amount: Math.round(amount * 100) / 100,
+      note: stringValue(entry, ['note', 'comment', 'message', 'text']),
+    });
     return;
   }
 
@@ -419,6 +445,7 @@ function parseOutputActionsRoot(parsed: unknown, result: ParsedOutputActions) {
   const hasRootCollections =
     Array.isArray(parsed.actions) ||
     Array.isArray(parsed.phoneMessages) ||
+    Array.isArray(parsed.bankTransfers) ||
     Array.isArray(parsed.chatMessages) ||
     Array.isArray(parsed.choices) ||
     Array.isArray(parsed.infoBoxes) ||
@@ -444,6 +471,10 @@ function parseOutputActionsRoot(parsed: unknown, result: ParsedOutputActions) {
         result.warnings.push('Output Actions phone message is missing from, to, or message.');
       }
     });
+  }
+
+  if (Array.isArray(parsed.bankTransfers)) {
+    parsed.bankTransfers.forEach((entry) => parseAction({ ...(isRecord(entry) ? entry : {}), type: 'bankTransfer' }, result));
   }
 
   if (Array.isArray(parsed.chatMessages)) {

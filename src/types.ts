@@ -612,6 +612,13 @@ export type MessageVoiceClip = {
   createdAt?: string;
 };
 
+export type BankTransferRecord = {
+  from: string;
+  to: string;
+  amount: number;
+  note?: string;
+};
+
 export type MessageRecord = {
   id: number;
   role: 'user' | 'output' | 'error';
@@ -659,6 +666,7 @@ export type MessageRecord = {
   rpDateTime?: string;
   workflowVariableSetCommands?: WorkflowVariableSetCommand[];
   voiceClips?: MessageVoiceClip[];
+  bankTransfer?: BankTransferRecord;
 };
 
 export type RpAppointment = {
@@ -779,10 +787,27 @@ export type AppSettings = {
     dialogueVoiceMode?: DialogueVoiceMode;
     dialogueNarratorProviderId?: string;
     dialogueCloneVoiceProviderId?: string;
+    phoneDesktopLayout?: PhoneDesktopLayout;
+    phoneDesktopIconSize?: PhoneDesktopIconSize;
   };
   layout?: {
     chatPanelWidth: number;
   };
+};
+
+export type PhoneDesktopIconSize = 'medium' | 'large';
+
+export type PhoneDesktopLayout = {
+  clock: {
+    column: number;
+    row: number;
+    width: number;
+    height: number;
+  };
+  apps: Record<'whatsup' | 'gallery' | 'camera' | 'banking', {
+    column: number;
+    row: number;
+  }>;
 };
 
 export type AddNodeType = WorkflowNodeType;

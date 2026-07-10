@@ -1,4 +1,4 @@
-import type { ChatImageAttachment, ImageCaptionChange, MessageRecord, TurnContext } from '../types';
+import type { BankTransferRecord, ChatImageAttachment, ImageCaptionChange, MessageRecord, TurnContext } from '../types';
 import { isRecord } from '../utils/records';
 
 export type ParsedPhoneMessage = {
@@ -48,6 +48,7 @@ export type EmbeddedPhoneMessagesResult = {
   textBefore: string;
   textAfter: string;
   phoneMessages: ParsedPhoneMessage[];
+  bankTransfers: BankTransferRecord[];
 };
 
 export function parsePhoneGraphInput(text: string) {
@@ -397,6 +398,33 @@ function parseEmbeddedPhoneMessagesObject(value: unknown): ParsedPhoneMessage[] 
   });
 }
 
+function parseEmbeddedBankTransfersObject(value: unknown): BankTransferRecord[] {
+  if (!isRecord(value) || !Array.isArray(value.bankTransfers)) {
+    return [];
+  }
+  return value.bankTransfers.flatMap((entry) => {
+    if (!isRecord(entry) || typeof entry.from !== 'string' || typeof entry.to !== 'string') {
+      return [];
+    }
+    const from = entry.from.trim();
+    const to = entry.to.trim();
+    const amount = typeof entry.amount === 'number'
+      ? entry.amount
+      : typeof entry.amount === 'string' && entry.amount.trim()
+        ? Number(entry.amount)
+        : Number.NaN;
+    if (!from || !to || !Number.isFinite(amount) || amount <= 0) {
+      return [];
+    }
+    return [{
+      from,
+      to,
+      amount: Math.round(amount * 100) / 100,
+      note: typeof entry.note === 'string' && entry.note.trim() ? entry.note.trim() : undefined,
+    }];
+  });
+}
+
 function expandJsonFenceRange(text: string, range: { start: number; end: number }) {
   let start = range.start;
   let end = range.end;
@@ -415,13 +443,20 @@ function expandJsonFenceRange(text: string, range: { start: number; end: number 
 
 export function parseEmbeddedPhoneMessagesFromRpOutput(value: string): EmbeddedPhoneMessagesResult {
   const ranges = jsonObjectRanges(value);
-  const parsedRanges: Array<{ start: number; end: number; phoneMessages: ParsedPhoneMessage[] }> = [];
+  const parsedRanges: Array<{
+    start: number;
+    end: number;
+    phoneMessages: ParsedPhoneMessage[];
+    bankTransfers: BankTransferRecord[];
+  }> = [];
   for (const range of ranges) {
     const candidate = value.slice(range.start, range.end);
     try {
-      const phoneMessages = parseEmbeddedPhoneMessagesObject(JSON.parse(candidate) as unknown);
-      if (phoneMessages.length > 0) {
-        parsedRanges.push({ ...expandJsonFenceRange(value, range), phoneMessages });
+      const parsed = JSON.parse(candidate) as unknown;
+      const phoneMessages = parseEmbeddedPhoneMessagesObject(parsed);
+      const bankTransfers = parseEmbeddedBankTransfersObject(parsed);
+      if (phoneMessages.length > 0 || bankTransfers.length > 0) {
+        parsedRanges.push({ ...expandJsonFenceRange(value, range), phoneMessages, bankTransfers });
       }
     } catch {
       // Ignore non-JSON prose blocks.
@@ -438,9 +473,10 @@ export function parseEmbeddedPhoneMessagesFromRpOutput(value: string): EmbeddedP
       .join('\n\n');
     const text = [textBefore, textAfter].filter(Boolean).join('\n\n');
     const phoneMessages = parsedRanges.flatMap((range) => range.phoneMessages);
-    return { text, textBefore, textAfter, phoneMessages };
+    const bankTransfers = parsedRanges.flatMap((range) => range.bankTransfers);
+    return { text, textBefore, textAfter, phoneMessages, bankTransfers };
   }
-  return { text: value.trim(), textBefore: value.trim(), textAfter: '', phoneMessages: [] };
+  return { text: value.trim(), textBefore: value.trim(), textAfter: '', phoneMessages: [], bankTransfers: [] };
 }
 
 function stripIncompleteEmbeddedJsonTail(value: string) {
@@ -448,7 +484,7 @@ function stripIncompleteEmbeddedJsonTail(value: string) {
   if (openObjectStart !== undefined) {
     const tail = value.slice(openObjectStart);
     const startsOwnLine = /(?:^|\n)[ \t]*$/.test(value.slice(0, openObjectStart));
-    if (startsOwnLine || tail.includes('"phoneMessages"')) {
+    if (startsOwnLine || tail.includes('"phoneMessages"') || tail.includes('"bankTransfers"')) {
       const start = expandJsonFenceRange(value, {
         start: openObjectStart,
         end: value.length,

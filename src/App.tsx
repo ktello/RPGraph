@@ -59,6 +59,11 @@ import {
   translationPrompt,
 } from './chat/inputTransforms';
 import {
+  bankingSeenStateFromMessages,
+  bankTransferInputText,
+  bankTransferMessages,
+} from './chat/bankTransfers';
+import {
   extractDialogueQuotes,
 } from './chat/textRendering';
 import {
@@ -118,6 +123,7 @@ import {
   type PhoneMessageSound,
 } from './app/useGraphRun';
 import {
+  latestHistoryRpDateTime,
   phoneConversationKey,
   phoneSeenStateFromMessages,
 } from './data-management/selectors';
@@ -223,6 +229,7 @@ import {
   emptyRpStorybookV1,
   parseRpStorybookJson,
   rpStorybookJsonText,
+  withRpStorybookCharacterPhoneWallpaper,
   withRpStorybookPhoneContactPairAllowed,
   type RpStorybookCharacterImage,
   type RpStorybookV1,
@@ -382,7 +389,7 @@ function phoneSeenStateForLoadedMessages(messages: MessageRecord[]) {
   return phoneSeenStateFromMessages(messages);
 }
 
-function mergePhoneSeenStates(...states: Array<Record<string, number> | undefined>) {
+function mergeSeenStates(...states: Array<Record<string, number> | undefined>) {
   return states.reduce<Record<string, number>>((merged, state) => {
     Object.entries(state ?? {}).forEach(([key, value]) => {
       merged[key] = Math.max(merged[key] ?? 0, value);
@@ -787,6 +794,10 @@ function App() {
     setChatTextSize,
     phoneChatTextSize,
     setPhoneChatTextSize,
+    phoneDesktopLayout,
+    setPhoneDesktopLayout,
+    phoneDesktopIconSize,
+    setPhoneDesktopIconSize,
     smoothChatAutoScrollEnabled,
     setSmoothChatAutoScrollEnabled,
     smoothChatAutoScrollMinSpeed,
@@ -1116,6 +1127,8 @@ function App() {
   const {
     chatPanelView,
     selectChatPanelView,
+    selectPhonePanelView,
+    cyclePhoneNotificationOwner,
     selectedCharacterId,
     setSelectedCharacterId,
     selectedCharacter,
@@ -1143,12 +1156,15 @@ function App() {
     cancelEvent,
     highlightedEventIds,
     unreadPhoneConversations,
-    unreadPhoneCount,
+    unreadPhoneNotificationCount,
+    viewedPhoneHasNotifications,
     unreadPhoneSwitchName,
     openUnreadPhoneConversation,
     openEmbeddedPhoneMessage,
     unreadEventCount,
     unreadChatCount,
+    unreadBankingCount,
+    markViewedBankingSeen,
     phoneAuthorBadgesEnabled,
     changePhoneAuthorBadgesEnabled,
     autoTurnDisabled,
@@ -1158,6 +1174,13 @@ function App() {
     highlightedPhoneMessage,
     phoneSeenByConversation,
     setPhoneSeenByConversation,
+    bankingSeenByCharacter,
+    setBankingSeenByCharacter,
+    bankingContactsByCharacter,
+    setBankingContactsByCharacter,
+    addBankingContact,
+    markSelectedPhoneConversationSeen,
+    phoneHomeRequestId,
     phoneDividerAfterByConversation,
     setPhoneDividerAfterByConversation,
     openedPhoneConversationKey,
@@ -2478,7 +2501,13 @@ function App() {
     setTurns(nextTurns);
     setTurnCheckpoints(nextTurnCheckpoints);
     setPhoneSeenByConversation((current) =>
-      mergePhoneSeenStates(current, phoneSeenStateForLoadedMessages(openingMessages))
+      mergeSeenStates(current, phoneSeenStateForLoadedMessages(openingMessages))
+    );
+    setBankingSeenByCharacter((current) =>
+      mergeSeenStates(
+        current,
+        bankingSeenStateFromMessages(storyCharactersFromNodes(nextNodes), openingMessages),
+      )
     );
 
     const openingEvents = openingHistoryEventsFromNodes(nextNodes);
@@ -2524,6 +2553,8 @@ function App() {
       turnCheckpoints: turnCheckpointsRef.current,
       openingMessages,
       phoneSeenByConversation,
+      bankingSeenByCharacter,
+      bankingContactsByCharacter,
       phoneDividerAfterByConversation,
       recentlyUsedEmojis,
     };
@@ -2579,6 +2610,8 @@ function App() {
     setTurns([]);
     setTurnCheckpoints([]);
     setPhoneSeenByConversation({});
+    setBankingSeenByCharacter({});
+    setBankingContactsByCharacter({});
     setPhoneDividerAfterByConversation({});
     setOpenedPhoneConversationKey('');
     setRecentlyUsedEmojis([]);
@@ -2709,11 +2742,13 @@ function App() {
     setTurns(loadedTurns);
     setTurnCheckpoints(sessionState.turnCheckpoints);
     setPhoneSeenByConversation(
-      mergePhoneSeenStates(
+      mergeSeenStates(
         sessionState.phoneSeenByConversation,
         phoneSeenStateForLoadedMessages(loadedMessages),
       ),
     );
+    setBankingSeenByCharacter(sessionState.bankingSeenByCharacter);
+    setBankingContactsByCharacter(sessionState.bankingContactsByCharacter);
     setPhoneDividerAfterByConversation(sessionState.phoneDividerAfterByConversation);
     setRecentlyUsedEmojis(sessionState.recentlyUsedEmojis ?? []);
     setRecentChatCharacterIds([]);
@@ -2816,6 +2851,10 @@ function App() {
       setTurns(openingTurns);
       setMessages(openingMessages);
       setPhoneSeenByConversation(phoneSeenStateForLoadedMessages(openingMessages));
+      setBankingSeenByCharacter(
+        bankingSeenStateFromMessages(storyCharactersFromNodes(loadedNodes), openingMessages),
+      );
+      setBankingContactsByCharacter({});
       setPhoneDividerAfterByConversation({});
       setOpenedPhoneConversationKey('');
       nextMessageIdRef.current =
@@ -3981,6 +4020,29 @@ function App() {
     });
   }
 
+  function changeStorybookPhoneWallpaper(character: StorybookCharacter, wallpaperId: string) {
+    const storybookNode = nodesRef.current.find(
+      (node) => node.id === character.storybookNodeId && node.data.nodeType === 'rp-storybook-v1',
+    );
+    if (!storybookNode?.data.storybookJson) {
+      return;
+    }
+    const storybook = parseRpStorybookJson(storybookNode.data.storybookJson);
+    const nextStorybook = withRpStorybookCharacterPhoneWallpaper(
+      storybook,
+      character.sourceId,
+      wallpaperId,
+    );
+    const nextJson = rpStorybookJsonText(nextStorybook);
+    if (nextJson === storybookNode.data.storybookJson) {
+      return;
+    }
+    updateRuntimeNode(storybookNode.id, {
+      storybookJson: nextJson,
+      storybookStatus: `Phone wallpaper updated for ${character.name}.`,
+    });
+  }
+
   function storybookCharacterByPhoneName(name: string) {
     return storyCharacters.find((character) => phoneNamesMatch(character.name, name));
   }
@@ -4890,6 +4952,40 @@ function App() {
       false,
       selection.messageFormat,
       selection.turnMode,
+    );
+  }
+
+  function submitBankTransfer(request: {
+    from: StorybookCharacter;
+    to: string;
+    amount: number;
+    note: string;
+  }) {
+    if (isRunning) {
+      return;
+    }
+    void runGraph(
+      bankTransferInputText({
+        from: request.from.name,
+        to: request.to,
+        amount: request.amount,
+        note: request.note,
+      }),
+      [],
+      undefined,
+      messagesRef.current,
+      undefined,
+      request.from,
+      false,
+      undefined,
+      undefined,
+      'user',
+      undefined,
+      undefined,
+      undefined,
+      false,
+      2,
+      0,
     );
   }
 
@@ -5850,11 +5946,14 @@ function App() {
                   type="button"
                   role="tab"
                   aria-selected={chatPanelView === 'phone'}
-                  onClick={() => selectChatPanelView('phone')}
+                  onClick={selectPhonePanelView}
+                  onDoubleClick={cyclePhoneNotificationOwner}
                 >
                   Phone
-                  {unreadPhoneCount > 0 && (
-                    <span className="tab-badge">{unreadPhoneCount}</span>
+                  {unreadPhoneNotificationCount > 0 && (
+                    <span className={`tab-badge${viewedPhoneHasNotifications ? '' : ' muted'}`}>
+                      {unreadPhoneNotificationCount}
+                    </span>
                   )}
                 </button>
                 <button
@@ -5899,7 +5998,7 @@ function App() {
                       type="button"
                       role="menuitem"
                       onClick={() => {
-                        setSelectedCharacterId(narratorCharacterId);
+                        selectChatCharacter(narratorCharacterId);
                         setCharacterDropdownOpen(false);
                       }}
                       className="narrator-option"
@@ -6104,6 +6203,8 @@ function App() {
               highlightedPhoneMessageId={highlightedPhoneMessage?.id}
               highlightedPhoneMessagePulseKey={highlightedPhoneMessage?.pulseKey ?? 0}
               unreadPhoneConversations={unreadPhoneConversations}
+              unreadBankingCount={unreadBankingCount}
+              phoneHomeRequestId={phoneHomeRequestId}
               phoneImages={phoneImages}
               phoneGalleryImages={phoneGalleryImages}
               phoneDraft={phoneDraft}
@@ -6159,6 +6260,8 @@ function App() {
               phoneEmojiPickerRef={phoneEmojiPickerRef}
               phoneImageInputRef={phoneImageInputRef}
               onOpenPhoneContact={openPhoneContact}
+              onMarkSelectedPhoneConversationSeen={markSelectedPhoneConversationSeen}
+              onMarkBankingSeen={markViewedBankingSeen}
               onOpenUnreadPhoneConversation={openUnreadPhoneConversation}
               unreadPhoneSwitchName={unreadPhoneSwitchName}
               onSwitchToViewedCharacter={() => {
@@ -6187,6 +6290,12 @@ function App() {
               onSelectPhoneImages={selectPhoneImagesFromComposer}
               onSelectPhoneGalleryImage={selectPhoneGalleryImageFromComposer}
               onAddPhoneImages={addPhoneImagesFromComposer}
+              bankTransferMessages={bankTransferMessages(messages)}
+              bankingContactNames={viewedPhoneCharacter
+                ? bankingContactsByCharacter[viewedPhoneCharacter.id] ?? []
+                : []}
+              onAddBankingContact={addBankingContact}
+              onSendBankTransfer={submitBankTransfer}
               connections={connections}
               providerHealthById={providerHealthById}
               onSubmitImageAssistantMessage={async ({
@@ -6271,6 +6380,12 @@ function App() {
                 }
                 notifySystem('info', `Saved generated image in ${character.name}'s Phone Gallery.`);
               }}
+              onPhoneWallpaperChange={changeStorybookPhoneWallpaper}
+              phoneDesktopLayout={phoneDesktopLayout}
+              onPhoneDesktopLayoutChange={setPhoneDesktopLayout}
+              phoneDesktopIconSize={phoneDesktopIconSize}
+              onPhoneDesktopIconSizeChange={setPhoneDesktopIconSize}
+              phoneClockRpDateTime={latestHistoryRpDateTime(messages)}
               imageAssistantModelStateById={imageAssistantModelStateById}
               onSetImageAssistantLlmModelLoaded={setImageAssistantLlmModelLoaded}
               onUnloadImageAssistantComfyModel={unloadImageAssistantComfyModel}

@@ -1,11 +1,15 @@
 import type { ChatImageAttachment, WorkflowNode } from '../types';
 import {
   parseNodeStorybookJson,
+  defaultRpStorybookCharacterBanking,
+  defaultRpStorybookCharacterPhoneSettings,
   storybookCharacterId,
+  type RpStorybookCharacterBanking,
   type RpStorybookCharacterComfyConfig,
   type RpStorybookCharacterImage,
   type RpStorybookCharacterProfileImage,
   type RpStorybookCharacterVoiceConfig,
+  type RpStorybookCharacterPhoneSettings,
 } from '../nodes/rp-storybook-v1/model';
 
 type StorybookCharacterKind = 'character';
@@ -29,6 +33,8 @@ export type StorybookCharacter = {
   comfyConfig?: RpStorybookCharacterComfyConfig;
   voiceConfig?: RpStorybookCharacterVoiceConfig;
   profileImage?: RpStorybookCharacterProfileImage;
+  phoneSettings: RpStorybookCharacterPhoneSettings;
+  banking: RpStorybookCharacterBanking;
 };
 
 export type StorybookImageList = {
@@ -100,6 +106,8 @@ export function storyCharactersFromNodes(nodes: WorkflowNode[]): StorybookCharac
         ...(character.comfyConfig ? { comfyConfig: character.comfyConfig } : {}),
         ...(character.voiceConfig?.sampleDataUrl ? { voiceConfig: character.voiceConfig } : {}),
         ...(character.profileImage ? { profileImage: character.profileImage } : {}),
+        phoneSettings: character.phoneSettings ?? defaultRpStorybookCharacterPhoneSettings(),
+        banking: character.banking ?? defaultRpStorybookCharacterBanking(),
       };
     });
   });

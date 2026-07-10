@@ -38,6 +38,8 @@ export type SessionV2AppState = {
   openingMessages: MessageRecord[];
   currentRuntime: TurnRuntimeSnapshot;
   phoneSeenByConversation: Record<string, number>;
+  bankingSeenByCharacter: Record<string, number>;
+  bankingContactsByCharacter: Record<string, string[]>;
   phoneDividerAfterByConversation: Record<string, number>;
   recentlyUsedEmojis?: string[];
 };
@@ -50,6 +52,8 @@ export type SessionV2CurrentStateInput = {
   turnCheckpoints: TurnCheckpoint[];
   openingMessages: MessageRecord[];
   phoneSeenByConversation?: Record<string, number>;
+  bankingSeenByCharacter?: Record<string, number>;
+  bankingContactsByCharacter?: Record<string, string[]>;
   phoneDividerAfterByConversation?: Record<string, number>;
   recentlyUsedEmojis?: string[];
 };
@@ -136,6 +140,8 @@ export function sessionV2FromCurrentState(
     },
     ui: {
       phoneSeenByConversation: state.phoneSeenByConversation ?? {},
+      bankingSeenByCharacter: state.bankingSeenByCharacter ?? {},
+      bankingContactsByCharacter: state.bankingContactsByCharacter ?? {},
       phoneDividerAfterByConversation: state.phoneDividerAfterByConversation ?? {},
       recentlyUsedEmojis: state.recentlyUsedEmojis ?? [],
     },
@@ -221,6 +227,7 @@ function chatMessageFromTimelineEntry(
     rpDateTime: entry.rpDateTime,
     workflowVariableSetCommands: entry.workflowVariableSetCommands,
     voiceClips: entry.voiceClips,
+    bankTransfer: entry.bankTransfer,
   };
 }
 
@@ -294,6 +301,8 @@ export function appStateFromSessionV2(session: RpgraphSessionV2): SessionV2AppSt
     openingMessages: messages.filter((message) => message.isOpening),
     currentRuntime: runtimeSnapshotFromSession(session),
     phoneSeenByConversation: session.ui.phoneSeenByConversation,
+    bankingSeenByCharacter: session.ui.bankingSeenByCharacter,
+    bankingContactsByCharacter: session.ui.bankingContactsByCharacter,
     phoneDividerAfterByConversation: session.ui.phoneDividerAfterByConversation,
     recentlyUsedEmojis: session.ui.recentlyUsedEmojis ?? [],
   };

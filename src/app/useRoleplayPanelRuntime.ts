@@ -14,6 +14,12 @@ import {
   type PhoneRuntimeCharacter,
 } from '../chat/phoneCharacters';
 import { usePhoneReply } from '../chat/usePhoneReply';
+import {
+  bankTransferMessages,
+  latestBankTransferMessageIdForCharacter,
+  unreadBankTransferCountForCharacter,
+  unreadBankTransfersForCharacter,
+} from '../chat/bankTransfers';
 import { normalizePhoneName } from '../chat/phoneMessages';
 import { dialogueColors } from '../chat/textRendering';
 import {
@@ -29,7 +35,6 @@ import {
   selectedPhoneConversationMessages,
   phoneSwitchCharacters,
   unreadPhoneConversationsForCharacters,
-  viewerHasUnreadPhoneMessages,
 } from '../data-management/selectors';
 import {
   appointmentEntitiesFromAppointments,
@@ -100,15 +105,18 @@ export function useRoleplayPanelRuntime({
   const [selectedPhoneCharacterId, setSelectedPhoneCharacterId] = useState('');
   const [selectedEventId, setSelectedEventId] = useState('');
   const [phoneSeenByConversation, setPhoneSeenByConversation] = useState<Record<string, number>>({});
+  const [bankingSeenByCharacter, setBankingSeenByCharacter] = useState<Record<string, number>>({});
+  const [bankingContactsByCharacter, setBankingContactsByCharacter] = useState<Record<string, string[]>>({});
+  const [phoneHomeRequestId, setPhoneHomeRequestId] = useState(0);
   const [phoneDividerAfterByConversation, setPhoneDividerAfterByConversation] = useState<Record<string, number>>({});
   const [recentlyUsedEmojis, setRecentlyUsedEmojis] = useState<string[]>([]);
   const [recentChatCharacterIds, setRecentChatCharacterIds] = useState<string[]>([]);
   const [openedPhoneConversationKey, setOpenedPhoneConversationKey] = useState('');
   const [phoneAuthorBadgesEnabled, setPhoneAuthorBadgesEnabled] = useState(() => {
     try {
-      return window.localStorage.getItem(phoneAuthorBadgesStorageKey) !== 'false';
+      return window.localStorage.getItem(phoneAuthorBadgesStorageKey) === 'true';
     } catch {
-      return true;
+      return false;
     }
   });
   const [highlightedPhoneMessage, setHighlightedPhoneMessage] = useState<{
@@ -173,6 +181,43 @@ export function useRoleplayPanelRuntime({
     narratorSelected
       ? phoneCharacters.find((character) => character.id === viewedPhoneCharacterId) ?? storyCharacters[0]
       : selectedCharacter;
+  const viewedBankingCharacter = viewedPhoneCharacter && storyCharacters.some(
+    (character) => character.id === viewedPhoneCharacter.id,
+  )
+    ? viewedPhoneCharacter
+    : undefined;
+  const bankingMessages = useMemo(() => bankTransferMessages(messages), [messages]);
+  const unreadBankingCount = viewedBankingCharacter
+    ? unreadBankTransferCountForCharacter(
+        viewedBankingCharacter,
+        bankingMessages,
+        bankingSeenByCharacter[viewedBankingCharacter.id] ?? 0,
+      )
+    : 0;
+
+  const markViewedBankingSeen = useCallback(() => {
+    if (!viewedBankingCharacter) {
+      return;
+    }
+    const latestId = latestBankTransferMessageIdForCharacter(
+      viewedBankingCharacter,
+      bankingMessages,
+    );
+    setBankingSeenByCharacter((current) =>
+      latestId > (current[viewedBankingCharacter.id] ?? 0)
+        ? { ...current, [viewedBankingCharacter.id]: latestId }
+        : current
+    );
+  }, [bankingMessages, viewedBankingCharacter]);
+
+  // Drafted attachments and a pending reply belong to the character who
+  // composed them; drop both when the viewed phone owner changes.
+  const [phoneDraftOwnerId, setPhoneDraftOwnerId] = useState<string | undefined>(undefined);
+  if (phoneDraftOwnerId !== viewedPhoneCharacter?.id) {
+    setPhoneDraftOwnerId(viewedPhoneCharacter?.id);
+    setPhoneImages([]);
+    clearPhoneReply();
+  }
   const phoneGalleryImages = useMemo(() => {
     const storybook = viewedPhoneCharacter
       ? storybooksByNodeId.get(viewedPhoneCharacter.storybookNodeId)
@@ -194,6 +239,10 @@ export function useRoleplayPanelRuntime({
   }
 
   function selectChatCharacter(characterId: string) {
+    if (characterId === narratorCharacterId && viewedPhoneCharacter) {
+      // Keep showing the current character's phone while the narrator plays.
+      setViewedPhoneCharacterId(viewedPhoneCharacter.id);
+    }
     setSelectedCharacterId(characterId);
     if (characterId !== narratorCharacterId) {
       rememberChatCharacter(characterId);
@@ -262,16 +311,6 @@ export function useRoleplayPanelRuntime({
     markPhoneConversationsSeen([{ key: conversationKey, latestId }]);
   }, [markPhoneConversationsSeen, phoneSeenByConversation, storyCharacters]);
 
-  const markPhoneIncomingConversationsSeen = useCallback((viewerName: string) => {
-    const viewerKey = normalizePhoneName(viewerName);
-    markPhoneConversationsSeen(
-      Array.from(phoneConversationInfo.values()).flatMap((conversation) => {
-        const incoming = conversation.unreadByRecipient[viewerKey];
-        return incoming ? [{ key: conversation.key, latestId: incoming.latestId }] : [];
-      }),
-    );
-  }, [markPhoneConversationsSeen, phoneConversationInfo]);
-
   const phoneContacts = useMemo(
     () => phoneContactsForViewer(
       viewedPhoneCharacter
@@ -300,7 +339,7 @@ export function useRoleplayPanelRuntime({
     ],
   );
   const selectedPhoneContact =
-    phoneContacts.find((contact) => contact.character.id === selectedPhoneCharacterId) ?? phoneContacts[0];
+    phoneContacts.find((contact) => contact.character.id === selectedPhoneCharacterId);
 
   function openPhoneContact(contact: typeof phoneContacts[number]) {
     if (!viewedPhoneCharacter) {
@@ -342,7 +381,6 @@ export function useRoleplayPanelRuntime({
       contactId: viewedPhoneCharacter.id,
       activatePlayer: true,
     });
-    markPhoneIncomingConversationsSeen(selectedPhoneContact.character.name);
   }
 
   function switchActivePlayer() {
@@ -361,52 +399,23 @@ export function useRoleplayPanelRuntime({
   const selectedPhoneDividerAfterId = selectedPhoneContact
     ? phoneDividerAfterByConversation[selectedPhoneContact.conversationKey]
     : undefined;
-
-  useEffect(() => {
-    if (
-      chatPanelView !== 'phone' ||
-      !selectedPhoneContact
-    ) {
+  const selectedPhoneConversationKey = selectedPhoneContact?.conversationKey;
+  const selectedPhoneConversationLatestId = selectedPhoneConversationKey
+    ? phoneConversationInfo.get(selectedPhoneConversationKey)?.latestId ?? 0
+    : 0;
+  const markSelectedPhoneConversationSeen = useCallback(() => {
+    if (!selectedPhoneConversationKey || selectedPhoneConversationLatestId <= 0) {
       return;
     }
-    const latestId = phoneConversationInfo.get(selectedPhoneContact.conversationKey)?.latestId ?? 0;
-    if (latestId <= (phoneSeenByConversation[selectedPhoneContact.conversationKey] ?? 0)) {
-      return;
-    }
-    const conversationKey = selectedPhoneContact.conversationKey;
-    queueMicrotask(() => {
-      markPhoneConversationsSeen([{ key: conversationKey, latestId }]);
-    });
+    markPhoneConversationsSeen([{
+      key: selectedPhoneConversationKey,
+      latestId: selectedPhoneConversationLatestId,
+    }]);
   }, [
-    chatPanelView,
     markPhoneConversationsSeen,
-    phoneConversationInfo,
-    phoneSeenByConversation,
-    selectedPhoneContact,
+    selectedPhoneConversationKey,
+    selectedPhoneConversationLatestId,
   ]);
-
-  useEffect(() => {
-    if (chatPanelView !== 'chat') {
-      return;
-    }
-    const updates = Array.from(phoneConversationInfo.values()).map((conversation) => ({
-      key: conversation.key,
-      latestId: conversation.latestId,
-    }));
-    if (updates.length > 0) {
-      queueMicrotask(() => markPhoneConversationsSeen(updates));
-    }
-  }, [chatPanelView, markPhoneConversationsSeen, phoneConversationInfo]);
-
-  useEffect(() => {
-    if (chatPanelView !== 'phone' || !viewedPhoneCharacter) {
-      return;
-    }
-    if (viewerHasUnreadPhoneMessages(phoneConversationInfo, viewedPhoneCharacter.name)) {
-      const viewerName = viewedPhoneCharacter.name;
-      queueMicrotask(() => markPhoneIncomingConversationsSeen(viewerName));
-    }
-  }, [chatPanelView, markPhoneIncomingConversationsSeen, phoneConversationInfo, viewedPhoneCharacter]);
 
   const eventManagerNode = useMemo(
     () => nodeViewNodes.find((node) => node.data.kind === undefined && node.data.nodeType === 'event-manager'),
@@ -478,6 +487,50 @@ export function useRoleplayPanelRuntime({
     (count, conversation) => count + conversation.unreadCount,
     0,
   );
+  const unreadBankingByCharacter = useMemo(
+    () => storyCharacters.flatMap((character) => {
+      const transfers = unreadBankTransfersForCharacter(
+        character,
+        bankingMessages,
+        bankingSeenByCharacter[character.id] ?? 0,
+      );
+      return transfers.length > 0 ? [{ character, transfers }] : [];
+    }),
+    [bankingMessages, bankingSeenByCharacter, storyCharacters],
+  );
+  const unreadBankingTotalCount = unreadBankingByCharacter.reduce(
+    (count, entry) => count + entry.transfers.length,
+    0,
+  );
+  const unreadPhoneNotificationCount = unreadPhoneCount + unreadBankingTotalCount;
+  const phoneNotificationOwners = useMemo(
+    () => storyCharacters.flatMap((character) => {
+      const phoneEntry = unreadPhoneConversations.find(
+        (conversation) =>
+          conversation.unread &&
+          normalizePhoneName(conversation.viewerName) === normalizePhoneName(character.name),
+      );
+      const bankingEntry = unreadBankingByCharacter.find(
+        (entry) => entry.character.id === character.id,
+      );
+      const bankingLatestId = bankingEntry?.transfers.reduce(
+        (latestId, transaction) => Math.max(latestId, transaction.message.id),
+        0,
+      ) ?? 0;
+      const unreadCount = (phoneEntry?.unreadCount ?? 0) + (bankingEntry?.transfers.length ?? 0);
+      return unreadCount > 0
+        ? [{
+            character,
+            unreadCount,
+            latestId: Math.max(phoneEntry?.latestId ?? 0, bankingLatestId),
+          }]
+        : [];
+    }).sort((left, right) => right.latestId - left.latestId),
+    [storyCharacters, unreadBankingByCharacter, unreadPhoneConversations],
+  );
+  const viewedPhoneHasNotifications = phoneNotificationOwners.some(
+    (entry) => entry.character.id === viewedPhoneCharacter?.id,
+  );
   const unreadPhoneSwitchName = (conversation: typeof unreadPhoneConversations[number]) =>
     conversation.viewerName;
 
@@ -495,7 +548,6 @@ export function useRoleplayPanelRuntime({
       contactId: contact.id,
       activatePlayer: !narratorSelected,
     });
-    markPhoneIncomingConversationsSeen(viewer.name);
     selectChatPanelView('phone');
   }
 
@@ -571,6 +623,20 @@ export function useRoleplayPanelRuntime({
     }
   }
 
+  function addBankingContact(characterId: string, contactName: string) {
+    const normalizedName = contactName.trim().replace(/\s+/g, ' ');
+    if (!normalizedName) {
+      return;
+    }
+    setBankingContactsByCharacter((current) => {
+      const contacts = current[characterId] ?? [];
+      if (contacts.some((name) => normalizePhoneName(name) === normalizePhoneName(normalizedName))) {
+        return current;
+      }
+      return { ...current, [characterId]: [...contacts, normalizedName] };
+    });
+  }
+
   function selectChatPanelView(view: ChatPanelView) {
     if (view === 'chat') {
       setLastSeenMessageRecordId(latestMessageRecordId);
@@ -582,17 +648,54 @@ export function useRoleplayPanelRuntime({
     setChatPanelView(view);
   }
 
+  function selectPhonePanelView() {
+    setHighlightedPhoneMessage(undefined);
+    if (chatPanelView !== 'phone') {
+      setChatPanelView('phone');
+      return;
+    }
+
+    setPhoneHomeRequestId((current) => current + 1);
+  }
+
+  function cyclePhoneNotificationOwner() {
+    if (chatPanelView !== 'phone') {
+      return;
+    }
+    if (phoneNotificationOwners.length > 0) {
+      const currentOwnerIndex = phoneNotificationOwners.findIndex(
+        (entry) => entry.character.id === viewedPhoneCharacter?.id,
+      );
+      const nextOwner = currentOwnerIndex >= 0
+        ? phoneNotificationOwners[(currentOwnerIndex + 1) % phoneNotificationOwners.length]
+        : phoneNotificationOwners[0];
+      if (nextOwner) {
+        if (narratorSelected) {
+          setViewedPhoneCharacterId(nextOwner.character.id);
+        } else {
+          setSelectedCharacterId(nextOwner.character.id);
+          rememberChatCharacter(nextOwner.character.id);
+        }
+        setSelectedPhoneCharacterId('');
+      }
+    }
+
+    setPhoneHomeRequestId((current) => current + 1);
+  }
+
   const autoTurnTargetName = selectedCharacter?.name;
   const autoTurnDisabled =
     isRunning ||
     characterStorybookNodeCount === 0 ||
     (chatPanelView === 'chat' && !selectedCharacter && !narratorSelected) ||
     (chatPanelView === 'phone' && !narratorSelected && !selectedCharacter) ||
-    (chatPanelView === 'phone' && !narratorSelected && !selectedPhoneContact) ||
+    (chatPanelView === 'phone' && !selectedPhoneContact) ||
     (chatPanelView === 'events' && (!eventManagerAvailable || !selectedEvent));
   const autoTurnTitle =
     chatPanelView === 'phone'
-      ? narratorSelected
+      ? !selectedPhoneContact
+        ? 'Open a phone conversation first'
+        : narratorSelected
         ? 'Continue the phone story with the most fitting sender and recipient'
         : autoTurnTargetName
         ? `Trigger ${autoTurnTargetName} to write a phone message`
@@ -879,6 +982,8 @@ export function useRoleplayPanelRuntime({
   return {
     chatPanelView,
     selectChatPanelView,
+    selectPhonePanelView,
+    cyclePhoneNotificationOwner,
     selectedCharacterId,
     setSelectedCharacterId,
     selectedCharacter,
@@ -892,7 +997,6 @@ export function useRoleplayPanelRuntime({
     rememberChatCharacter,
     phoneConversationInfo,
     openPhoneConversation,
-    markPhoneIncomingConversationsSeen,
     phoneContacts,
     selectedPhoneContact,
     openPhoneContact,
@@ -908,12 +1012,15 @@ export function useRoleplayPanelRuntime({
     closeEvent,
     cancelEvent,
     unreadPhoneConversations,
-    unreadPhoneCount,
+    unreadPhoneNotificationCount,
+    viewedPhoneHasNotifications,
     unreadPhoneSwitchName,
     openUnreadPhoneConversation,
     openEmbeddedPhoneMessage,
     unreadEventCount,
     unreadChatCount,
+    unreadBankingCount,
+    markViewedBankingSeen,
     phoneAuthorBadgesEnabled,
     changePhoneAuthorBadgesEnabled,
     autoTurnDisabled,
@@ -924,6 +1031,13 @@ export function useRoleplayPanelRuntime({
     highlightedEventIds,
     phoneSeenByConversation,
     setPhoneSeenByConversation,
+    bankingSeenByCharacter,
+    setBankingSeenByCharacter,
+    bankingContactsByCharacter,
+    setBankingContactsByCharacter,
+    addBankingContact,
+    markSelectedPhoneConversationSeen,
+    phoneHomeRequestId,
     phoneDividerAfterByConversation,
     setPhoneDividerAfterByConversation,
     openedPhoneConversationKey,

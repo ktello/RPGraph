@@ -79,6 +79,13 @@ import { parseOutputActions } from '../chat/outputActions';
 import { parseRpOutput } from '../chat/rpOutput';
 import { formatPhoneInput } from '../chat/phoneReplies';
 import {
+  bankingRecipientNamesForCharacter,
+  bankingSeenStateFromMessages,
+  latestBankTransferMessageIdForCharacter,
+  unreadBankTransferCountForCharacter,
+} from '../chat/bankTransfers';
+import type { StorybookCharacter } from '../storybook/runtime';
+import {
   collectRecentReferenceImages,
   promptWithImageAttachmentMarkers,
   promptWithReferenceImageMarkers,
@@ -139,6 +146,59 @@ function assertThrowsFixture(action: () => void, message: string) {
 }
 
 export function verifyWorkflowValidationFixtures() {
+  const bankingCharacter: StorybookCharacter = {
+    id: 'storybook:character:espen',
+    storybookNodeId: 'storybook',
+    kind: 'character',
+    sourceId: 'espen',
+    name: 'Espen Harper',
+    label: 'Espen Harper',
+    profile: {
+      name: 'Espen Harper',
+      description: '',
+      personality: '',
+      speechStyle: '',
+      role: '',
+    },
+    phoneSettings: { wallpaperId: 'wallpaper-1' },
+    banking: { startBalance: 100, fixedExpenses: [] },
+  };
+  const bankingMessages: MessageRecord[] = [
+    {
+      id: 10,
+      role: 'output',
+      originalText: 'Incoming transfer',
+      bankTransfer: { from: 'Danny Harper', to: 'Espen Harper', amount: 50 },
+    },
+    {
+      id: 11,
+      role: 'output',
+      originalText: 'Outgoing transfer',
+      bankTransfer: { from: 'Espen Harper', to: 'Ryan Parker', amount: 20 },
+    },
+    {
+      id: 12,
+      role: 'output',
+      originalText: 'Second incoming transfer',
+      bankTransfer: { from: 'Ryan Parker', to: 'Espen Harper', amount: 10 },
+    },
+  ];
+  assertFixture(
+    latestBankTransferMessageIdForCharacter(bankingCharacter, bankingMessages) === 12 &&
+      unreadBankTransferCountForCharacter(bankingCharacter, bankingMessages, 10) === 1 &&
+      bankingSeenStateFromMessages([bankingCharacter], bankingMessages)[bankingCharacter.id] === 12,
+    'Banking badges must count unseen incoming transfers once and preserve the latest seen message id',
+  );
+  assertFixture(
+    bankingRecipientNamesForCharacter(
+      bankingCharacter,
+      [bankingCharacter],
+      bankingMessages,
+      ['Taylor Reed', 'danny harper'],
+    ).join('|') === 'Danny Harper|Ryan Parker|Taylor Reed',
+    'Banking recipients must include transfer counterparties and deduplicated saved contacts',
+  );
+
   const assistantStorybook = {
     ...emptyRpStorybookV1,
     title: 'Old title',
@@ -772,6 +832,8 @@ export function verifyWorkflowValidationFixtures() {
     },
     ui: {
       phoneSeenByConversation: {},
+      bankingSeenByCharacter: {},
+      bankingContactsByCharacter: {},
       phoneDividerAfterByConversation: {},
     },
   };
@@ -1036,6 +1098,12 @@ export function verifyWorkflowValidationFixtures() {
     phoneSeenByConversation: {
       'Alice::Bob': 2,
     },
+    bankingSeenByCharacter: {
+      'storybook:character:alice': 6,
+    },
+    bankingContactsByCharacter: {
+      'storybook:character:alice': ['Danny Harper'],
+    },
     phoneDividerAfterByConversation: {
       'Alice::Bob': 1,
     },
@@ -1129,8 +1197,12 @@ export function verifyWorkflowValidationFixtures() {
   assertFixture(restoredAppState.openingMessages[0]?.originalText === 'Opening line', 'RP Save Format v2 must restore opening messages');
   assertFixture(
     sessionV2.ui.phoneSeenByConversation['Alice::Bob'] === 2 &&
-      restoredAppState.phoneSeenByConversation?.['Alice::Bob'] === 2,
-    'RP Save Format v2 must store and restore numeric phone UI state',
+      restoredAppState.phoneSeenByConversation?.['Alice::Bob'] === 2 &&
+      sessionV2.ui.bankingSeenByCharacter['storybook:character:alice'] === 6 &&
+      restoredAppState.bankingSeenByCharacter?.['storybook:character:alice'] === 6 &&
+      sessionV2.ui.bankingContactsByCharacter['storybook:character:alice']?.[0] === 'Danny Harper' &&
+      restoredAppState.bankingContactsByCharacter?.['storybook:character:alice']?.[0] === 'Danny Harper',
+    'RP Save Format v2 must store and restore phone and Banking UI state',
   );
   const timelinePhoneImage = sessionV2.timeline.find(
     (entry): entry is TimelineMessageEntry => entry.kind === 'message' && entry.channel === 'phone',

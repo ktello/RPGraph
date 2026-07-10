@@ -114,6 +114,7 @@ export function useTurnRecordState({
     outputActionContextCapacityBars,
     rpDateTime,
     voiceClips,
+    bankTransfer,
   }: AppendMessageInput) {
     const id = nextMessageIdRef.current;
     nextMessageIdRef.current += 1;
@@ -160,6 +161,7 @@ export function useTurnRecordState({
       outputActionContextCapacityBars,
       rpDateTime,
       voiceClips,
+      bankTransfer,
       turnId: collector?.turnId,
       turnNumber: collector?.turnNumber,
       turnPart: collector?.part,

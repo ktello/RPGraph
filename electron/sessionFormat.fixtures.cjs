@@ -75,6 +75,7 @@ const currentSession = {
   },
   ui: {
     phoneSeenByConversation: {},
+    bankingSeenByCharacter: {},
     phoneDividerAfterByConversation: {},
   },
 };

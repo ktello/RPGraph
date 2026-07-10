@@ -108,6 +108,7 @@ function messageToTimelineEntry(
     rpDateTime: message.rpDateTime,
     workflowVariableSetCommands: message.workflowVariableSetCommands,
     voiceClips: message.voiceClips?.length ? message.voiceClips : undefined,
+    bankTransfer: message.bankTransfer,
   };
 }
 

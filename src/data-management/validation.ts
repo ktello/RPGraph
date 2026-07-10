@@ -94,6 +94,15 @@ function isNumberRecord(value: unknown) {
   );
 }
 
+function isStringArrayRecord(value: unknown) {
+  return (
+    isRecord(value) &&
+    Object.values(value).every(
+      (entry) => Array.isArray(entry) && entry.every((item) => typeof item === 'string'),
+    )
+  );
+}
+
 function hasValidReplyReferences(timeline: unknown[]) {
   const phoneMessagesById = new Map<string, Record<string, unknown>>();
   timeline.forEach((entry) => {
@@ -160,6 +169,8 @@ export function isRpgraphSessionV2(value: unknown): value is RpgraphSessionV2 {
     isWorkflowVariableRecord(value.runtime.current.workflowVariables) &&
     isRecord(value.ui) &&
     isNumberRecord(value.ui.phoneSeenByConversation) &&
+    isNumberRecord(value.ui.bankingSeenByCharacter) &&
+    isStringArrayRecord(value.ui.bankingContactsByCharacter) &&
     isNumberRecord(value.ui.phoneDividerAfterByConversation)
   );
 }

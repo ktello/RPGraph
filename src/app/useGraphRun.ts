@@ -66,6 +66,11 @@ import {
   type OutputActionContextCapacityRequest,
   type OutputActionUiItem,
 } from '../chat/outputActions';
+import {
+  bankingBalanceForCharacter,
+  bankTransferHistoryText,
+  bankTransferPartyMatches,
+} from '../chat/bankTransfers';
 import { recentInputHistoryContext } from '../chat/inputTransforms';
 import { withSpeakerPrefix } from '../chat/instructions';
 import { executeGraph } from '../graph/executeGraph';
@@ -1218,7 +1223,22 @@ export function useGraphRun(options: UseGraphRunOptions) {
       const embeddedPhoneResult =
         !isPhoneMessage
           ? parseEmbeddedPhoneMessagesFromRpOutput(parsedRpOutput.story)
-          : { text: parsedRpOutput.story, textBefore: parsedRpOutput.story, textAfter: '', phoneMessages: [] };
+          : {
+              text: parsedRpOutput.story,
+              textBefore: parsedRpOutput.story,
+              textAfter: '',
+              phoneMessages: [],
+              bankTransfers: [],
+            };
+      // Phone replies may append a bankTransfers object after the reply JSON;
+      // split it off so the reply still parses as a single phone message.
+      const phoneOutputBankResult =
+        isPhoneMessage && phoneMessageOutput
+          ? parseEmbeddedPhoneMessagesFromRpOutput(phoneMessageOutput)
+          : undefined;
+      if (phoneOutputBankResult?.bankTransfers.length) {
+        phoneMessageOutput = phoneOutputBankResult.text;
+      }
       if (!isPhoneMessage && embeddedPhoneResult.phoneMessages.length > 0) {
         reportFormatResult({
           name: 'Embedded phone messages',
@@ -1717,6 +1737,54 @@ export function useGraphRun(options: UseGraphRunOptions) {
             index === 0 ? 'received' : undefined,
             'output',
           );
+        }
+
+        for (const bankTransfer of [
+          ...outputActions.bankTransfers,
+          ...embeddedPhoneResult.bankTransfers,
+          ...(phoneOutputBankResult?.bankTransfers ?? []),
+        ]) {
+          const canonicalTransfer = {
+            ...bankTransfer,
+            from: canonicalPhoneName(phoneCharacters, bankTransfer.from),
+            to: canonicalPhoneName(phoneCharacters, bankTransfer.to),
+          };
+          const sender = storyCharacters.find((character) =>
+            bankTransferPartyMatches(character, canonicalTransfer.from)
+          );
+          const recipient = storyCharacters.find((character) =>
+            bankTransferPartyMatches(character, canonicalTransfer.to)
+          );
+          if (!sender && !recipient) {
+            reportRunWarning(
+              `Bank transfer from "${canonicalTransfer.from}" to "${canonicalTransfer.to}" was ignored because neither party has a Storybook bank account.`,
+              outputNodeTraceInfo,
+            );
+            continue;
+          }
+          if (sender?.id === recipient?.id) {
+            reportRunWarning('A bank transfer to the same account was ignored.', outputNodeTraceInfo);
+            continue;
+          }
+          if (
+            sender &&
+            canonicalTransfer.amount > bankingBalanceForCharacter(sender, messagesRef.current)
+          ) {
+            reportRunWarning(
+              `Bank transfer from "${sender.name}" was ignored because the account balance is too low.`,
+              outputNodeTraceInfo,
+            );
+            continue;
+          }
+          const historyText = bankTransferHistoryText(canonicalTransfer);
+          const translatedText = await translateOutputActionText(historyText, { text: historyText });
+          appendMessage({
+            role: 'output',
+            originalText: historyText,
+            translatedText,
+            includeInHistory: true,
+            bankTransfer: canonicalTransfer,
+          });
         }
       }
       if (!isPhoneMessage && translationError) {

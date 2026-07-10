@@ -8,6 +8,8 @@ import type {
   DialogueVoiceMode,
   RpDateTimeFormat,
   RpWeekdayLanguage,
+  PhoneDesktopIconSize,
+  PhoneDesktopLayout,
 } from './types';
 import { bundledComfyNarratorVoice } from './comfy/defaultNarratorVoice';
 import {
@@ -25,6 +27,22 @@ const minTokenEstimateBytesPerToken = 1;
 const maxTokenEstimateBytesPerToken = 8;
 export const defaultChatTextSize = 14;
 export const defaultPhoneChatTextSize = 14;
+export const phoneDesktopGridColumns = 8;
+export const phoneDesktopGridRows = 12;
+const defaultPhoneDesktopLayout: PhoneDesktopLayout = {
+  clock: { column: 2, row: 4, width: 5, height: 2 },
+  apps: {
+    whatsup: { column: 1, row: 1 },
+    gallery: { column: 2, row: 1 },
+    camera: { column: 3, row: 1 },
+    banking: { column: 4, row: 1 },
+  },
+};
+const defaultPhoneDesktopIconSize: PhoneDesktopIconSize = 'large';
+
+function validPhoneDesktopIconSize(value: unknown): PhoneDesktopIconSize {
+  return value === 'medium' || value === 'large' ? value : defaultPhoneDesktopIconSize;
+}
 const defaultSmoothChatAutoScrollEnabled = true;
 const defaultSmoothChatAutoScrollMinSpeed = 42;
 export const minSmoothChatAutoScrollMinSpeed = 32;
@@ -132,6 +150,45 @@ function validPhoneChatTextSize(value?: number) {
   return Number.isFinite(value) && value !== undefined
     ? Math.min(22, Math.max(11, value))
     : defaultPhoneChatTextSize;
+}
+
+function validPhoneDesktopLayout(value: unknown): PhoneDesktopLayout {
+  const input = value && typeof value === 'object' && !Array.isArray(value)
+    ? value as Partial<PhoneDesktopLayout>
+    : {};
+  const clock = input.clock && typeof input.clock === 'object'
+    ? input.clock as Partial<PhoneDesktopLayout['clock']>
+    : {} as Partial<PhoneDesktopLayout['clock']>;
+  const apps = input.apps && typeof input.apps === 'object'
+    ? input.apps as Partial<PhoneDesktopLayout['apps']>
+    : {} as Partial<PhoneDesktopLayout['apps']>;
+  const gridNumber = (candidate: unknown, fallback: number, minimum: number, maximum: number) =>
+    typeof candidate === 'number' && Number.isFinite(candidate)
+      ? Math.min(maximum, Math.max(minimum, Math.round(candidate)))
+      : fallback;
+  const appPosition = (app: keyof PhoneDesktopLayout['apps']) => {
+    const position = apps[app] && typeof apps[app] === 'object'
+      ? apps[app]
+      : {} as Partial<PhoneDesktopLayout['apps'][typeof app]>;
+    return {
+      column: gridNumber(position.column, defaultPhoneDesktopLayout.apps[app].column, 1, phoneDesktopGridColumns),
+      row: gridNumber(position.row, defaultPhoneDesktopLayout.apps[app].row, 1, phoneDesktopGridRows),
+    };
+  };
+  return {
+    clock: {
+      column: gridNumber(clock.column, defaultPhoneDesktopLayout.clock.column, 1, phoneDesktopGridColumns - 1),
+      row: gridNumber(clock.row, defaultPhoneDesktopLayout.clock.row, 1, phoneDesktopGridRows),
+      width: gridNumber(clock.width, defaultPhoneDesktopLayout.clock.width, 2, phoneDesktopGridColumns),
+      height: gridNumber(clock.height, defaultPhoneDesktopLayout.clock.height, 1, 4),
+    },
+    apps: {
+      whatsup: appPosition('whatsup'),
+      gallery: appPosition('gallery'),
+      camera: appPosition('camera'),
+      banking: appPosition('banking'),
+    },
+  };
 }
 
 export function validSmoothChatAutoScrollMinSpeed(value?: number) {
@@ -668,6 +725,8 @@ function isAppSettings(value: unknown): value is AppSettings {
       (typeof settings.options.phoneChatTextSize === 'number' &&
         Number.isFinite(settings.options.phoneChatTextSize) &&
         settings.options.phoneChatTextSize > 0)) &&
+    (settings.options.phoneDesktopIconSize === undefined ||
+      ['medium', 'large'].includes(settings.options.phoneDesktopIconSize)) &&
     (settings.options.smoothChatAutoScrollEnabled === undefined ||
       typeof settings.options.smoothChatAutoScrollEnabled === 'boolean') &&
     (settings.options.smoothChatAutoScrollMinSpeed === undefined ||
@@ -745,6 +804,10 @@ type AppSettingsState = {
   setChatTextSize: Dispatch<SetStateAction<number>>;
   phoneChatTextSize: number;
   setPhoneChatTextSize: Dispatch<SetStateAction<number>>;
+  phoneDesktopLayout: PhoneDesktopLayout;
+  setPhoneDesktopLayout: Dispatch<SetStateAction<PhoneDesktopLayout>>;
+  phoneDesktopIconSize: PhoneDesktopIconSize;
+  setPhoneDesktopIconSize: Dispatch<SetStateAction<PhoneDesktopIconSize>>;
   smoothChatAutoScrollEnabled: boolean;
   setSmoothChatAutoScrollEnabled: Dispatch<SetStateAction<boolean>>;
   smoothChatAutoScrollMinSpeed: number;
@@ -802,6 +865,10 @@ export function useAppSettings(): AppSettingsState {
   const [promptTextCustomPresets, setPromptTextCustomPresets] = useState<Record<string, string>>({});
   const [chatTextSize, setChatTextSize] = useState(defaultChatTextSize);
   const [phoneChatTextSize, setPhoneChatTextSize] = useState(defaultPhoneChatTextSize);
+  const [phoneDesktopLayout, setPhoneDesktopLayout] = useState(defaultPhoneDesktopLayout);
+  const [phoneDesktopIconSize, setPhoneDesktopIconSize] = useState<PhoneDesktopIconSize>(
+    defaultPhoneDesktopIconSize,
+  );
   const [smoothChatAutoScrollEnabled, setSmoothChatAutoScrollEnabled] = useState(
     defaultSmoothChatAutoScrollEnabled,
   );
@@ -892,6 +959,8 @@ export function useAppSettings(): AppSettingsState {
         setPromptTextCustomPresets(workflowVariableRecord(result.settings.options.promptTextCustomPresets));
         setChatTextSize(validChatTextSize(result.settings.options.chatTextSize));
         setPhoneChatTextSize(validPhoneChatTextSize(result.settings.options.phoneChatTextSize));
+        setPhoneDesktopLayout(validPhoneDesktopLayout(result.settings.options.phoneDesktopLayout));
+        setPhoneDesktopIconSize(validPhoneDesktopIconSize(result.settings.options.phoneDesktopIconSize));
         setSmoothChatAutoScrollEnabled(
           result.settings.options.smoothChatAutoScrollEnabled ??
             defaultSmoothChatAutoScrollEnabled,
@@ -970,6 +1039,8 @@ export function useAppSettings(): AppSettingsState {
         promptTextCustomPresets,
         chatTextSize: validChatTextSize(chatTextSize),
         phoneChatTextSize: validPhoneChatTextSize(phoneChatTextSize),
+        phoneDesktopLayout: validPhoneDesktopLayout(phoneDesktopLayout),
+        phoneDesktopIconSize: validPhoneDesktopIconSize(phoneDesktopIconSize),
         smoothChatAutoScrollEnabled,
         smoothChatAutoScrollMinSpeed: validSmoothChatAutoScrollMinSpeed(
           smoothChatAutoScrollMinSpeed,
@@ -1024,6 +1095,8 @@ export function useAppSettings(): AppSettingsState {
     promptTextCustomPresets,
     chatTextSize,
     phoneChatTextSize,
+    phoneDesktopLayout,
+    phoneDesktopIconSize,
     smoothChatAutoScrollEnabled,
     smoothChatAutoScrollMinSpeed,
     thoughtTextStyle,
@@ -1074,6 +1147,10 @@ export function useAppSettings(): AppSettingsState {
     setChatTextSize,
     phoneChatTextSize,
     setPhoneChatTextSize,
+    phoneDesktopLayout,
+    setPhoneDesktopLayout,
+    phoneDesktopIconSize,
+    setPhoneDesktopIconSize,
     smoothChatAutoScrollEnabled,
     setSmoothChatAutoScrollEnabled,
     smoothChatAutoScrollMinSpeed,

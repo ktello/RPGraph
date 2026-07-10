@@ -52,6 +52,7 @@ import {
   type CommandPillComposerHandle,
 } from './CommandPillComposer';
 import { PhoneVoiceMessage } from './PhoneVoiceMessage';
+import { BankTransferCard } from './BankTransferCard';
 import type { CommandInputCommand } from '../chat/structuredCommands';
 
 const outsidePhoneDisplayModeStorageKey = 'rpgraph-chat-phone-display-mode';
@@ -1261,6 +1262,21 @@ export function ChatConversationPanel({
                     </span>
                   )}
                 </div>
+              </Fragment>
+            );
+          }
+
+          if (message.bankTransfer) {
+            return (
+              <Fragment key={message.id}>
+                {dayLabel && <div className="rp-day-divider chat-day-divider"><span>{dayLabel}</span></div>}
+                <BankTransferCard
+                  transfer={message.bankTransfer}
+                  rpDateTime={rpTimeTrackingEnabled ? effectiveMessageRpDateTime : undefined}
+                  rpDateTimeFormat={rpDateTimeFormat}
+                  rpWeekdayLanguage={rpWeekdayLanguage}
+                  fontSize={chatTextSize || defaultChatTextSize}
+                />
               </Fragment>
             );
           }

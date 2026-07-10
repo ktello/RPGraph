@@ -1,6 +1,7 @@
 import type { Edge } from '@xyflow/react';
 import type { RpStorybookV1 } from '../nodes/rp-storybook-v1/model';
 import type {
+  BankTransferRecord,
   CharacterStatsState,
   ChatDialogueQuote,
   ChatImageAttachment,
@@ -93,6 +94,7 @@ export type TimelineMessageEntry = {
   rpDateTime?: string;
   workflowVariableSetCommands?: WorkflowVariableSetCommand[];
   voiceClips?: MessageVoiceClip[];
+  bankTransfer?: BankTransferRecord;
 };
 
 export type TimelineEventEntry = {
@@ -212,6 +214,8 @@ type SessionRuntime = {
 
 type SessionUiState = {
   phoneSeenByConversation: Record<string, number>;
+  bankingSeenByCharacter: Record<string, number>;
+  bankingContactsByCharacter: Record<string, string[]>;
   phoneDividerAfterByConversation: Record<string, number>;
   selectedEventId?: string;
   openedPhoneConversationKey?: string;
