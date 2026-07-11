@@ -28,7 +28,7 @@ export function highlightedPreviewText(text: string) {
   let lastIndex = 0;
   text.replace(previewJsonTokenPattern, (match, stringMatch: string | undefined, keySuffix: string | undefined, offset: number) => {
     if (offset > lastIndex) nodes.push(text.slice(lastIndex, offset));
-    nodes.push(<span className={previewTokenClass(match, stringMatch, keySuffix)} key={`${offset}-${match}`}>{match}</span>);
+    nodes.push(<span className={previewTokenClass(match, stringMatch, keySuffix)} key={`${offset}-${match}`}>{stringMatch ?? match}</span>);
     if (keySuffix) nodes.push(keySuffix);
     lastIndex = offset + match.length;
     return match;
