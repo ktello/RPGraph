@@ -1,4 +1,11 @@
-import { type FormEvent, useEffect, useRef, useState } from 'react';
+import {
+  type FormEvent,
+  type KeyboardEvent as ReactKeyboardEvent,
+  useEffect,
+  useMemo,
+  useRef,
+  useState,
+} from 'react';
 import type { StorybookCharacter } from '../../storybook/runtime';
 import type {
   ChatImageAttachment,
@@ -10,6 +17,10 @@ import type {
 } from '../../types';
 import { formatRpDateTimeParts } from '../../workflow';
 import { bankingBalanceForCharacter, formatBankingAmount } from '../../chat/bankTransfers';
+import {
+  onlyFriendsWalletBalance,
+  type OnlyFriendsPurchasesByCharacter,
+} from '../../chat/onlyFriendsWallet';
 import type {
   ImageGenerationAssistantMessage,
   ImageGenerationAssistantResult,
@@ -49,6 +60,30 @@ type SocialAccount = {
   character?: StorybookCharacter;
 };
 
+type SocialNotice = {
+  kind: 'success' | 'error';
+  text: string;
+};
+
+type PendingCommentReveal = {
+  actionId: string;
+  postId: string;
+  baselineCount: number;
+  baselineVisibleCount: number;
+  baselinePersistedCount: number;
+};
+
+const POST_APPEAR_DELAY_MIN_MS = 2_000;
+const POST_APPEAR_DELAY_MAX_MS = 3_000;
+const COMMENT_APPEAR_DELAY_MIN_MS = 3_000;
+const COMMENT_APPEAR_DELAY_MAX_MS = 6_000;
+const LIKE_RAMP_DURATION_MIN_MS = 45_000;
+const LIKE_RAMP_DURATION_MAX_MS = 60_000;
+
+function randomDelay(minimum: number, maximum: number) {
+  return Math.round(minimum + Math.random() * (maximum - minimum));
+}
+
 type PhoneSocialFeedScreenProps = {
   app: SocialAppConfig;
   owner?: StorybookCharacter;
@@ -61,6 +96,7 @@ type PhoneSocialFeedScreenProps = {
   socialImageById: (imageId: string) => ChatImageAttachment | undefined;
   /** Liked post ids per "characterId/app" account (persisted in the RP save). */
   socialLikesByAccount: Record<string, string[]>;
+  onlyFriendsPurchasesByCharacter: OnlyFriendsPurchasesByCharacter;
   onToggleLike: (postId: string) => void;
   /** Saves an uploaded file into the owner's Gallery and returns the stored image. */
   onImportPostImage: (request: {
@@ -72,12 +108,12 @@ type PhoneSocialFeedScreenProps = {
     postId: string;
   };
   isRunning: boolean;
-  onSendBankTransfer: (request: {
-    from: StorybookCharacter;
-    to: string;
+  onTransferOnlyFriendsWallet: (request: {
+    owner: StorybookCharacter;
+    direction: 'top-up' | 'withdraw';
     amount: number;
-    note: string;
   }) => void;
+  onUnlockOnlyFriendsPost: (characterId: string, postId: string, price: number) => void;
   onSubmitSocialPost: (request: {
     author: StorybookCharacter;
     post: SocialPostRecord;
@@ -138,9 +174,8 @@ type PhoneSocialFeedScreenProps = {
  * (the phone contacts double as followed social accounts), feed on the right.
  *
  * Published posts, user thread actions, and generated reactions are persisted
- * on chat messages; player likes live in the RP save per character and app.
- * Manually added accounts and unlock UI state remain local until their later
- * phases (see SOCIALMEDIA.md).
+ * on chat messages. Player likes and OnlyFriends purchases live in the RP save
+ * per character; manually added accounts remain local until a later phase.
  */
 export function PhoneSocialFeedScreen({
   app,
@@ -152,11 +187,13 @@ export function PhoneSocialFeedScreen({
   socialMediaMessages,
   socialImageById,
   socialLikesByAccount,
+  onlyFriendsPurchasesByCharacter,
   onToggleLike,
   onImportPostImage,
   openPostRequest,
   isRunning,
-  onSendBankTransfer,
+  onTransferOnlyFriendsWallet,
+  onUnlockOnlyFriendsPost,
   onSubmitSocialPost,
   onSubmitSocialThreadAction,
   onCreateSocialAccount,
@@ -183,9 +220,10 @@ export function PhoneSocialFeedScreen({
   const [account, setAccount] = useState<string | undefined>(storedUsername || undefined);
   const [addedAccounts, setAddedAccounts] = useState<SocialAccount[]>([]);
   const [selectedAccountKey, setSelectedAccountKey] = useState<string>();
-  const [unlockedPostIds, setUnlockedPostIds] = useState<ReadonlySet<string>>(new Set());
-  // Post currently showing the "pay with bank account" confirmation.
+  // Post currently showing the OnlyFriends balance confirmation.
   const [unlockCandidateId, setUnlockCandidateId] = useState<string>();
+  const [walletOpen, setWalletOpen] = useState(false);
+  const [walletAmountText, setWalletAmountText] = useState('10');
   const [openCommentsPostId, setOpenCommentsPostId] = useState<string | undefined>(
     openPostRequest?.postId,
   );
@@ -198,6 +236,13 @@ export function PhoneSocialFeedScreen({
   const [cameraOpen, setCameraOpen] = useState(false);
   const [postDraft, setPostDraft] = useState('');
   const [postDraftImage, setPostDraftImage] = useState<ChatImageAttachment>();
+  const [notice, setNotice] = useState<SocialNotice>();
+  const [optimisticPosts, setOptimisticPosts] = useState<SocialPost[]>([]);
+  const [delayedPostIds, setDelayedPostIds] = useState<Set<string>>(() => new Set());
+  const [freshPostIds, setFreshPostIds] = useState<Set<string>>(() => new Set());
+  const [visibleLikeCounts, setVisibleLikeCounts] = useState<Record<string, number>>({});
+  const [visibleCommentCounts, setVisibleCommentCounts] = useState<Record<string, number>>({});
+  const [pendingCommentReveal, setPendingCommentReveal] = useState<PendingCommentReveal>();
   const [addingPerson, setAddingPerson] = useState(false);
   const [newPersonName, setNewPersonName] = useState('');
   const [galleryOpen, setGalleryOpen] = useState(false);
@@ -206,9 +251,52 @@ export function PhoneSocialFeedScreen({
   const postElementsRef = useRef(new Map<string, HTMLElement>());
   const scrolledOpenPostRequestIdRef = useRef<number | undefined>(undefined);
   const nextThreadActionSequenceRef = useRef(socialMediaMessages.length);
+  const nextPostSequenceRef = useRef(socialMediaMessages.length);
+  const noticeTimerRef = useRef<number | undefined>(undefined);
+  const postAppearTimersRef = useRef(new Map<string, number>());
+  const reactionFallbackTimersRef = useRef(new Map<string, number>());
+  const commentRevealTimersRef = useRef(new Map<string, number[]>());
+  const likeRampTimersRef = useRef(new Map<string, number>());
+  const scheduledInitialCommentsRef = useRef(new Set<string>());
+  const scheduledThreadActionsRef = useRef(new Set<string>());
+  const persistedReactionsRef = useRef<ReturnType<typeof socialReactionsByPostId>>({});
+  const persistedCommentsRef = useRef<Record<string, SocialComment[]>>({});
+  const characterLikeCountsRef = useRef<Record<string, number>>({});
   const ownerColor = owner ? characterColors.get(owner.name) : undefined;
   const bankBalance = owner ? bankingBalanceForCharacter(owner, bankTransferMessages) : 0;
+  const onlyFriendsPurchases = owner
+    ? onlyFriendsPurchasesByCharacter[owner.id] ?? {}
+    : {};
+  const unlockedPostIds = new Set(Object.keys(onlyFriendsPurchases));
+  const walletBalance = owner
+    ? onlyFriendsWalletBalance(owner, bankTransferMessages, onlyFriendsPurchases)
+    : 0;
+  const walletAmount = Math.round(Number(walletAmountText) * 100) / 100;
+  const walletAmountValid = Number.isFinite(walletAmount) && walletAmount > 0;
   const ownerFirstName = owner?.name.trim().split(/\s+/)[0];
+
+  function showNotice(nextNotice: SocialNotice, duration = 1_800) {
+    if (noticeTimerRef.current !== undefined) {
+      window.clearTimeout(noticeTimerRef.current);
+    }
+    setNotice(nextNotice);
+    noticeTimerRef.current = window.setTimeout(() => {
+      setNotice(undefined);
+      noticeTimerRef.current = undefined;
+    }, duration);
+  }
+
+  useEffect(() => () => {
+    if (noticeTimerRef.current !== undefined) {
+      window.clearTimeout(noticeTimerRef.current);
+    }
+    postAppearTimersRef.current.forEach((timer) => window.clearTimeout(timer));
+    reactionFallbackTimersRef.current.forEach((timer) => window.clearTimeout(timer));
+    commentRevealTimersRef.current.forEach((timers) => {
+      timers.forEach((timer) => window.clearTimeout(timer));
+    });
+    likeRampTimersRef.current.forEach((timer) => window.clearTimeout(timer));
+  }, []);
 
   useEffect(() => {
     const handleKeyDown = (event: KeyboardEvent) => {
@@ -250,53 +338,59 @@ export function PhoneSocialFeedScreen({
 
   // Posts published through the workflow live on chat messages (and therefore
   // in the RP save); the AI reactions to them are matched by post id.
-  const persistedReactions = socialReactionsByPostId(app.id, socialMediaMessages);
+  const persistedReactions = useMemo(
+    () => socialReactionsByPostId(app.id, socialMediaMessages),
+    [app.id, socialMediaMessages],
+  );
   // Rebuild the visible thread in message order. A user comment and the LLM
   // replies share one message record, so the user comment is inserted first
   // and the generated replies follow it instead of pushing it to the bottom.
-  const persistedCommentsByPostId: Record<string, SocialComment[]> = {};
-  socialMediaMessages.forEach((message) => {
-    const action = message.socialThreadAction;
-    const reactions = message.socialReactions?.app === app.id
-      ? message.socialReactions
-      : undefined;
-    const actorEchoIndex = action?.app === app.id && action.action === 'comment'
-      ? reactions?.comments.findIndex((comment) =>
-          socialIdentityMatches(comment.from, action.actor) ||
-          socialIdentityMatches(comment.handle, action.actorHandle)) ?? -1
-      : -1;
-    if (action?.app === app.id && action.action === 'comment' && action.commentText) {
-      const translatedActorEcho = actorEchoIndex >= 0
-        ? reactions?.comments[actorEchoIndex]?.text
+  const persistedCommentsByPostId = useMemo(() => {
+    const commentsByPostId: Record<string, SocialComment[]> = {};
+    socialMediaMessages.forEach((message) => {
+      const action = message.socialThreadAction;
+      const reactions = message.socialReactions?.app === app.id
+        ? message.socialReactions
         : undefined;
-      persistedCommentsByPostId[action.postId] = [
-        ...(persistedCommentsByPostId[action.postId] ?? []),
-        {
-          id: action.actionId,
-          authorName: action.actor,
-          authorHandle: action.actorHandle,
-          // Older malformed runs sometimes echoed the translated actor comment
-          // as an LLM reaction. Prefer that translation and hide the duplicate.
-          text: translatedActorEcho ?? action.commentText,
-        },
-      ];
-    }
-    if (reactions) {
-      persistedCommentsByPostId[reactions.postId] = [
-        ...(persistedCommentsByPostId[reactions.postId] ?? []),
-        ...reactions.comments.flatMap((comment, index) =>
-          index === actorEchoIndex
-            ? []
-            : [{
-                id: `reaction-${message.id}-${index}`,
-                authorName: comment.from,
-                authorHandle: comment.handle,
-                text: comment.text,
-              }],
-        ),
-      ];
-    }
-  });
+      const actorEchoIndex = action?.app === app.id && action.action === 'comment'
+        ? reactions?.comments.findIndex((comment) =>
+            socialIdentityMatches(comment.from, action.actor) ||
+            socialIdentityMatches(comment.handle, action.actorHandle)) ?? -1
+        : -1;
+      if (action?.app === app.id && action.action === 'comment' && action.commentText) {
+        const translatedActorEcho = actorEchoIndex >= 0
+          ? reactions?.comments[actorEchoIndex]?.text
+          : undefined;
+        commentsByPostId[action.postId] = [
+          ...(commentsByPostId[action.postId] ?? []),
+          {
+            id: action.actionId,
+            authorName: action.actor,
+            authorHandle: action.actorHandle,
+            // Older malformed runs sometimes echoed the translated actor comment
+            // as an LLM reaction. Prefer that translation and hide the duplicate.
+            text: translatedActorEcho ?? action.commentText,
+          },
+        ];
+      }
+      if (reactions) {
+        commentsByPostId[reactions.postId] = [
+          ...(commentsByPostId[reactions.postId] ?? []),
+          ...reactions.comments.flatMap((comment, index) =>
+            index === actorEchoIndex
+              ? []
+              : [{
+                  id: `reaction-${message.id}-${index}`,
+                  authorName: comment.from,
+                  authorHandle: comment.handle,
+                  text: comment.text,
+                }],
+          ),
+        ];
+      }
+    });
+    return commentsByPostId;
+  }, [app.id, socialMediaMessages]);
   const persistedPosts: SocialPost[] = socialPostMessages(app.id, socialMediaMessages)
     .reverse()
     .map((message) => ({
@@ -316,13 +410,18 @@ export function PhoneSocialFeedScreen({
         : undefined,
       rpDateTime: message.rpDateTime,
     }));
+  const persistedPostIds = new Set(persistedPosts.map((post) => post.id));
+  const availablePosts = [
+    ...optimisticPosts.filter((post) => !persistedPostIds.has(post.id)),
+    ...persistedPosts,
+  ].filter((post) => !delayedPostIds.has(post.id));
   const feedPosts = selectedAccount
-    ? persistedPosts.filter((post) =>
+    ? availablePosts.filter((post) =>
         socialIdentityMatches(post.authorHandle, selectedAccount.handle) ||
         socialIdentityMatches(post.authorName, selectedAccount.name),
       )
     : [
-        ...persistedPosts,
+        ...availablePosts,
         ...dummySocialPosts(app, owner?.id ?? 'no-account'),
       ];
   // The heart state belongs to the owner; the visible count adds one like
@@ -330,25 +429,168 @@ export function PhoneSocialFeedScreen({
   const likedPostIds = new Set(
     owner ? socialLikesByAccount[socialLikeAccountKey(owner.id, app.id)] ?? [] : [],
   );
-  const characterLikeCountByPostId: Record<string, number> = {};
-  Object.entries(socialLikesByAccount).forEach(([accountKey, postIds]) => {
-    if (!accountKey.endsWith(`/${app.id}`)) {
-      return;
-    }
-    postIds.forEach((postId) => {
-      characterLikeCountByPostId[postId] = (characterLikeCountByPostId[postId] ?? 0) + 1;
+  const characterLikeCountByPostId = useMemo(() => {
+    const counts: Record<string, number> = {};
+    Object.entries(socialLikesByAccount).forEach(([accountKey, postIds]) => {
+      if (!accountKey.endsWith(`/${app.id}`)) {
+        return;
+      }
+      postIds.forEach((postId) => {
+        counts[postId] = (counts[postId] ?? 0) + 1;
+      });
     });
-  });
-  const posts = feedPosts.map((post) => ({
-    ...post,
-    likeCount:
+    return counts;
+  }, [app.id, socialLikesByAccount]);
+  useEffect(() => {
+    persistedReactionsRef.current = persistedReactions;
+    persistedCommentsRef.current = persistedCommentsByPostId;
+    characterLikeCountsRef.current = characterLikeCountByPostId;
+  }, [characterLikeCountByPostId, persistedCommentsByPostId, persistedReactions]);
+  const posts = feedPosts.map((post) => {
+    const fullLikeCount =
       post.likeCount +
       (persistedReactions[post.id]?.likes ?? 0) +
-      (characterLikeCountByPostId[post.id] ?? 0),
-    commentCount:
+      (characterLikeCountByPostId[post.id] ?? 0);
+    const fullCommentCount =
       post.commentCount +
-      (persistedCommentsByPostId[post.id]?.length ?? 0),
-  }));
+      (persistedCommentsByPostId[post.id]?.length ?? 0);
+    return {
+      ...post,
+      likeCount: freshPostIds.has(post.id)
+        ? Math.min(visibleLikeCounts[post.id] ?? 0, fullLikeCount)
+        : fullLikeCount,
+      commentCount: visibleCommentCounts[post.id] === undefined
+        ? fullCommentCount
+        : Math.min(visibleCommentCounts[post.id], fullCommentCount),
+    };
+  });
+
+  // A newly published post receives its stored reaction total gradually. The
+  // stored message remains the source of truth; only the displayed count is
+  // paced for a more natural feed experience.
+  useEffect(() => {
+    freshPostIds.forEach((postId) => {
+      const reactions = persistedReactionsRef.current[postId];
+      if (!reactions || likeRampTimersRef.current.has(postId)) {
+        return;
+      }
+      const target =
+        reactions.likes +
+        (characterLikeCountsRef.current[postId] ?? 0);
+      if (target <= 0) {
+        setFreshPostIds((current) => {
+          const next = new Set(current);
+          next.delete(postId);
+          return next;
+        });
+        return;
+      }
+      const startedAt = Date.now();
+      const duration = randomDelay(LIKE_RAMP_DURATION_MIN_MS, LIKE_RAMP_DURATION_MAX_MS);
+      const expectedPulses = Math.max(1, Math.ceil(target / 2.5));
+      const pulseInterval = duration / expectedPulses;
+      const nextPulseDelay = () => randomDelay(
+        Math.max(500, pulseInterval * 0.7),
+        Math.max(900, pulseInterval * 1.3),
+      );
+      const tick = () => {
+        setVisibleLikeCounts((current) => {
+          const currentCount = current[postId] ?? 0;
+          const elapsedShare = Math.min(1, (Date.now() - startedAt) / duration);
+          const pacedCeiling = Math.max(1, Math.ceil(target * elapsedShare));
+          const nextCount = Math.min(target, Math.max(currentCount + randomDelay(1, 4), pacedCeiling));
+          if (nextCount >= target) {
+            likeRampTimersRef.current.delete(postId);
+            setFreshPostIds((freshIds) => {
+              const next = new Set(freshIds);
+              next.delete(postId);
+              return next;
+            });
+          } else {
+            const timer = window.setTimeout(tick, nextPulseDelay());
+            likeRampTimersRef.current.set(postId, timer);
+          }
+          return { ...current, [postId]: nextCount };
+        });
+      };
+      const timer = window.setTimeout(tick, nextPulseDelay());
+      likeRampTimersRef.current.set(postId, timer);
+    });
+  }, [freshPostIds, socialMediaMessages, socialLikesByAccount]);
+
+  // Initial reactions arrive together from the workflow, but comments are
+  // revealed one by one after the post card itself has appeared.
+  useEffect(() => {
+    freshPostIds.forEach((postId) => {
+      if (!persistedReactionsRef.current[postId] || scheduledInitialCommentsRef.current.has(postId)) {
+        return;
+      }
+      scheduledInitialCommentsRef.current.add(postId);
+      const total = persistedCommentsRef.current[postId]?.length ?? 0;
+      setVisibleCommentCounts((current) => ({
+        ...current,
+        [postId]: Math.max(current[postId] ?? 0, Math.min(1, total)),
+      }));
+      let elapsed = 0;
+      const timers: number[] = [];
+      for (let visibleCount = 2; visibleCount <= total; visibleCount += 1) {
+        elapsed += randomDelay(COMMENT_APPEAR_DELAY_MIN_MS, COMMENT_APPEAR_DELAY_MAX_MS);
+        timers.push(window.setTimeout(() => {
+          setVisibleCommentCounts((current) => ({
+            ...current,
+            [postId]: Math.max(current[postId] ?? 0, visibleCount),
+          }));
+        }, elapsed));
+      }
+      commentRevealTimersRef.current.set(postId, timers);
+    });
+  }, [freshPostIds, socialMediaMessages]);
+
+  // For a comment action, show the actor's comment first and then reveal every
+  // generated reply at a random three-to-six-second interval.
+  useEffect(() => {
+    if (
+      !pendingCommentReveal ||
+      scheduledThreadActionsRef.current.has(pendingCommentReveal.actionId)
+    ) {
+      return;
+    }
+    const completed = socialMediaMessages.some(
+      (message) => message.socialThreadAction?.actionId === pendingCommentReveal.actionId,
+    );
+    if (!completed) {
+      return;
+    }
+    scheduledThreadActionsRef.current.add(pendingCommentReveal.actionId);
+    const {
+      postId,
+      baselineCount,
+      baselineVisibleCount,
+      baselinePersistedCount,
+    } = pendingCommentReveal;
+    const currentPersistedCount = persistedCommentsRef.current[postId]?.length ?? 0;
+    const total = baselineCount + Math.max(0, currentPersistedCount - baselinePersistedCount);
+    const firstVisibleCount = Math.min(total, baselineVisibleCount + 1);
+    queueMicrotask(() => {
+      setVisibleCommentCounts((current) => ({
+        ...current,
+        [postId]: Math.max(current[postId] ?? 0, firstVisibleCount),
+      }));
+      let elapsed = 0;
+      const timers: number[] = [];
+      for (let visibleCount = firstVisibleCount + 1; visibleCount <= total; visibleCount += 1) {
+        elapsed += randomDelay(COMMENT_APPEAR_DELAY_MIN_MS, COMMENT_APPEAR_DELAY_MAX_MS);
+        timers.push(window.setTimeout(() => {
+          setVisibleCommentCounts((current) => ({
+            ...current,
+            [postId]: Math.max(current[postId] ?? 0, visibleCount),
+          }));
+        }, elapsed));
+      }
+      commentRevealTimersRef.current.set(postId, timers);
+      setPendingCommentReveal(undefined);
+    });
+  }, [pendingCommentReveal, socialMediaMessages]);
 
   if (openPostRequest && seenOpenPostRequestId !== openPostRequest.requestId) {
     setSeenOpenPostRequestId(openPostRequest.requestId);
@@ -385,22 +627,27 @@ export function PhoneSocialFeedScreen({
     onToggleLike(post.id);
   }
 
-  // Unlocking is a real purchase: the price is transferred from the owner's
-  // bank account to the post's author through the normal banking pipeline, so
-  // it shows up in the Banking app and lowers the balance.
   function payUnlock(post: SocialPost) {
     const price = post.unlockPrice ?? 4.99;
-    if (!owner || isRunning || price <= 0 || price > bankBalance) {
+    if (!owner || isRunning || price <= 0 || price > walletBalance || unlockedPostIds.has(post.id)) {
       return;
     }
-    onSendBankTransfer({
-      from: owner,
-      to: post.authorName,
-      amount: price,
-      note: `${app.name}: unlocked a post by @${post.authorHandle}`,
-    });
-    setUnlockedPostIds((current) => new Set(current).add(post.id));
+    onUnlockOnlyFriendsPost(owner.id, post.id, price);
     setUnlockCandidateId(undefined);
+  }
+
+  function changeWalletAmount(delta: number) {
+    const current = Number(walletAmountText) || 0;
+    setWalletAmountText(String(Math.max(0, Math.round((current + delta) * 100) / 100)));
+  }
+
+  function transferWallet(direction: 'top-up' | 'withdraw') {
+    const available = direction === 'top-up' ? bankBalance : walletBalance;
+    if (!owner || isRunning || !walletAmountValid || walletAmount > available) {
+      return;
+    }
+    onTransferOnlyFriendsWallet({ owner, direction, amount: walletAmount });
+    setWalletOpen(false);
   }
 
   async function submitComment(event: FormEvent<HTMLFormElement>, post: SocialPost) {
@@ -411,6 +658,23 @@ export function PhoneSocialFeedScreen({
     }
     const actionId = nextThreadActionId(post.id);
     const existingComments = commentsForPost(post);
+    const baselineCount = existingComments.length;
+    const baselineVisibleCount = visibleCommentCounts[post.id] ?? baselineCount;
+    const baselinePersistedCount = persistedCommentsByPostId[post.id]?.length ?? 0;
+    pauseCommentReveal(post.id);
+    setCommentDraft('');
+    setVisibleCommentCounts((current) => ({
+      ...current,
+      [post.id]: current[post.id] ?? baselineVisibleCount,
+    }));
+    setPendingCommentReveal({
+      actionId,
+      postId: post.id,
+      baselineCount,
+      baselineVisibleCount,
+      baselinePersistedCount,
+    });
+    showNotice({ kind: 'success', text: 'Comment sent' });
     const succeeded = await onSubmitSocialThreadAction({
       actor: owner,
       action: {
@@ -428,8 +692,15 @@ export function PhoneSocialFeedScreen({
       existingComments,
       likeCount: post.likeCount,
     });
-    if (succeeded) {
-      setCommentDraft('');
+    if (!succeeded) {
+      setPendingCommentReveal(undefined);
+      setVisibleCommentCounts((current) => {
+        const next = { ...current };
+        delete next[post.id];
+        return next;
+      });
+      setCommentDraft(text);
+      showNotice({ kind: 'error', text: 'Comment could not be sent. Your text was restored.' }, 3_500);
     }
   }
 
@@ -449,14 +720,37 @@ export function PhoneSocialFeedScreen({
     }));
   }
 
-  function loadMoreComments(post: SocialPost) {
+  function pauseCommentReveal(postId: string) {
+    const timers = commentRevealTimersRef.current.get(postId) ?? [];
+    timers.forEach((timer) => window.clearTimeout(timer));
+    commentRevealTimersRef.current.delete(postId);
+  }
+
+  async function loadMoreComments(post: SocialPost) {
     if (!account || !owner || isRunning) {
       return;
     }
-    void onSubmitSocialThreadAction({
+    const actionId = nextThreadActionId(post.id);
+    const existingComments = commentsForPost(post);
+    const baselineCount = existingComments.length;
+    const baselineVisibleCount = visibleCommentCounts[post.id] ?? baselineCount;
+    const baselinePersistedCount = persistedCommentsByPostId[post.id]?.length ?? 0;
+    pauseCommentReveal(post.id);
+    setVisibleCommentCounts((current) => ({
+      ...current,
+      [post.id]: current[post.id] ?? baselineVisibleCount,
+    }));
+    setPendingCommentReveal({
+      actionId,
+      postId: post.id,
+      baselineCount,
+      baselineVisibleCount,
+      baselinePersistedCount,
+    });
+    const succeeded = await onSubmitSocialThreadAction({
       actor: owner,
       action: {
-        actionId: nextThreadActionId(post.id),
+        actionId,
         action: 'load-more',
         app: app.id,
         postId: post.id,
@@ -466,9 +760,13 @@ export function PhoneSocialFeedScreen({
         actor: owner.name,
         actorHandle: account,
       },
-      existingComments: commentsForPost(post),
+      existingComments,
       likeCount: post.likeCount,
     });
+    if (!succeeded) {
+      setPendingCommentReveal(undefined);
+      showNotice({ kind: 'error', text: 'Comments could not be loaded.' }, 3_000);
+    }
   }
 
   async function submitPost(event: FormEvent<HTMLFormElement>) {
@@ -477,9 +775,10 @@ export function PhoneSocialFeedScreen({
     if (!caption || !account || !owner || isRunning) {
       return;
     }
+    nextPostSequenceRef.current += 1;
     const record: SocialPostRecord = {
       app: app.id,
-      postId: `post-${app.id}-${Date.now()}`,
+      postId: `post-${app.id}-${owner.id}-${nextPostSequenceRef.current}`,
       author: owner.name,
       authorHandle: account,
       caption,
@@ -489,21 +788,107 @@ export function PhoneSocialFeedScreen({
       imageId: postDraftImage?.id,
       imageDescription: postDraftImage?.description,
     };
+    const draftImage = postDraftImage;
+    const optimisticPost: SocialPost = {
+      id: record.postId,
+      authorName: record.author,
+      authorHandle: record.authorHandle,
+      caption: record.caption,
+      likeCount: 0,
+      commentCount: 0,
+      locked: false,
+      dummy: false,
+      textOnly: record.textOnly,
+      imageDataUrl: draftImage?.dataUrl,
+    };
+    setPostDraft('');
+    setPostDraftImage(undefined);
+    setPostStage(undefined);
+    setSelectedAccountKey(undefined);
+    setDelayedPostIds((current) => new Set(current).add(record.postId));
+    setFreshPostIds((current) => new Set(current).add(record.postId));
+    setVisibleLikeCounts((current) => ({ ...current, [record.postId]: 0 }));
+    setVisibleCommentCounts((current) => ({ ...current, [record.postId]: 0 }));
+    showNotice({ kind: 'success', text: 'Post sent' });
+    const appearTimer = window.setTimeout(() => {
+      setOptimisticPosts((current) => [
+        optimisticPost,
+        ...current.filter((post) => post.id !== record.postId),
+      ]);
+      setOpenCommentsPostId(record.postId);
+      setDelayedPostIds((current) => {
+        const next = new Set(current);
+        next.delete(record.postId);
+        return next;
+      });
+      postAppearTimersRef.current.delete(record.postId);
+    }, randomDelay(POST_APPEAR_DELAY_MIN_MS, POST_APPEAR_DELAY_MAX_MS));
+    postAppearTimersRef.current.set(record.postId, appearTimer);
     // Publishing runs the workflow (Message Format 3, prompt slot per app):
     // the post is recorded in the chat history and the AI generates the
     // reactions. The image travels along so vision models can see it.
     const succeeded = await onSubmitSocialPost({
       author: owner,
       post: record,
-      image: postDraftImage,
+      image: draftImage,
     });
     if (!succeeded) {
+      const pendingTimer = postAppearTimersRef.current.get(record.postId);
+      if (pendingTimer !== undefined) {
+        window.clearTimeout(pendingTimer);
+        postAppearTimersRef.current.delete(record.postId);
+      }
+      setOptimisticPosts((current) => current.filter((post) => post.id !== record.postId));
+      setDelayedPostIds((current) => {
+        const next = new Set(current);
+        next.delete(record.postId);
+        return next;
+      });
+      setFreshPostIds((current) => {
+        const next = new Set(current);
+        next.delete(record.postId);
+        return next;
+      });
+      setVisibleLikeCounts((current) => {
+        const next = { ...current };
+        delete next[record.postId];
+        return next;
+      });
+      setVisibleCommentCounts((current) => {
+        const next = { ...current };
+        delete next[record.postId];
+        return next;
+      });
+      setPostDraft(caption);
+      setPostDraftImage(draftImage);
+      setPostStage('editor');
+      showNotice({ kind: 'error', text: 'Post could not be sent. Your draft was restored.' }, 3_500);
       return;
     }
-    setPostDraft('');
-    setPostDraftImage(undefined);
-    setPostStage(undefined);
-    setSelectedAccountKey(undefined);
+    const fallbackTimer = window.setTimeout(() => {
+      if (!persistedReactionsRef.current[record.postId]) {
+        setFreshPostIds((current) => {
+          const next = new Set(current);
+          next.delete(record.postId);
+          return next;
+        });
+        setVisibleCommentCounts((current) => {
+          const next = { ...current };
+          delete next[record.postId];
+          return next;
+        });
+      }
+      reactionFallbackTimersRef.current.delete(record.postId);
+    }, 500);
+    reactionFallbackTimersRef.current.set(record.postId, fallbackTimer);
+  }
+
+  function submitPostOnEnter(event: ReactKeyboardEvent<HTMLTextAreaElement>) {
+    if (event.key !== 'Enter' || event.shiftKey || event.nativeEvent.isComposing) {
+      return;
+    }
+    event.preventDefault();
+    event.currentTarget.form?.requestSubmit();
   }
 
   function createAccount(event: FormEvent<HTMLFormElement>) {
@@ -636,6 +1021,24 @@ export function PhoneSocialFeedScreen({
 
   return (
     <div className={`phone-social-screen ${app.themeClass}`} aria-label={app.name}>
+      {notice && (
+        <div
+          className={`phone-social-notice ${notice.kind}`}
+          role={notice.kind === 'error' ? 'alert' : 'status'}
+        >
+          {notice.kind === 'success' ? (
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+              <path d="m5 12 4 4L19 6" />
+            </svg>
+          ) : (
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+              <path d="M12 8v5M12 17h.01" />
+              <circle cx="12" cy="12" r="9" />
+            </svg>
+          )}
+          <span>{notice.text}</span>
+        </div>
+      )}
       <div className="phone-social-surface">
         <div className="phone-social-sidebar" aria-label="Followed accounts">
           <header className="phone-gallery-header phone-social-header">
@@ -651,6 +1054,55 @@ export function PhoneSocialFeedScreen({
               </strong>
             </div>
           </header>
+          {app.id === 'onlyfriends' && owner && (
+            <div className="phone-social-wallet">
+              <button
+                type="button"
+                className="phone-social-wallet-summary"
+                onClick={() => setWalletOpen((current) => !current)}
+                aria-expanded={walletOpen}
+              >
+                <span>OnlyFriends Balance</span>
+                <strong>{formatBankingAmount(walletBalance)}</strong>
+                <small>Manage funds</small>
+              </button>
+              {walletOpen && (
+                <div className="phone-social-wallet-panel">
+                  <label>
+                    <span>Amount</span>
+                    <input
+                      type="number"
+                      min="0.01"
+                      step="0.01"
+                      value={walletAmountText}
+                      onChange={(event) => setWalletAmountText(event.target.value)}
+                    />
+                  </label>
+                  <div className="phone-social-wallet-quick-actions">
+                    <button type="button" onClick={() => changeWalletAmount(10)}>+$10</button>
+                    <button type="button" onClick={() => changeWalletAmount(50)}>+$50</button>
+                  </div>
+                  <div className="phone-social-wallet-transfer-actions">
+                    <button
+                      type="button"
+                      onClick={() => transferWallet('top-up')}
+                      disabled={isRunning || !walletAmountValid || walletAmount > bankBalance}
+                    >
+                      Top Up
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => transferWallet('withdraw')}
+                      disabled={isRunning || !walletAmountValid || walletAmount > walletBalance}
+                    >
+                      Withdraw
+                    </button>
+                  </div>
+                  <small>Bank balance: {formatBankingAmount(bankBalance)}</small>
+                </div>
+              )}
+            </div>
+          )}
           <div className="phone-social-account-list">
             <button
               type="button"
@@ -845,6 +1297,7 @@ export function PhoneSocialFeedScreen({
                 placeholder={postDraftImage ? 'Describe your image' : 'Write your post'}
                 value={postDraft}
                 onChange={(event) => setPostDraft(event.target.value)}
+                onKeyDown={submitPostOnEnter}
                 rows={2}
                 autoFocus
               />
@@ -867,10 +1320,13 @@ export function PhoneSocialFeedScreen({
             const liked = likedPostIds.has(post.id);
             const lockedNow = post.locked && !unlockedPostIds.has(post.id);
             const price = post.unlockPrice ?? 4.99;
-            const comments = [
+            const allComments = [
               ...(post.comments ?? []),
               ...(persistedCommentsByPostId[post.id] ?? []),
             ];
+            const comments = visibleCommentCounts[post.id] === undefined
+              ? allComments
+              : allComments.slice(0, visibleCommentCounts[post.id]);
             const commentsOpen = openCommentsPostId === post.id;
             const postAuthorCharacter = post.dummy
               ? undefined
@@ -889,7 +1345,7 @@ export function PhoneSocialFeedScreen({
               : undefined;
             return (
               <article
-                className="phone-social-post"
+                className={`phone-social-post${freshPostIds.has(post.id) ? ' fresh' : ''}`}
                 key={post.id}
                 ref={(element) => {
                   if (element) {
@@ -945,7 +1401,9 @@ export function PhoneSocialFeedScreen({
                           <svg width="18" height="18" viewBox="0 0 24 24" fill={liked ? 'currentColor' : 'none'} stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
                             <path d="M19 14c1.5-1.5 2-3.2 2-4.5A4.5 4.5 0 0 0 12 6.6 4.5 4.5 0 0 0 3 9.5c0 1.3.5 3 2 4.5l7 7Z" />
                           </svg>
-                          <span>{formatSocialCount(post.likeCount)}</span>
+                          <span className="phone-social-like-count-pop" key={post.likeCount}>
+                            {formatSocialCount(post.likeCount)}
+                          </span>
                         </button>
                       </div>
                       <button
@@ -994,15 +1452,15 @@ export function PhoneSocialFeedScreen({
                           </svg>
                           {unlockCandidateId === post.id ? (
                             <div className="phone-social-unlock-confirm">
-                              <strong>Pay with Bank Account</strong>
+                              <strong>Pay with OnlyFriends Balance</strong>
                               <span>
-                                {formatBankingAmount(price)} · Balance {formatBankingAmount(bankBalance)}
+                                {formatBankingAmount(price)} · Balance {formatBankingAmount(walletBalance)}
                               </span>
                               <div className="phone-social-unlock-confirm-actions">
                                 <button
                                   type="button"
                                   onClick={() => payUnlock(post)}
-                                  disabled={isRunning || price > bankBalance}
+                                  disabled={isRunning || price > walletBalance}
                                 >
                                   {isRunning ? 'Paying...' : `Pay ${formatBankingAmount(price)}`}
                                 </button>
@@ -1010,8 +1468,18 @@ export function PhoneSocialFeedScreen({
                                   Cancel
                                 </button>
                               </div>
-                              {price > bankBalance && (
-                                <span className="phone-social-unlock-hint">Not enough balance.</span>
+                              {price > walletBalance && (
+                                <>
+                                  <span className="phone-social-unlock-hint">
+                                    Not enough OnlyFriends balance.
+                                  </span>
+                                  <button
+                                    type="button"
+                                    onClick={() => setWalletOpen(true)}
+                                  >
+                                    Add funds
+                                  </button>
+                                </>
                               )}
                             </div>
                           ) : (
@@ -1033,7 +1501,9 @@ export function PhoneSocialFeedScreen({
                             <svg width="16" height="16" viewBox="0 0 24 24" fill={liked ? 'currentColor' : 'none'} stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
                               <path d="M19 14c1.5-1.5 2-3.2 2-4.5A4.5 4.5 0 0 0 12 6.6 4.5 4.5 0 0 0 3 9.5c0 1.3.5 3 2 4.5l7 7Z" />
                             </svg>
-                            <span>{formatSocialCount(post.likeCount)}</span>
+                            <span className="phone-social-like-count-pop" key={post.likeCount}>
+                              {formatSocialCount(post.likeCount)}
+                            </span>
                           </button>
                           <button
                             type="button"
@@ -1096,26 +1566,30 @@ export function PhoneSocialFeedScreen({
                     <button
                       type="button"
                       className="phone-social-load-comments"
-                      onClick={() => loadMoreComments(post)}
-                      disabled={isRunning}
+                      onClick={() => void loadMoreComments(post)}
+                      disabled={isRunning || pendingCommentReveal?.postId === post.id}
                     >
-                      {isRunning ? 'Loading...' : 'Load More Comments'}
+                      {isRunning || pendingCommentReveal?.postId === post.id
+                        ? 'Loading...'
+                        : 'Load More Comments'}
                     </button>
-                    <form
-                      className="phone-social-comment-form"
-                      onSubmit={(event) => submitComment(event, post)}
-                    >
-                      <input
-                        type="text"
-                        placeholder="Add a comment"
-                        value={commentDraft}
-                        onChange={(event) => setCommentDraft(event.target.value)}
-                        autoFocus
-                      />
-                      <button type="submit" disabled={!commentDraft.trim() || isRunning}>
-                        {isRunning ? 'Sending...' : 'Send'}
-                      </button>
-                    </form>
+                    {pendingCommentReveal?.postId !== post.id && (
+                      <form
+                        className="phone-social-comment-form"
+                        onSubmit={(event) => submitComment(event, post)}
+                      >
+                        <input
+                          type="text"
+                          placeholder="Add a comment"
+                          value={commentDraft}
+                          onChange={(event) => setCommentDraft(event.target.value)}
+                          autoFocus
+                        />
+                        <button type="submit" disabled={!commentDraft.trim() || isRunning}>
+                          {isRunning ? 'Sending...' : 'Send'}
+                        </button>
+                      </form>
+                    )}
                   </div>
                 )}
               </article>
