@@ -1,6 +1,6 @@
 # RPGraph Studio Overview
 
-RPGraph Studio is a local-first desktop studio for building and running roleplay workflows as a node graph. The app combines a visual workflow editor, a roleplay chat interface, phone-style character messaging, scheduled events, story data, session saves, provider management, and optional image generation through ComfyUI.
+RPGraph Studio is a local-first desktop studio for building and running roleplay workflows as a node graph. The app combines a visual workflow editor, roleplay chat, a multi-app character phone, scheduled events, story data, session saves, provider management, voice playback, and optional image generation through ComfyUI.
 
 This document is the first high-level map of the current codebase. It is intentionally broad: later documents can expand each section into deeper implementation notes.
 
@@ -37,7 +37,7 @@ The current UI labels the product as `RPgraph Studio v0.4.6 Beta`.
 
 The main app shell is built in [`src/App.tsx`](src/App.tsx). It renders a full studio layout with these major areas:
 
-- **Topbar**: brand/version, onboarding, options, provider management, assistant, system log, file manager, active save/workflow/storybook status, and desktop window controls.
+- **Topbar**: brand/version, onboarding, options, provider management, assistant, system log, file manager, active save/workflow/storybook status, resource monitoring, and desktop window controls.
 - **Graph panel**: the main React Flow canvas where workflow nodes are placed and connected.
 - **Graph toolbar**: reset workflow, save workflow, save RP session, runtime report, workflow capability indicators, and system toast messages.
 - **Node palette**: a side drawer of available node types grouped by purpose. Nodes can be dragged onto the graph, and favorite nodes can be added to the quick-add menu.
@@ -51,12 +51,12 @@ At a high level, the app works like this:
 1. The user opens or creates a workflow.
 2. The workflow graph contains nodes such as `User Input`, `LLM Prompt`, `RP Output`, `RP Storybook V1`, and supporting context nodes.
 3. The user selects who they are playing as in the chat panel.
-4. The user sends a chat message, phone message, event run, auto-turn, or regeneration request.
-5. `App.tsx` prepares the current session state and calls the graph execution runtime.
+4. The user sends a chat message, phone message, social-media action, event run, auto-turn, direct app action, or regeneration request.
+5. `App.tsx` coordinates focused hooks such as `useGraphRun`, `useRoleplayPanelRuntime`, and `useRpgraphFiles`, which prepare the current session state and start the requested run.
 6. The runtime resolves connected nodes, calls LLM or utility nodes as needed, and updates runtime node state.
 7. The output is appended back into the chat/session timeline and shown in the UI.
 
-The bundled initial workflow is minimal: `User Input -> LLM Prompt -> RP Output`.
+The bundled default workflow is a ready-to-use roleplay graph rather than a minimal three-node example. It currently combines `User Input`, `RP Output`, `Chat History`, `Context Compression`, `Event Manager`, `RP Storybook V1`, an `LLM Prompt Switch`, text combiners, a workflow-variable input, and Wire Links. The Prompt Switch routes Normal RP, Phone Message, and Social Media runs into the matching `RP Output` inputs. The bundled file is the single project-root file matching `workflow.default*.json`; the app imports a newly named default into its managed workflow storage on startup.
 
 ## Prompt Routing
 
@@ -64,12 +64,14 @@ The central workflow router is usually the `LLM Prompt Switch`. Chat buttons and
 
 `runGraph` derives two key numbers for each turn:
 
-- **Message Format**: `0` = RP chat, `1` = phone message, `2` = output actions.
+- **Message Format**: `0` = Normal RP, `1` = Phone Message, `2` = an Output Actions follow-up run, `3` = Social Media.
 - **Turn Mode / Prompt Slot**: `0` = with image, `1` = no image, `2` = AutoTurn, `3` = event, `4` = narrator, `5` = narrator AutoTurn.
+
+Social Media reuses the prompt-slot number for app-specific actions: `0` = Fotogram post, `1` = OnlyFriends post, `2` = Fotogram comment thread, `3` = OnlyFriends comment thread, `4` = Fotogram DM, and `5` = OnlyFriends DM.
 
 The `User Input` node exposes these as `Message Format` and `Turn Mode` outputs. When those outputs are connected to an `LLM Prompt Switch`, they select the switch's output channel and prompt slot. The switch then combines the selected prompt-before text, the incoming graph text, and the selected prompt-after text, calls the configured LLM provider, and emits only on the selected output channel.
 
-That means UI actions such as normal chat send, phone send, AutoTurn, narrator mode, event run, or output-action buttons all enter the same graph path, but can land on different prompt variants and output ports.
+That means UI actions such as normal chat send, phone send, AutoTurn, narrator mode, event run, social post, comment, DM, or output-action button all enter the graph with explicit routing values and can land on different prompt variants and output ports.
 
 Direct app actions can bypass prompt routing. The `User Input` node exposes a `Direct Actions` output, and `RP Output` has a matching input. A direct-only run starts at that RP Output input, so Text, Image, Message Format, Turn Mode, and the LLM Prompt Switch are not evaluated. Direct Actions accepts the same JSON commands as Output Actions and is processed after the normal output channels when both paths are connected in one turn.
 
@@ -88,7 +90,7 @@ This makes actions feel like normal prompt context to the model, while the app c
 
 ## Phone And JSON Outputs
 
-The `RP Output` node has separate inputs for `Normal RP`, `Phone Message`, and `Output Actions`. These are final output formats: the model has already finished its prompt run, and the app now parses the result into chat, phone, or UI state.
+The `RP Output` node has separate inputs for `Normal RP`, `Phone Message`, `Social Media`, `Output Actions`, `Highlighting Context`, and `Direct Actions`. These are final output formats: the model or direct app action has already produced its result, and the app now parses it into chat, phone, social, banking, or UI state.
 
 The core JSON output is a phone message. The dedicated `Phone Message` input expects one small JSON object with `from`, `to`, `message`, and optional `sendImageId`. RPGraph parses that object, adds it to the Phone tab, links it into the session timeline, and can attach the referenced stored Storybook or phone-history image.
 
@@ -97,6 +99,8 @@ Normal RP output is mostly prose for the Chat tab, but it can also embed a `phon
 `Output Actions` is a separate RP Output input for extra app commands. It can create phone messages, chat messages, choice buttons, info boxes, progress bars, context-capacity bars, or controls such as `setTab` and `setPlayer`. Choice buttons can also feed routing values such as `messageFormat` / output channel and `turnMode` / prompt slot back into the next graph run.
 
 `Direct Actions` accepts the same command shapes without requiring an LLM result. The Banking UI uses this route to send its already-structured transfer JSON through the visible workflow while preserving normal turn undo and regeneration behavior.
+
+`Social Media` handles generated Fotogram and OnlyFriends reactions. It applies likes and comments to posts, records thread activity, and can add incoming social DMs. Social DMs use app-specific reply blocks and preserve conversation and optional post/comment origin context.
 
 ## Workflow Graph
 
@@ -129,17 +133,19 @@ During execution, `executeGraph` sets `runActive`, `runCompleted`, `runPrepared`
 The right-side chat drawer has three user-facing modes:
 
 - **Chat**: the main roleplay conversation view. It supports character selection, narrator mode, drafts, image attachments, reference images, editing/regeneration, output actions, dialogue highlighting, phone-message display inside chat, and turn controls.
-- **Phone**: a phone-style messaging surface for character-to-character conversations. It supports contact lists, unread conversations, replies, images, gallery images, emoji insertion, and per-character viewing.
+- **Phone**: a character-owned phone desktop with WhatsUp, Gallery, Camera, Banking, Fotogram, and OnlyFriends apps.
 - **Events**: a view for upcoming scheduled roleplay events. Events can be selected, cancelled, or run through the workflow.
 
 These UI panels are backed by chat parsing, phone message parsing, timeline selectors, event entities, and session runtime state.
+
+WhatsUp supports contact lists, unread conversations, replies, text and voice messages, images, gallery selection, emoji insertion, and per-character viewing. Gallery and Camera connect Storybook images, uploads, and the image-generation assistant. Banking shows character accounts, contacts, balances, statements, and transfers. Fotogram and OnlyFriends share a social feed implementation with accounts, posts, comments, likes, direct messages, and app-specific prompts. OnlyFriends additionally supports a wallet, DM tips, paid post unlocks, and creator accounts.
 
 ## Story And Session Data
 
 The app separates the workflow graph from roleplay session data.
 
 - **Workflow**: graph nodes, graph edges, viewport, defaults, and optional bundled storybook data.
-- **Session / RP save**: timeline, messages, entities, runtime state, undo checkpoints, selected UI state, and debug state.
+- **Session / RP save**: timeline, messages, entities, runtime state, undo checkpoints, selected UI state, debug state, phone read state, banking contacts, social likes, OnlyFriends purchases, and recent emoji state. Phone, banking, social-post, comment, and DM records are stored on the canonical timeline.
 - **Storybook**: structured roleplay story data, characters, opening history, images, and formatted context output.
 
 Current session data uses a `rpgraph-session` format. Workflow data uses a `rpgraph-workflow` format. Storybook has its own version file.
@@ -148,7 +154,7 @@ Current session data uses a `rpgraph-session` format. Workflow data uses a `rpgr
 
 The app supports saved provider connections for LLM and ComfyUI usage.
 
-LLM providers are represented as connection presets. The default is a local LM Studio connection at `http://localhost:1234/v1`.
+LLM providers are represented as connection presets. Built-in presets cover LM Studio, Ollama, llama.cpp router mode, OpenRouter, and Google Gemini. The default is a local LM Studio connection at `http://localhost:1234/v1`.
 
 ComfyUI providers are used for image and voice generation. Each ComfyUI preset has a role (`image` or `voice`) chosen when the preset is created. Bundled ComfyUI workflows are split by role and shape: `comfy-workflows/api-workflows-with-variables/` contains the API JSON files that RPGraph can run, while `comfy-workflows/normal-comfyui-workflows/` is reserved for regular ComfyUI setup workflows that users open in ComfyUI first. Voice presets clone a character voice from an MP3 sample stored in the storybook (`characters[].voiceConfig`); the sample is uploaded to the ComfyUI server before each run, and generated audio is fetched back as a data URL. With the voice preset's cleanup option on (the default), the sample is uploaded to the ComfyUI temp directory (referenced via the `name [temp]` annotation) and core audio save nodes are rerouted to `PreviewAudio`, so the generated clips land in the temp directory too — ComfyUI empties that directory itself, and stock ComfyUI offers no HTTP route to delete files. Clips a custom save node still writes to the output directory get a verified delete attempt, and failures warn at most twice per provider and session. Image presets have the same temp-folder option (`comfyDeleteImageOutputs`, on by default): core `SaveImage` nodes are rerouted to `PreviewImage`, so generated images land in the temp directory instead of the output directory. A voice preset also holds a narrator voice sample (`comfyNarratorVoice`) used to read narration text aloud. New or previously unconfigured voice presets receive the bundled RPGraph narrator MP3 by default, and the user can replace or remove it.
 
@@ -165,7 +171,6 @@ Provider management includes:
 - Model list loading.
 - Health checks.
 - Vision capability detection.
-- Local model load/unload helpers for LM Studio and Ollama.
 - Local model load/unload helpers for LM Studio, Ollama, and llama.cpp router mode. llama.cpp model discovery reads text/vision capabilities and explicit load states from `/models`; RPGraph waits for confirmed load/unload completion when sharing GPU memory with ComfyUI. The provider's Reasoning setting is translated to llama.cpp chat-template controls, so short structured helper calls can disable hidden thinking tokens reliably.
 - ComfyUI workflow inspection and repair (role-aware placeholders for image and voice workflows).
 - ComfyUI model memory management around image and voice generation.
@@ -202,6 +207,8 @@ Important file actions:
 - `openStoredFile`, `requestOpenFile`, and `loadStoredFile` route plain or encrypted loads through the correct unlock path.
 - `resetWorkflow` reloads the active workflow file, restores an embedded workflow snapshot, or falls back to the bundled default workflow.
 
+The bundled default workflow name is versioned by renaming the `workflow.default*.json` file. The Electron layer naturally sorts matching names, imports a newly seen winner into managed storage, and remembers the imported filename in `workflow-state.json`.
+
 ## Node System
 
 Nodes are registered through a central registry. Each core node definition includes a type id, version, label, menu description, port definitions, React component, execution function, creation defaults, and persistence handlers.
@@ -213,7 +220,7 @@ Node palette groups in the current UI:
 - **Text & Values**: `note`, `group`, `combiner`, `memory-slot`, `phone-message-router`, `text-selector`, `write-text`, `fixed-number`, `fixed-bool`, `settings-value`
 - **Story Context**: `rp-storybook-v1`, `context-builder`
 
-Important singleton nodes include `User Input`, `RP Output`, and `RP Storybook V1`.
+Singleton nodes are `User Input`, `Chat History`, `Event Manager`, `RP Storybook V1`, and `RP Output`.
 
 ## Execution Runtime
 
@@ -235,15 +242,15 @@ The runtime:
 
 ## Important Code Areas
 
-- [`src/App.tsx`](src/App.tsx): main orchestration shell for UI state, graph state, chat/session flow, provider management, dialogs, and graph runs.
-- [`src/components`](src/components): reusable UI panels and dialogs used by the main shell.
+- [`src/App.tsx`](src/App.tsx): main orchestration shell that connects graph state, focused app hooks, panels, and dialogs.
+- [`src/app`](src/app): graph-run orchestration, roleplay-panel state, provider connections, file workflows, runtime patching, lifecycle handling, debug snapshots, and workflow hydration/snapshots.
+- [`src/components`](src/components): reusable UI panels and dialogs, including Chat, Phone, Banking, Gallery, Social Media, voice playback controls, and image generation.
 - [`src/dialogs`](src/dialogs): larger studio dialog surfaces such as options, files, and provider configuration.
 - [`src/nodes`](src/nodes): core node definitions, node UI cards, node execution logic, persistence, custom nodes, and shared node helpers.
 - [`src/graph`](src/graph): graph execution, edges, port compatibility, and edge rendering.
-- [`src/chat`](src/chat): chat input transformation, phone parsing, output parsing, structured commands, turn records, reference images, and phone replies.
+- [`src/chat`](src/chat): chat input transformation, phone/social parsing, banking and OnlyFriends wallet rules, output parsing, voice handling, structured commands, turn records, reference images, and phone replies.
 - [`src/storybook`](src/storybook): storybook runtime extraction, image library handling, opening history, and storybook actions.
 - [`src/data-management`](src/data-management): session data model, timeline/event/entity stores, selectors, validation, formatting, and debug context.
-- [`src/app`](src/app): app-level hooks and helpers extracted from `App.tsx`.
 - [`src/comfy`](src/comfy): ComfyUI API and workflow compatibility helpers.
 - [`src/llm`](src/llm): LLM API wrapper and token metrics.
 - [`electron`](electron): desktop main process, preload bridge, file formats, encryption, and OS/provider integrations.
