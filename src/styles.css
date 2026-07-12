@@ -1704,6 +1704,11 @@ input[type="radio"]:focus-visible {
   text-underline-offset: 2px;
 }
 
+.prompt-command {
+  color: #6fd3c0;
+  text-decoration-color: rgba(64, 189, 166, 0.72);
+}
+
 .prompt-action-status-warning {
   color: #f5b96b;
   text-decoration-color: rgba(245, 185, 107, 0.7);

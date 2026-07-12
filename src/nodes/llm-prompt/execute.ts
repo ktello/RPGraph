@@ -2,6 +2,7 @@ import type { ReferenceImage } from '../../chat/referenceImages';
 import type { ChatImageAttachment, WorkflowNode } from '../../types';
 import { resolveWorkflowVariables } from '../../workflow';
 import { promptActionConfigs, withPromptActionRuntimeSettingsList } from '../shared/promptActions';
+import { promptCommandConfigs } from '../shared/promptCommands';
 import { runActionAwarePrompt } from '../shared/promptRun';
 import type { ExecuteContext } from '../types';
 
@@ -62,6 +63,7 @@ export async function executeLlmPromptNode({
       promptActionConfigs(node.data.llmPromptActions),
       context.promptActionSettings,
     ),
+    commandConfigs: promptCommandConfigs(node.data.llmPromptCommands),
     streamsVisibleOutput,
     contributesToTokenCalibration: true,
     callLabel: (actionReplayCount) =>

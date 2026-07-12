@@ -28,6 +28,16 @@ import {
   unwrapJsonCodeFence,
   type PromptActionConfig,
 } from './promptActions';
+import {
+  configForPromptCommandToken,
+  knownPromptCommandId,
+  parsePromptCommandRequest,
+  parsePromptCommandTokens,
+  promptCommandPassInstruction,
+  replacePromptCommandTokensWithHints,
+  type PromptCommandConfig,
+  type PromptCommandId,
+} from './promptCommands';
 import { promptImagePass } from './promptImagePass';
 import { storybookCreateImageCharactersFromNodes } from '../../storybook/runtime';
 
@@ -190,6 +200,7 @@ export async function runActionAwarePrompt({
   promptBefore,
   promptAfter,
   actionConfigs,
+  commandConfigs = [],
   streamsVisibleOutput,
   contributesToTokenCalibration,
   callLabel,
@@ -202,6 +213,7 @@ export async function runActionAwarePrompt({
   promptBefore: string;
   promptAfter: string;
   actionConfigs: PromptActionConfig[];
+  commandConfigs?: PromptCommandConfig[];
   streamsVisibleOutput: boolean;
   contributesToTokenCalibration: boolean;
   callLabel: (actionReplayCount: number) => string;
@@ -222,6 +234,18 @@ export async function runActionAwarePrompt({
     providerHealthById: context.providerHealthById,
     createImageCharacters,
   };
+  const warnedUnknownCommandNames = new Set<string>();
+  const warnUnknownCommandName = (name: string) => {
+    if (!warnedUnknownCommandNames.has(name)) {
+      warnedUnknownCommandNames.add(name);
+      context.reportWarning(`${node.data.label}: Unknown prompt command @command:${name} was removed from the prompt.`);
+    }
+  };
+  const availableCommandIds = Array.from(new Set(
+    parsePromptCommandTokens([promptBefore, promptAfter].join('\n'))
+      .map((token) => knownPromptCommandId(token.name))
+      .filter((commandId): commandId is PromptCommandId => !!commandId),
+  ));
   const availableActionConfigs = parsePromptActionTokens([promptBefore, promptAfter].join('\n'))
     .map((token) => configForPromptActionToken(actionConfigs, token.title));
   const uniqueAvailableActionConfigs = Array.from(
@@ -240,11 +264,14 @@ export async function runActionAwarePrompt({
   const outputPasses: Array<{ label: string; text: string }> = [];
   const promptPasses: PromptPreviewPass[] = [];
   const promptSectionValue = (value: string) =>
-    replacePromptActionTokensWithInstructions(
-      value.trim(),
-      actionConfigs,
-      actionResults,
-      actionAvailabilityOptions,
+    replacePromptCommandTokensWithHints(
+      replacePromptActionTokensWithInstructions(
+        value.trim(),
+        actionConfigs,
+        actionResults,
+        actionAvailabilityOptions,
+      ),
+      warnUnknownCommandName,
     );
   const promptSectionParts = (original: string, resolved: string): PromptPreviewPart[] => {
     const trimmedOriginal = original.trim();
@@ -252,11 +279,12 @@ export async function runActionAwarePrompt({
     if (!tokens.length || resolved === trimmedOriginal) {
       return [{ text: resolved }];
     }
+    const plainPartText = (text: string) => replacePromptCommandTokensWithHints(text, warnUnknownCommandName);
     const resolvedParts: PromptPreviewPart[] = [];
     let cursor = 0;
     tokens.forEach((token) => {
       if (token.index > cursor) {
-        resolvedParts.push({ text: trimmedOriginal.slice(cursor, token.index) });
+        resolvedParts.push({ text: plainPartText(trimmedOriginal.slice(cursor, token.index)) });
       }
       const config = configForPromptActionToken(actionConfigs, token.title);
       const actionText = promptActionTokenText(
@@ -270,7 +298,7 @@ export async function runActionAwarePrompt({
       cursor = token.index + token.raw.length;
     });
     if (cursor < trimmedOriginal.length) {
-      resolvedParts.push({ text: trimmedOriginal.slice(cursor) });
+      resolvedParts.push({ text: plainPartText(trimmedOriginal.slice(cursor)) });
     }
     return resolvedParts.length ? resolvedParts : [{ text: resolved }];
   };
@@ -318,13 +346,34 @@ export async function runActionAwarePrompt({
   // action call or the visible reply. Hold streamed chunks back until the output
   // clearly starts as prose; JSON/fenced starts stay hidden so action calls never
   // flash into the chat.
+  // Commands are requested with a final "[commands: ...]" line that is stripped
+  // from the visible output later; hold a trailing line back from the stream while
+  // it still looks like such a request so it never flashes into the chat.
+  const holdTrailingCommandRequest = (value: string) => {
+    if (!availableCommandIds.length) {
+      return value;
+    }
+    const lineStart = value.lastIndexOf('\n') + 1;
+    const line = value.slice(lineStart).trimStart();
+    if (!line.startsWith('[')) {
+      return value;
+    }
+    const inner = line.slice(1).trimStart().toLocaleLowerCase();
+    if (/^commands?\s*:/.test(inner) || 'commands:'.startsWith(inner)) {
+      return value.slice(0, lineStart).replace(/\s+$/, '');
+    }
+    return value;
+  };
+  const streamVisible = context.streamOutput
+    ? (value: string) => context.streamOutput?.(holdTrailingCommandRequest(value))
+    : undefined;
   const streamUnlessActionCall = context.streamOutput
     ? (value: string) => {
         const trimmed = value.trimStart();
         if (!trimmed || trimmed.startsWith('{') || trimmed.startsWith('```') || '```'.startsWith(trimmed)) {
           return;
         }
-        context.streamOutput?.(value);
+        streamVisible?.(value);
       }
     : undefined;
 
@@ -373,7 +422,7 @@ export async function runActionAwarePrompt({
       prompt: promptForPass,
       images: imagePass.images,
       onChunk: streamsVisibleOutput
-        ? (pendingPreReplyAction ? streamUnlessActionCall : context.streamOutput)
+        ? (pendingPreReplyAction ? streamUnlessActionCall : streamVisible)
         : undefined,
       contributesToTokenCalibration,
       useConnectionSampling: true,
@@ -427,7 +476,66 @@ export async function runActionAwarePrompt({
       break;
     }
   }
-  const visibleReply = generatedText.trim();
+  let visibleReply = generatedText.trim();
+  let commandOutputText = '';
+  const commandRequest = availableCommandIds.length
+    ? parsePromptCommandRequest(visibleReply)
+    : undefined;
+  if (commandRequest) {
+    visibleReply = commandRequest.reply;
+    const requestedConfigs = commandRequest.names.flatMap((name) => {
+      const commandId = knownPromptCommandId(name);
+      if (!commandId || !availableCommandIds.includes(commandId)) {
+        context.reportWarning(`${node.data.label}: LLM requested unavailable command ${name}.`);
+        return [];
+      }
+      return [configForPromptCommandToken(commandConfigs, commandId)];
+    });
+    const uniqueRequestedConfigs = Array.from(
+      new Map(requestedConfigs.map((config) => [config.commandId, config])).values(),
+    );
+    if (uniqueRequestedConfigs.length && visibleReply) {
+      const commandNames = uniqueRequestedConfigs.map((config) => config.commandId).join(', ');
+      const instruction = promptCommandPassInstruction(visibleReply, uniqueRequestedConfigs, actionResultTexts);
+      const historySegments = historySegmentsForInputValue(context, inputValue);
+      promptPasses.push({
+        label: `Command pass: ${commandNames}`,
+        sections: [
+          {
+            label: 'Text Input',
+            text: inputValue,
+            parts: [{ text: inputValue, historySegments }],
+            historySegments,
+          },
+          {
+            label: 'Command Pass Prompt',
+            text: instruction,
+            parts: [{ text: instruction, actionInserted: true }],
+          },
+        ],
+      });
+      context.updateRuntimeData(node.id, {
+        preview: `Running commands ${commandNames} ...`,
+      });
+      const output = await context.llm.complete({
+        connectionId: node.data.connectionId,
+        nodeId: node.id,
+        label: `${callLabel(0)} / Command pass`,
+        prompt: [inputValue, instruction].filter(Boolean).join('\n\n'),
+        contributesToTokenCalibration,
+        useConnectionSampling: true,
+      });
+      outputPasses.push({ label: `Command pass output`, text: output.text });
+      const commandJson = unwrapJsonCodeFence(output.text).trim();
+      if (commandJson.startsWith('{') || commandJson.startsWith('[')) {
+        commandOutputText = commandJson;
+      } else {
+        context.reportWarning(
+          `${node.data.label}: Command pass for ${commandNames} returned no JSON output.`,
+        );
+      }
+    }
+  }
   for (const actionConfig of afterReplyActionConfigs) {
     if (!visibleReply) {
       break;
@@ -496,6 +604,9 @@ export async function runActionAwarePrompt({
     if (actionResult.finalOutputText) {
       finalOutputActionTexts.push(actionResult.finalOutputText);
     }
+  }
+  if (commandRequest) {
+    generatedText = [visibleReply, commandOutputText].filter(Boolean).join('\n');
   }
   if (generatedText.trim() && finalOutputActionTexts.length) {
     generatedText = [

@@ -22,7 +22,15 @@ import { PortLabel } from '../shared/PortValue';
 import { PostOutputToggle } from '../shared/PostOutputToggle';
 import { imageInputHandle } from '../shared/imageInputs';
 import { JsonSyntaxTextarea, formatJsonTextSegments } from '../shared/JsonSyntaxTextarea';
-import { PromptActionModal, PromptPreviewTools } from '../shared/PromptTools';
+import { PromptActionModal, PromptCommandModal, PromptPreviewTools } from '../shared/PromptTools';
+import {
+  configForPromptCommandToken,
+  countPromptCommandUses,
+  knownPromptCommandId,
+  parsePromptCommandTokens,
+  promptCommandConfigs,
+  type PromptCommandConfig,
+} from '../shared/promptCommands';
 import {
   countPromptActionUses,
   configForPromptActionToken,
@@ -102,6 +110,11 @@ export function LlmPromptSwitchNodeCard({ id, data }: NodeProps<WorkflowNode>) {
     actionSelected: boolean;
     usageCount: number;
   } | null>(null);
+  const [commandDialog, setCommandDialog] = useState<{
+    name: string;
+    config?: PromptCommandConfig;
+    usageCount: number;
+  } | null>(null);
   const promptFieldsRef = useRef<HTMLDivElement>(null);
   const promptBeforeLabelRef = useRef<HTMLLabelElement>(null);
   const promptAfterLabelRef = useRef<HTMLLabelElement>(null);
@@ -126,6 +139,32 @@ export function LlmPromptSwitchNodeCard({ id, data }: NodeProps<WorkflowNode>) {
     .filter((connection) => connection.kind === 'comfyui')
     .map((connection) => connection.id);
   const createImageCharacters = storybookCreateImageCharactersFromNodes(view.nodes);
+  const commandConfigs = promptCommandConfigs(data.llmPromptCommands);
+  const promptCommandStatuses = Object.fromEntries(
+    [...promptBeforeRows.flat(), ...promptAfterRows.flat()]
+      .flatMap((text) => parsePromptCommandTokens(text ?? ''))
+      .filter((token) => !knownPromptCommandId(token.name))
+      .map((token) => [token.name, { tone: 'error' as const, label: 'unknown command', disabled: true }]),
+  );
+  const openPromptCommandConfig = (command: { name: string }) => {
+    const commandId = knownPromptCommandId(command.name);
+    setCommandDialog({
+      name: command.name,
+      config: commandId ? configForPromptCommandToken(commandConfigs, commandId) : undefined,
+      usageCount: countPromptCommandUses(
+        [...promptBeforeRows.flat(), ...promptAfterRows.flat()],
+        command.name,
+      ),
+    });
+  };
+  const savePromptCommandConfig = (config: PromptCommandConfig) => {
+    actions.updateData(id, {
+      llmPromptCommands: commandConfigs
+        .filter((command) => command.commandId !== config.commandId)
+        .concat(config),
+    });
+    setCommandDialog(null);
+  };
   const promptActionStatuses = Object.fromEntries(
     actionConfigs.flatMap((action) => {
       const status = promptActionStatus(action, {
@@ -607,6 +646,8 @@ export function LlmPromptSwitchNodeCard({ id, data }: NodeProps<WorkflowNode>) {
             protectedPromptActionTitles={actionConfigs.map((action) => action.title)}
             promptActionStatuses={promptActionStatuses}
             onPromptActionClick={(action) => openPromptActionConfig(action, 'before')}
+            promptCommandStatuses={promptCommandStatuses}
+            onPromptCommandClick={openPromptCommandConfig}
           />
         </div>
         <div className="llm-prompt-field">
@@ -626,6 +667,8 @@ export function LlmPromptSwitchNodeCard({ id, data }: NodeProps<WorkflowNode>) {
             protectedPromptActionTitles={actionConfigs.map((action) => action.title)}
             promptActionStatuses={promptActionStatuses}
             onPromptActionClick={(action) => openPromptActionConfig(action, 'after')}
+            promptCommandStatuses={promptCommandStatuses}
+            onPromptCommandClick={openPromptCommandConfig}
           />
         </div>
       </div>
@@ -704,6 +747,17 @@ export function LlmPromptSwitchNodeCard({ id, data }: NodeProps<WorkflowNode>) {
         onReplace={applyPromptActionDialog}
         onSaveCustomPreset={saveCustomPromptActionPreset}
         onClose={() => setActionDialog(null)}
+      />
+    ) : null}
+    {commandDialog ? (
+      <PromptCommandModal
+        key={commandDialog.name}
+        id={id}
+        initialName={commandDialog.name}
+        initialConfig={commandDialog.config}
+        usageCount={commandDialog.usageCount}
+        onSave={savePromptCommandConfig}
+        onClose={() => setCommandDialog(null)}
       />
     ) : null}
     </>

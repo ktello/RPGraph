@@ -11,6 +11,7 @@ import {
 import { resolveConnectedImages } from '../shared/imageInputs';
 import { llmPromptSwitchMemo } from '../runScratch';
 import { promptActionConfigs, withPromptActionRuntimeSettingsList } from '../shared/promptActions';
+import { promptCommandConfigs } from '../shared/promptCommands';
 import { runActionAwarePrompt } from '../shared/promptRun';
 import type { ExecuteContext } from '../types';
 
@@ -144,6 +145,7 @@ async function runPromptSwitch(node: WorkflowNode, context: ExecuteContext) {
     promptBefore,
     promptAfter,
     actionConfigs,
+    commandConfigs: promptCommandConfigs(node.data.llmPromptCommands),
     streamsVisibleOutput,
     contributesToTokenCalibration: true,
     callLabel: (actionReplayCount) =>

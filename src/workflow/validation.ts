@@ -20,6 +20,7 @@ import {
 } from '../nodes/nodeVersion';
 import { isCustomNodeDefinition } from '../nodes/custom-node/model';
 import { isPromptActionConfig } from '../nodes/shared/promptActions';
+import { isPromptCommandConfig } from '../nodes/shared/promptCommands';
 import { contextBuilderInputCount } from './defaults';
 import {
   isCurrentWorkflowFormatVersion,
@@ -65,6 +66,10 @@ function isStringMatrix(value: unknown) {
 
 function isPromptActionConfigArray(value: unknown) {
   return Array.isArray(value) && value.every(isPromptActionConfig);
+}
+
+function isPromptCommandConfigArray(value: unknown) {
+  return Array.isArray(value) && value.every(isPromptCommandConfig);
 }
 
 function isBooleanArray(value: unknown) {
@@ -260,6 +265,7 @@ function isWorkflowNodeData(value: unknown): value is WorkflowNodeData {
     !isOptionalString(value.llmPromptAfter) ||
     !isOptionalBoolean(value.llmPromptAutoFormatJson) ||
     (value.llmPromptActions !== undefined && !isPromptActionConfigArray(value.llmPromptActions)) ||
+    (value.llmPromptCommands !== undefined && !isPromptCommandConfigArray(value.llmPromptCommands)) ||
     (value.llmPromptSwitchOutputTitles !== undefined && !isStringArray(value.llmPromptSwitchOutputTitles)) ||
     (value.llmPromptSwitchPromptTitlesByOutput !== undefined && !isStringMatrix(value.llmPromptSwitchPromptTitlesByOutput)) ||
     (value.llmPromptSwitchPromptBeforesByOutput !== undefined && !isStringMatrix(value.llmPromptSwitchPromptBeforesByOutput)) ||

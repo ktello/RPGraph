@@ -16,6 +16,7 @@ import React, {
 import type { SettingsValueDefinition } from '../../types';
 import { defaultWorkflowVariableValue, variableAliases } from '../../workflow';
 import { defaultPromptActionTitle, promptActionKey } from './promptActions';
+import { promptCommandTokenPattern } from './promptCommands';
 import { usePreservedTextSelection } from './usePreservedTextSelection';
 
 type JsonToken =
@@ -26,6 +27,7 @@ type HighlightToken =
   | JsonToken
   | { kind: 'workflow-variable-valid' | 'workflow-variable-invalid'; text: string }
   | { kind: 'prompt-action'; text: string; title: string; index: number; hasTitle: boolean }
+  | { kind: 'prompt-command'; text: string; name: string; index: number }
   | { kind: 'template-variable-active' | 'template-variable-inactive'; text: string };
 
 type JsonSyntaxTextareaProps = {
@@ -46,6 +48,8 @@ type JsonSyntaxTextareaProps = {
   protectedPromptActionTitles?: string[];
   promptActionStatuses?: Record<string, { tone: 'warning' | 'error'; label: string; disabled?: boolean }>;
   onPromptActionClick?: (action: { title: string; index: number; hasTitle: boolean }) => void;
+  promptCommandStatuses?: Record<string, { tone: 'warning' | 'error'; label: string; disabled?: boolean }>;
+  onPromptCommandClick?: (command: { name: string; index: number }) => void;
 };
 
 const jsonTokenPattern =
@@ -427,6 +431,61 @@ function protectedPromptActionDeletionRange(
   return action ? promptActionDeleteBounds(action) : undefined;
 }
 
+type PromptCommandRange = {
+  name: string;
+  index: number;
+  start: number;
+  end: number;
+};
+
+function promptCommandRanges(text: string) {
+  const ranges: PromptCommandRange[] = [];
+  text.replace(promptCommandTokenPattern, (match, name: string, offset: number) => {
+    ranges.push({
+      name: name.toLocaleLowerCase(),
+      index: offset,
+      start: offset,
+      end: offset + match.length,
+    });
+    return match;
+  });
+  return ranges;
+}
+
+function promptCommandAtIndex(text: string, index: number) {
+  return promptCommandRanges(text).find((command) => index >= command.start && index < command.end);
+}
+
+function splitPromptCommands(token: HighlightToken): HighlightToken[] {
+  if (token.kind === 'prompt-action' || token.kind === 'prompt-command') {
+    return [token];
+  }
+  if (!token.text.includes('@command')) {
+    return [token];
+  }
+
+  const tokens: HighlightToken[] = [];
+  let lastIndex = 0;
+  token.text.replace(promptCommandTokenPattern, (match, name: string, offset: number) => {
+    if (offset > lastIndex) {
+      tokens.push({ ...token, text: token.text.slice(lastIndex, offset) });
+    }
+    tokens.push({
+      kind: 'prompt-command',
+      text: match,
+      name: name.toLocaleLowerCase(),
+      index: offset,
+    });
+    lastIndex = offset + match.length;
+    return match;
+  });
+
+  if (lastIndex < token.text.length) {
+    tokens.push({ ...token, text: token.text.slice(lastIndex) });
+  }
+  return tokens;
+}
+
 function splitPromptActions(token: HighlightToken): HighlightToken[] {
   if (token.kind === 'prompt-action') {
     return [token];
@@ -462,7 +521,7 @@ function splitTemplateVariables(
   token: HighlightToken,
   statuses: Record<string, 'active' | 'inactive'> | undefined,
 ): HighlightToken[] {
-  if (!statuses || token.kind === 'prompt-action' || token.kind === 'template-variable-active' || token.kind === 'template-variable-inactive') {
+  if (!statuses || token.kind === 'prompt-action' || token.kind === 'prompt-command' || token.kind === 'template-variable-active' || token.kind === 'template-variable-inactive') {
     return [token];
   }
   if (!token.text.includes('{{')) {
@@ -508,6 +567,8 @@ export function JsonSyntaxTextarea({
   protectedPromptActionTitles = [],
   promptActionStatuses = {},
   onPromptActionClick,
+  promptCommandStatuses = {},
+  onPromptCommandClick,
 }: JsonSyntaxTextareaProps) {
   const generatedId = useId();
   const textareaId = id ?? generatedId;
@@ -554,10 +615,11 @@ export function JsonSyntaxTextarea({
         splitWorkflowVariables(token, workflowVariableDefinitions, workflowVariableValues),
       )
       .flatMap(splitPromptActions)
+      .flatMap(splitPromptCommands)
       .flatMap((token) => splitTemplateVariables(token, templateVariableStatuses));
   }, [segments, jsonHighlightActive, value, workflowVariableDefinitions, workflowVariableValues, templateVariableStatuses]);
 
-  const promptActionHighlightActive = useMemo(() => /@action(?::[^\n\r]+)?/.test(value), [value]);
+  const promptActionHighlightActive = useMemo(() => /@action(?::[^\n\r]+)?/.test(value) || /@command:[A-Za-z0-9_]+/.test(value), [value]);
   const templateVariableHighlightActive = useMemo(() => !!templateVariableStatuses && /\{\{\s*[A-Za-z][A-Za-z0-9_]*\s*\}\}/.test(value), [templateVariableStatuses, value]);
   const highlightActive = jsonHighlightActive || workflowVariableHighlightActive || promptActionHighlightActive || templateVariableHighlightActive;
 
@@ -574,6 +636,14 @@ export function JsonSyntaxTextarea({
       const status = promptActionStatuses[normalizedPromptActionTitle(token.title)];
       return [
         token.kind,
+        status ? `prompt-action-status-${status.tone}` : '',
+        status?.disabled ? 'disabled' : '',
+      ].filter(Boolean).join(' ');
+    }
+    if (token.kind === 'prompt-command') {
+      const status = promptCommandStatuses[token.name];
+      return [
+        'prompt-action prompt-command',
         status ? `prompt-action-status-${status.tone}` : '',
         status?.disabled ? 'disabled' : '',
       ].filter(Boolean).join(' ');
@@ -766,13 +836,23 @@ export function JsonSyntaxTextarea({
   };
 
   const handleClick = (event: MouseEvent<HTMLTextAreaElement>) => {
-    if (!onPromptActionClick) {
+    if (!onPromptActionClick && !onPromptCommandClick) {
       return;
     }
     const element = event.currentTarget;
     window.requestAnimationFrame(() => {
       const selectionStart = element.selectionStart ?? 0;
       if (selectionStart !== (element.selectionEnd ?? selectionStart)) {
+        return;
+      }
+      if (onPromptCommandClick) {
+        const command = promptCommandAtIndex(element.value, selectionStart);
+        if (command) {
+          onPromptCommandClick(command);
+          return;
+        }
+      }
+      if (!onPromptActionClick) {
         return;
       }
       const actionOnLine = promptActionOnLineAtIndex(element.value, selectionStart);
@@ -833,7 +913,9 @@ export function JsonSyntaxTextarea({
           {tokens.map((token, index) => {
             const status = token.kind === 'prompt-action'
               ? promptActionStatuses[normalizedPromptActionTitle(token.title)]
-              : undefined;
+              : token.kind === 'prompt-command'
+                ? promptCommandStatuses[token.name]
+                : undefined;
             return (
               <React.Fragment key={`${index}-${token.kind}`}>
                 <span className={tokenClassName(token)}>

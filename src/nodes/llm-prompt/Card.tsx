@@ -8,7 +8,15 @@ import { LlmCallMetrics, runStateClassName, useNodeLayoutSync } from '../shared/
 import { PortLabel } from '../shared/PortValue';
 import { PostOutputToggle } from '../shared/PostOutputToggle';
 import { JsonSyntaxTextarea, formatJsonTextSegments } from '../shared/JsonSyntaxTextarea';
-import { PromptActionModal, PromptPreviewTools } from '../shared/PromptTools';
+import { PromptActionModal, PromptCommandModal, PromptPreviewTools } from '../shared/PromptTools';
+import {
+  configForPromptCommandToken,
+  countPromptCommandUses,
+  knownPromptCommandId,
+  parsePromptCommandTokens,
+  promptCommandConfigs,
+  type PromptCommandConfig,
+} from '../shared/promptCommands';
 import {
   countPromptActionUses,
   configForPromptActionToken,
@@ -86,6 +94,37 @@ export function LlmPromptNodeCard({ id, data }: NodeProps<WorkflowNode>) {
     .filter((connection) => connection.kind === 'comfyui')
     .map((connection) => connection.id);
   const createImageCharacters = storybookCreateImageCharactersFromNodes(view.nodes);
+  const [commandDialog, setCommandDialog] = useState<{
+    name: string;
+    config?: PromptCommandConfig;
+    usageCount: number;
+  } | null>(null);
+  const commandConfigs = promptCommandConfigs(data.llmPromptCommands);
+  const promptCommandStatuses = Object.fromEntries(
+    [data.llmPromptBefore ?? '', data.llmPromptAfter ?? '']
+      .flatMap((text) => parsePromptCommandTokens(text))
+      .filter((token) => !knownPromptCommandId(token.name))
+      .map((token) => [token.name, { tone: 'error' as const, label: 'unknown command', disabled: true }]),
+  );
+  const openPromptCommandConfig = (command: { name: string }) => {
+    const commandId = knownPromptCommandId(command.name);
+    setCommandDialog({
+      name: command.name,
+      config: commandId ? configForPromptCommandToken(commandConfigs, commandId) : undefined,
+      usageCount: countPromptCommandUses(
+        [data.llmPromptBefore ?? '', data.llmPromptAfter ?? ''],
+        command.name,
+      ),
+    });
+  };
+  const savePromptCommandConfig = (config: PromptCommandConfig) => {
+    actions.updateData(id, {
+      llmPromptCommands: commandConfigs
+        .filter((command) => command.commandId !== config.commandId)
+        .concat(config),
+    });
+    setCommandDialog(null);
+  };
   const promptActionStatuses = Object.fromEntries(
     actionConfigs.flatMap((action) => {
       const status = promptActionStatus(action, {
@@ -323,6 +362,8 @@ export function LlmPromptNodeCard({ id, data }: NodeProps<WorkflowNode>) {
             protectedPromptActionTitles={actionConfigs.map((action) => action.title)}
             promptActionStatuses={promptActionStatuses}
             onPromptActionClick={(action) => openPromptActionConfig(action, 'before')}
+            promptCommandStatuses={promptCommandStatuses}
+            onPromptCommandClick={openPromptCommandConfig}
           />
         </div>
         <div className="llm-prompt-field">
@@ -342,6 +383,8 @@ export function LlmPromptNodeCard({ id, data }: NodeProps<WorkflowNode>) {
             protectedPromptActionTitles={actionConfigs.map((action) => action.title)}
             promptActionStatuses={promptActionStatuses}
             onPromptActionClick={(action) => openPromptActionConfig(action, 'after')}
+            promptCommandStatuses={promptCommandStatuses}
+            onPromptCommandClick={openPromptCommandConfig}
           />
         </div>
       </div>
@@ -401,6 +444,17 @@ export function LlmPromptNodeCard({ id, data }: NodeProps<WorkflowNode>) {
         onReplace={applyPromptActionConfig}
         onSaveCustomPreset={saveCustomPromptActionPreset}
         onClose={() => setActionDialog(null)}
+      />
+    ) : null}
+    {commandDialog ? (
+      <PromptCommandModal
+        key={commandDialog.name}
+        id={id}
+        initialName={commandDialog.name}
+        initialConfig={commandDialog.config}
+        usageCount={commandDialog.usageCount}
+        onSave={savePromptCommandConfig}
+        onClose={() => setCommandDialog(null)}
       />
     ) : null}
     </>

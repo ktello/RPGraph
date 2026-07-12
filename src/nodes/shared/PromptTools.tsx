@@ -17,6 +17,13 @@ import {
   type PromptActionId,
   type PromptActionRuntimeSettings,
 } from './promptActions';
+import {
+  defaultPromptCommandInstructionTemplate,
+  isDefaultPromptCommandConfig,
+  promptCommandHintText,
+  promptCommandIds,
+  type PromptCommandConfig,
+} from './promptCommands';
 import type { ConnectionPreset, ProviderConnectionHealth, WorkflowNode } from '../../types';
 import type { PromptPreviewPart, PromptRunDebug } from './promptRun';
 import { JsonSyntaxTextarea } from './JsonSyntaxTextarea';
@@ -755,6 +762,146 @@ export function PromptActionModal({
             </>
             )}
           </section> : null}
+        </div>
+      </section>
+    </div>,
+    document.body,
+  );
+}
+
+export function PromptCommandModal({
+  id,
+  initialName,
+  initialConfig,
+  usageCount,
+  onSave,
+  onClose,
+}: {
+  id: string;
+  initialName: string;
+  initialConfig?: PromptCommandConfig;
+  usageCount: number;
+  onSave: (config: PromptCommandConfig) => void;
+  onClose: () => void;
+}) {
+  const [draft, setDraft] = useState<PromptCommandConfig | undefined>(initialConfig);
+  const backdropDismiss = useBackdropDismiss<HTMLDivElement>(onClose);
+
+  useEffect(() => {
+    const closeOnEscape = (event: KeyboardEvent) => {
+      if (event.key === 'Escape') {
+        onClose();
+      }
+    };
+    window.addEventListener('keydown', closeOnEscape);
+    return () => window.removeEventListener('keydown', closeOnEscape);
+  }, [onClose]);
+
+  if (typeof document === 'undefined') {
+    return null;
+  }
+
+  const savedDraft = draft
+    ? {
+        ...draft,
+        instructionTemplate: draft.instructionTemplate.trim()
+          ? draft.instructionTemplate
+          : defaultPromptCommandInstructionTemplate(draft.commandId),
+      }
+    : undefined;
+  const draftIsDefault = !!savedDraft && isDefaultPromptCommandConfig(savedDraft);
+  const draftChanged = !!savedDraft && !!initialConfig &&
+    savedDraft.instructionTemplate.trim() !== initialConfig.instructionTemplate.trim();
+
+  return createPortal(
+    <div
+      className="dialog-backdrop nodrag nowheel"
+      role="dialog"
+      aria-modal="true"
+      aria-labelledby={`${id}-command-dialog-title`}
+      {...backdropDismiss}
+    >
+      <section className="prompt-action-modal prompt-command-modal" onClick={(event) => event.stopPropagation()}>
+        <div className="dialog-header">
+          <div>
+            <h2 id={`${id}-command-dialog-title`}>Prompt Command</h2>
+            <p>Optional reply command. The prompt only lists it; the LLM requests it with a final [commands: ...] line, then receives these instructions in a follow-up pass.</p>
+          </div>
+          <div className="prompt-action-header-actions">
+            <button className="close-button" type="button" onClick={onClose}>Close</button>
+          </div>
+        </div>
+        <div className="prompt-action-modal-grid">
+          <section className="prompt-action-modal-section settings-column">
+            <div className="prompt-action-field">
+              <label className="node-field-label">COMMAND NAME</label>
+              <span className="prompt-action-usage-info">
+                {draft ? `@command:${draft.commandId}` : `@command:${initialName} (unknown command)`}
+              </span>
+              <span className="prompt-action-usage-info">
+                Globally linked in this node: {usageCount} {usageCount === 1 ? 'use' : 'uses'}.
+              </span>
+            </div>
+            {!draft ? (
+              <div className="prompt-action-field">
+                <label className="node-field-label">AVAILABLE COMMANDS</label>
+                <span className="prompt-action-usage-info">
+                  {promptCommandIds.map((commandId) => `@command:${commandId}`).join('\n')}
+                </span>
+              </div>
+            ) : null}
+            {draft ? (
+              <div className="prompt-action-replace-actions">
+                {draftChanged ? (
+                  <button
+                    className="close-button prompt-action-save-button"
+                    type="button"
+                    onClick={() => savedDraft && onSave(savedDraft)}
+                  >
+                    Save this Command
+                  </button>
+                ) : null}
+                {!draftIsDefault ? (
+                  <button
+                    className="close-button prompt-action-save-button"
+                    type="button"
+                    onClick={() => setDraft({
+                      ...draft,
+                      instructionTemplate: defaultPromptCommandInstructionTemplate(draft.commandId),
+                    })}
+                  >
+                    Reset to Default
+                  </button>
+                ) : null}
+              </div>
+            ) : null}
+          </section>
+          {draft ? (
+            <section className="prompt-action-modal-section templates-column">
+              <div className="prompt-action-template-panel instruction-panel">
+                <div className="prompt-action-template-header">
+                  <label htmlFor={`${id}-command-hint`}>PROMPT HINT (FIRST PASS, READ-ONLY)</label>
+                </div>
+                <JsonSyntaxTextarea
+                  id={`${id}-command-hint`}
+                  className="node-textarea nodrag nowheel"
+                  value={promptCommandHintText(draft.commandId)}
+                  readOnly
+                />
+              </div>
+              <div className="prompt-action-template-panel result-panel">
+                <div className="prompt-action-template-header">
+                  <label htmlFor={`${id}-command-instruction`}>COMMAND INSTRUCTIONS (FOLLOW-UP PASS)</label>
+                </div>
+                <JsonSyntaxTextarea
+                  id={`${id}-command-instruction`}
+                  className="node-textarea nodrag nowheel"
+                  value={draft.instructionTemplate}
+                  onChange={(value) => setDraft({ ...draft, instructionTemplate: value })}
+                />
+              </div>
+            </section>
+          ) : null}
         </div>
       </section>
     </div>,

@@ -42,6 +42,7 @@ import { customNodeDefinition } from './custom-node/model';
 import { lastRpOutputPersistence } from './last-rp-output/persistence';
 import { lastUserInputPersistence } from './last-user-input/persistence';
 import { promptActionConfigs, promptActionSaveConfigs } from './shared/promptActions';
+import { promptCommandConfigs, promptCommandSaveConfigs } from './shared/promptCommands';
 
 export type CorePersistence = {
   saveData: (data: WorkflowNodeData) => WorkflowNodeData;
@@ -180,6 +181,7 @@ export const corePersistence: Record<CoreNodeType, CorePersistence> = {
       llmPromptAfter: data.llmPromptAfter,
       llmPromptAutoFormatJson: data.llmPromptAutoFormatJson ?? true,
       llmPromptActions: promptActionSaveConfigs(data.llmPromptActions),
+      llmPromptCommands: promptCommandSaveConfigs(data.llmPromptCommands),
       connectionId: data.connectionId,
       runAfterRpOutput: data.runAfterRpOutput ?? false,
     }),
@@ -188,6 +190,7 @@ export const corePersistence: Record<CoreNodeType, CorePersistence> = {
       llmPromptAfter: data.llmPromptAfter,
       llmPromptAutoFormatJson: data.llmPromptAutoFormatJson ?? true,
       llmPromptActions: promptActionConfigs(data.llmPromptActions),
+      llmPromptCommands: promptCommandConfigs(data.llmPromptCommands),
       connectionId: connectionId(data, context),
       runAfterRpOutput: data.runAfterRpOutput ?? false,
     }),
@@ -203,6 +206,7 @@ export const corePersistence: Record<CoreNodeType, CorePersistence> = {
       llmPromptSwitchAutoShowPrompt: data.llmPromptSwitchAutoShowPrompt ?? true,
       llmPromptSwitchAutoFormatJson: data.llmPromptSwitchAutoFormatJson ?? true,
       llmPromptActions: promptActionSaveConfigs(data.llmPromptActions),
+      llmPromptCommands: promptCommandSaveConfigs(data.llmPromptCommands),
       connectionId: data.connectionId,
       runAfterRpOutput: data.runAfterRpOutput ?? false,
     }),
@@ -216,6 +220,7 @@ export const corePersistence: Record<CoreNodeType, CorePersistence> = {
       llmPromptSwitchAutoShowPrompt: data.llmPromptSwitchAutoShowPrompt ?? true,
       llmPromptSwitchAutoFormatJson: data.llmPromptSwitchAutoFormatJson ?? true,
       llmPromptActions: promptActionConfigs(data.llmPromptActions),
+      llmPromptCommands: promptCommandConfigs(data.llmPromptCommands),
       connectionId: connectionId(data, context),
       runAfterRpOutput: data.runAfterRpOutput ?? false,
     }),

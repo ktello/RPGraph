@@ -6,6 +6,10 @@ import type {
   PromptActionRuntimeSettings,
   PromptActionStoredConfig,
 } from './nodes/shared/promptActions';
+import type {
+  PromptCommandConfig,
+  PromptCommandStoredConfig,
+} from './nodes/shared/promptCommands';
 import type { PromptRunDebug } from './nodes/shared/promptRun';
 import type { CoreNodeType } from './nodes/coreNodeTypes';
 
@@ -293,6 +297,7 @@ type WorkflowNodeCommonFields = {
   llmPromptAfter?: string;
   llmPromptAutoFormatJson?: boolean;
   llmPromptActions?: Array<PromptActionConfig | PromptActionStoredConfig>;
+  llmPromptCommands?: Array<PromptCommandConfig | PromptCommandStoredConfig>;
   llmPromptDebug?: PromptRunDebug;
   llmPromptSwitchOutputTitles?: string[];
   llmPromptSwitchPromptTitlesByOutput?: string[][];

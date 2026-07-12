@@ -99,6 +99,7 @@ export function createInitialNodes(): WorkflowNode[] {
         llmPromptAfter: '',
         llmPromptAutoFormatJson: true,
         llmPromptActions: [],
+        llmPromptCommands: [],
         runAfterRpOutput: false,
         connectionId: defaultConnection.id,
       },
