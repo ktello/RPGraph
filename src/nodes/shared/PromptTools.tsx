@@ -877,8 +877,11 @@ export function PromptCommandModal({
             ) : null}
           </section>
           {draft ? (
-            <section className="prompt-action-modal-section templates-column">
-              <div className="prompt-action-template-panel instruction-panel">
+            <section
+              className="prompt-action-modal-section templates-column"
+              style={{ '--prompt-action-result-basis': '92px' } as CSSProperties}
+            >
+              <div className="prompt-action-template-panel result-panel">
                 <div className="prompt-action-template-header">
                   <label htmlFor={`${id}-command-hint`}>PROMPT HINT (FIRST PASS, READ-ONLY)</label>
                 </div>
@@ -889,7 +892,7 @@ export function PromptCommandModal({
                   readOnly
                 />
               </div>
-              <div className="prompt-action-template-panel result-panel">
+              <div className="prompt-action-template-panel instruction-panel">
                 <div className="prompt-action-template-header">
                   <label htmlFor={`${id}-command-instruction`}>COMMAND INSTRUCTIONS (FOLLOW-UP PASS)</label>
                 </div>
