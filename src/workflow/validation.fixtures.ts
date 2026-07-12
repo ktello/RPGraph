@@ -20,6 +20,11 @@ import {
   withImagesEnsuredForStorybookCharacter,
   withStorybookImageDescriptionUpdated,
 } from '../storybook/imageLibrary';
+import { storybookAssistantConversationContext } from '../storybook/assistantConversation';
+import {
+  sillyTavernImportInstruction,
+  validateSillyTavernImportResult,
+} from '../storybook/sillyTavernImport';
 import {
   storybookImageIdsUsedByMessages,
   usedStorybookImageIdsRemoved,
@@ -590,6 +595,106 @@ export function verifyWorkflowValidationFixtures() {
       assistantPrompt.includes('Do not create, rewrite, append, delete, reorder, summarize, or otherwise patch openingHistory') &&
       assistantPrompt.includes('"patch"'),
     'Storybook assistant prompt must request standard JSON Patch responses',
+  );
+  const assistantConversation = storybookAssistantConversationContext([
+    { role: 'user', text: 'Remember the number 235.' },
+    { role: 'assistant', text: 'I will remember 235.' },
+  ]);
+  assertFixture(
+    assistantConversation.includes('USER: Remember the number 235.') &&
+      assistantConversation.includes('ASSISTANT: I will remember 235.'),
+    'Storybook assistant requests must include the visible user and assistant conversation',
+  );
+
+  const sillyTavernCard = {
+    spec: 'chara_card_v2',
+    spec_version: '2.0',
+    data: {
+      name: 'Mira Vale',
+      description: 'A traveling archivist.',
+      personality: 'Curious and careful.',
+      scenario: 'Mira arrives at a sealed library.',
+      first_mes: 'The lock was already broken when I arrived.',
+      mes_example: '<START>\nMira: Every record leaves a trace.',
+    },
+  };
+  const sillyTavernInstruction = sillyTavernImportInstruction(
+    emptyRpStorybookV1,
+    sillyTavernCard,
+    'mira.json',
+  );
+  assertFixture(
+    sillyTavernInstruction.includes('current RPGraph Storybook') &&
+      sillyTavernInstruction.includes('personality') &&
+      sillyTavernInstruction.includes('speechStyle') &&
+      sillyTavernInstruction.includes('banking.startBalance') &&
+      sillyTavernInstruction.includes('social.fotogramUsername') &&
+      sillyTavernInstruction.includes('scenario is completely empty'),
+    'SillyTavern AI imports must describe the complete RPGraph character mapping and allow filling an empty scenario',
+  );
+  const importedMira = parseRpStorybookAssistantResult(JSON.stringify({
+    reply: 'Imported Mira.',
+    changedFields: ['characters', 'scenario'],
+    patch: [
+      {
+        op: 'add',
+        path: '/characters/-',
+        value: {
+          id: 'mira-vale',
+          name: 'Mira Vale',
+          description: 'A traveling archivist.',
+          personality: 'Curious and careful.',
+          speechStyle: 'Precise and observant.',
+          role: 'Archivist',
+          banking: { startBalance: 3200, fixedExpenses: [{ label: 'Mobile plan', amount: 29.99 }] },
+          social: { fotogramUsername: 'mira.vale', onlyfriendsUsername: '' },
+          comfyConfig: { loraName: '', loraUrl: '', appearance: '' },
+          images: [],
+        },
+      },
+      { op: 'replace', path: '/scenario/summary', value: 'Mira arrives at a sealed library.' },
+    ],
+  }), emptyRpStorybookV1);
+  const validatedSillyTavernImport = validateSillyTavernImportResult(
+    emptyRpStorybookV1,
+    importedMira,
+    sillyTavernCard,
+  );
+  assertFixture(
+    validatedSillyTavernImport.action === 'added' &&
+      validatedSillyTavernImport.characterName === 'Mira Vale',
+    'SillyTavern imports must confirm that the model actually added the requested character',
+  );
+  const occupiedScenarioStorybook = {
+    ...emptyRpStorybookV1,
+    scenario: {
+      summary: 'An established group story.',
+      openingSituation: 'The group is already together.',
+      currentSituation: '',
+    },
+  };
+  const occupiedScenarioInstruction = sillyTavernImportInstruction(
+    occupiedScenarioStorybook,
+    sillyTavernCard,
+    'mira.json',
+  );
+  assertFixture(
+    occupiedScenarioInstruction.includes('Do not patch title, introduction, scenario') &&
+      occupiedScenarioInstruction.includes('Do not replace the characters array or alter existing characters'),
+    'SillyTavern AI imports must protect an established scenario and existing characters',
+  );
+  const emptySillyTavernResult = parseRpStorybookAssistantResult(JSON.stringify({
+    reply: 'Imported Mira.',
+    changedFields: [],
+    patch: [],
+  }), emptyRpStorybookV1);
+  assertThrowsFixture(
+    () => validateSillyTavernImportResult(
+      emptyRpStorybookV1,
+      emptySillyTavernResult,
+      sillyTavernCard,
+    ),
+    'SillyTavern imports must reject model replies that claim success without changing a character',
   );
 
   const usedImageIds = storybookImageIdsUsedByMessages([

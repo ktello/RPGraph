@@ -1,4 +1,4 @@
-import { useState, type Dispatch, type MutableRefObject, type SetStateAction } from 'react';
+import { useRef, useState, type Dispatch, type MutableRefObject, type SetStateAction } from 'react';
 import type { StorybookCreatorMessage } from '../components/AppDialogs';
 import type { NodeLlmApi } from '../llm/NodeLlmApi';
 import {
@@ -31,6 +31,11 @@ import {
 } from './conversion';
 import { planCharacterCardImport, rpCharacterCardForCharacter } from './characterCard';
 import { storybookWithoutCharacter } from './characterManagement';
+import { storybookAssistantConversationContext } from './assistantConversation';
+import {
+  sillyTavernImportInstruction,
+  validateSillyTavernImportResult,
+} from './sillyTavernImport';
 import type { TurnCheckpoint } from '../data-management/types';
 import type {
   ChatGpdChatsByCharacter,
@@ -125,6 +130,7 @@ export function useStorybookActions({
   } | null>(null);
   const [storybookCreatorNodeId, setStorybookCreatorNodeId] = useState<string | null>(null);
   const [storybookCreatorMessages, setStorybookCreatorMessages] = useState<StorybookCreatorMessage[]>([]);
+  const storybookCreatorMessageNodeIdRef = useRef<string | null>(null);
   const [storybookCreatorSubmitting, setStorybookCreatorSubmitting] = useState(false);
   const [pendingCharacterLoad, setPendingCharacterLoad] = useState<{
     nodeId: string;
@@ -227,9 +233,13 @@ export function useStorybookActions({
 
   function openStorybookCreator(nodeId: string) {
     setStorybookCreatorNodeId(nodeId);
-    if (pendingStorybookConversion?.nodeId !== nodeId || pendingStorybookConversion.phase !== 'review') {
+    if (
+      storybookCreatorMessageNodeIdRef.current !== nodeId &&
+      (pendingStorybookConversion?.nodeId !== nodeId || pendingStorybookConversion.phase !== 'review')
+    ) {
       setStorybookCreatorMessages([]);
     }
+    storybookCreatorMessageNodeIdRef.current = nodeId;
   }
 
   async function submitStorybookCreatorMessage(message: string, visibleMessage = message) {
@@ -262,12 +272,12 @@ export function useStorybookActions({
             'During conversion, patches update the conversion draft only. They do not update the active node.',
           ].join('\n')
         : '';
-      const storybookMessageContext = storybookCreatorMessages
-        .filter((entry) => entry.role === 'storybook')
-        .slice(-6)
-        .map((entry) => `STORYBOOK NOTICE: ${entry.text}`)
-        .join('\n');
-      const instruction = [conversionStatus, storybookMessageContext, message].filter(Boolean).join('\n\n');
+      const conversationContext = storybookAssistantConversationContext(storybookCreatorMessages);
+      const instruction = [
+        conversionStatus,
+        conversationContext,
+        `Current user message:\n${message}`,
+      ].filter(Boolean).join('\n\n');
       const currentJson = rpStorybookPromptJsonText(currentStorybook);
       const completion = await nodeLlm.complete({
         connectionId: node.data.connectionId,
@@ -819,18 +829,11 @@ export function useStorybookActions({
         ? parseRpStorybookJson(node.data.storybookJson)
         : emptyRpStorybookV1;
       const currentJson = rpStorybookPromptJsonText(currentStorybook);
-      const importedJson = JSON.stringify(importedCharacter, null, 2);
-      const instruction = [
-        `Import this SillyTavern character JSON from "${file.fileName ?? 'selected JSON file'}" into the RPGraph Storybook format.`,
-        'Import it as a Storybook character. There is no playable-character/NPC distinction in the Storybook JSON.',
-        'Map names, description, personality/persona, scenario/first message/greeting, example dialogue, creator notes, and tags into the closest useful Storybook fields.',
-        'Preserve existing Storybook fields unless the import clearly fills an empty value or updates the same imported character.',
-        'If a character with the same name already exists, update that character instead of adding a duplicate.',
-        'Return the RPGraph Storybook assistant response JSON with an RFC 6902 JSON Patch array.',
-        '',
-        `Imported SillyTavern JSON:\n${importedJson}`,
-      ].join('\n');
-
+      const instruction = sillyTavernImportInstruction(
+        currentStorybook,
+        importedCharacter,
+        file.fileName ?? 'selected JSON file',
+      );
       updateRuntimeNode(nodeId, {
         storybookStatus: `Importing SillyTavern JSON${file.fileName ? `: ${file.fileName}` : ''} ...`,
         llmCallStats: [],
@@ -850,8 +853,13 @@ export function useStorybookActions({
         prompt: rpStorybookEditPrompt(currentJson, instruction, storyHistoryPresent(currentStorybook)),
       });
       const result = parseRpStorybookAssistantResult(completion.text, currentStorybook);
+      const validatedImport = validateSillyTavernImportResult(
+        currentStorybook,
+        result,
+        importedCharacter,
+      );
       const commitError = commitStorybookToNode(nodeId, result.storybook, {
-        storybookStatus: `Imported ${file.fileName ?? 'SillyTavern JSON'} via ${completion.connection.label}`,
+        storybookStatus: `${validatedImport.action === 'added' ? 'Added' : 'Updated'} ${validatedImport.characterName} from ${file.fileName ?? 'SillyTavern JSON'} via ${completion.connection.label}`,
         storybookFileName: undefined,
         storybookFilePath: undefined,
       });
@@ -866,7 +874,7 @@ export function useStorybookActions({
         ...current,
         {
           role: 'assistant',
-          text: `import ${result.changedFields.slice(0, 4).join(' + ') || 'storybook'}: ${result.reply}`,
+          text: `${validatedImport.action === 'added' ? 'Added' : 'Updated'} character ${validatedImport.characterName}: ${result.reply}`,
         },
       ]);
     } catch (error) {
