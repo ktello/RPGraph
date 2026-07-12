@@ -35,11 +35,14 @@ request-and-replay mechanism, reusing the existing prompt-action replay loop.
    command reference. Like action tokens, `@command:` tokens are highlighted and
    clickable in the editor: the dialog shows the command's short instruction and
    JSON block, both editable.
-2. **First pass.** Each token renders as a short invocation hint, e.g.
-   "request this by ending your reply with `[commands: bank_transfer]`" — the
-   JSON format is not shown. The LLM writes the reply; when it needs commands it
-   appends one request line such as
-   `[commands: bank_transfer, fotogram_post_comment]`.
+2. **First pass.** Each token renders as only the literal request line for its
+   command, e.g. `[commands: bank_transfer]` — no JSON format and no repeated
+   protocol text. The general protocol (do not write the JSON yourself; finish
+   the reply, then end the output with one final `[commands: ...]` line, several
+   names at once allowed) is written **once per prompt** by the prompt author as
+   an "Optional commands:" intro block above the command entries. Prompts follow
+   a fixed structure: task description, primary output format, optional
+   commands, and the `@action` blocks last.
 3. **Second pass (command pass).** The original prompt is NOT repeated. The LLM
    receives: the node's text input (chat history), its own finished reply
    **including** the request line (so it sees what it triggered), and the full

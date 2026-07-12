@@ -260,11 +260,11 @@ export function countPromptCommandUses(values: string[], name: string) {
   );
 }
 
+// The general request protocol (finish the reply, then end the output with one
+// final [commands: ...] line) is written once per prompt by the prompt author;
+// the token itself only expands to the literal request line for this command.
 export function promptCommandHintText(commandId: PromptCommandId) {
-  return [
-    `Optional command: ${commandId}. Do not write its JSON yourself.`,
-    `To use it, finish your reply, then end the output with one final line listing every needed command, for example: [commands: ${commandId}]. Several at once: [commands: name, other_name]. The exact command formats are provided after you request them.`,
-  ].join('\n');
+  return `[commands: ${commandId}]`;
 }
 
 export function replacePromptCommandTokensWithHints(
