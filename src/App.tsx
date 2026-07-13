@@ -32,7 +32,6 @@ import { PhoneTab } from './chat/PhoneTab';
 import {
   autoplayMessageFormat,
   localActivityPromptSlot,
-  normalRpMessageFormat,
   socialMediaMessageFormat,
 } from './chat/messageFormats';
 import { PromptPresetOverview } from './components/PromptPresetOverview';
@@ -69,10 +68,8 @@ import {
 } from './chat/inputTransforms';
 import {
   bankingSeenStateFromMessages,
-  bankTransferActionJson,
   bankTransferMessages,
 } from './chat/bankTransfers';
-import { onlyFriendsWalletName } from './chat/onlyFriendsWallet';
 import {
   socialDirectMessageInputText,
   socialIdentityMatches,
@@ -131,7 +128,6 @@ import {
 import { hydrateLoadedWorkflow, type HydratedWorkflow } from './app/workflowHydration';
 import {
   lastMessage,
-  createTurnId,
   narratorCharacterId,
   narratorSpeakerName,
 } from './app/runOrchestration';
@@ -140,10 +136,7 @@ import {
   type OutputAttribution,
   type PhoneMessageSound,
 } from './app/useGraphRun';
-import {
-  createTurnCheckpointFromNodesForTurnRecord,
-  trimCheckpoints,
-} from './data-management/checkpointStore';
+import { useDirectAppActions } from './app/useDirectAppActions';
 import {
   latestHistoryRpDateTime,
   phoneConversationKey,
@@ -177,19 +170,13 @@ import {
   remapOpeningTurnMessageIds,
 } from './storybook/openingHistoryRuntime';
 import {
-  createdPhoneNoteHistoryText,
-  simulatedAiChatHistoryText,
+  deletePhoneNotesForTurn,
   mergePhoneAppRecordsByCharacter,
   replaceCreatedPhoneNotesForTurn,
   replaceSimulatedAiChatsForTurn,
-  type ChatGpdChatRecord,
-  type PhoneNoteRecord,
 } from './chat/phoneAppsSessions';
 import {
-  hasCreatedPhoneNoteHistory,
-  hasSimulatedAiChatHistory,
-  manualCreatedPhoneNoteCommit,
-  manualSimulatedAiChatCommit,
+  archivedSimulatedAiChatIds,
   revertCreatedPhoneNotesForMessages,
   revertSimulatedAiChatsForMessages,
 } from './chat/phoneAppHistoryMessages';
@@ -322,7 +309,6 @@ import type {
   RpWeekdayLanguage,
   SettingsValueDefinition,
   SavedFileSummary,
-  TurnRecord,
   WorkflowFile,
   WorkflowNode,
   WorkflowNodeData,
@@ -1143,6 +1129,8 @@ function App() {
     updateHistoryMessageTimes,
     updatePhoneImageDescriptions,
     removeMessage,
+    replaceLastTurnCreatedPhoneNote,
+    removeLastTurnCreatedPhoneNote,
     applyTurnRuntime,
     applyTurnCheckpointRuntime,
     removeTurnCheckpoint,
@@ -4735,82 +4723,6 @@ function App() {
     return id;
   }
 
-  function appendManualPhoneAppHistoryTurn(
-    originalText: string,
-    metadata: Pick<MessageRecord, 'createdPhoneNote' | 'simulatedAiChat'>,
-  ) {
-    if (activeTurnCollectorRef.current) {
-      notifySystem('warning', 'Finish the current run before adding manual Phone App history.');
-      return;
-    }
-    const turnNumber = (turnsRef.current[turnsRef.current.length - 1]?.number ?? 0) + 1;
-    const turnId = createTurnId(turnNumber);
-    const messageId = nextMessageIdRef.current;
-    nextMessageIdRef.current += 1;
-    const createdAt = new Date().toISOString();
-    const message: MessageRecord = {
-      id: messageId,
-      role: 'output',
-      originalText,
-      includeInHistory: true,
-      channel: 'rp',
-      turnId,
-      turnNumber,
-      turnPart: 'output',
-      ...metadata,
-    };
-    const turn: TurnRecord = {
-      id: turnId,
-      number: turnNumber,
-      createdAt,
-      mode: 'user',
-      input: {
-        graphText: '',
-        messages: [],
-      },
-      output: {
-        graphText: originalText,
-        messages: [message],
-      },
-    };
-    const checkpoint = createTurnCheckpointFromNodesForTurnRecord(
-      turn,
-      nodesRef.current,
-      nodesRef.current,
-      workflowSettingsValuesRef.current,
-      workflowSettingsValuesRef.current,
-    );
-    messagesRef.current = [...messagesRef.current, message];
-    turnsRef.current = [...turnsRef.current, turn];
-    const nextCheckpoints = trimCheckpoints([...turnCheckpointsRef.current, checkpoint]);
-    turnCheckpointsRef.current = nextCheckpoints;
-    setMessages(messagesRef.current);
-    setTurns(turnsRef.current);
-    setTurnCheckpoints(nextCheckpoints);
-  }
-
-  function commitManualCreatedPhoneNote(note: PhoneNoteRecord) {
-    const commit = manualCreatedPhoneNoteCommit(viewedPhoneCharacter, note);
-    if (!commit || hasCreatedPhoneNoteHistory(messagesRef.current, commit)) {
-      return;
-    }
-    appendManualPhoneAppHistoryTurn(
-      createdPhoneNoteHistoryText(commit),
-      { createdPhoneNote: commit },
-    );
-  }
-
-  function commitManualChatGpdChat(chat: ChatGpdChatRecord) {
-    const commit = manualSimulatedAiChatCommit(viewedPhoneCharacter, chat);
-    if (!commit || hasSimulatedAiChatHistory(messagesRef.current, commit)) {
-      return;
-    }
-    appendManualPhoneAppHistoryTurn(
-      simulatedAiChatHistoryText(commit),
-      { simulatedAiChat: commit },
-    );
-  }
-
   function setOutputActionChoicesHiddenByTurn(turnId: string, hidden: boolean) {
     const shouldPatch = (message: MessageRecord) =>
       ((message.outputActionChoices?.length ?? 0) > 0 ||
@@ -4917,6 +4829,9 @@ function App() {
       setPhoneNotesByCharacter((current) =>
         replaceCreatedPhoneNotesForTurn(current, turnId, notes)
       );
+    },
+    commitDeletedPhoneNotes: (notes) => {
+      setPhoneNotesByCharacter((current) => deletePhoneNotesForTurn(current, notes));
     },
     workflowSettingsValuesForGraph,
     settingsValueDefinitionsRef,
@@ -5446,76 +5361,27 @@ function App() {
     );
   }
 
-  function submitBankTransfer(request: {
-    from: StorybookCharacter;
-    to: string;
-    amount: number;
-    note: string;
-  }) {
-    submitBankTransferAction({
-      actor: request.from,
-      from: request.from.name,
-      to: request.to,
-      amount: request.amount,
-      note: request.note,
-    });
-  }
-
-  function submitOnlyFriendsWalletTransfer(request: {
-    owner: StorybookCharacter;
-    direction: 'top-up' | 'withdraw';
-    amount: number;
-  }) {
-    const topUp = request.direction === 'top-up';
-    submitBankTransferAction({
-      actor: request.owner,
-      from: topUp ? request.owner.name : onlyFriendsWalletName,
-      to: topUp ? onlyFriendsWalletName : request.owner.name,
-      amount: request.amount,
-      note: topUp ? 'OnlyFriends wallet top-up' : 'OnlyFriends wallet withdrawal',
-    });
-  }
-
-  function submitBankTransferAction(request: {
-    actor: StorybookCharacter;
-    from: string;
-    to: string;
-    amount: number;
-    note: string;
-  }) {
-    if (isRunning) {
-      return;
-    }
-    void runGraph(
-      bankTransferActionJson({
-        from: request.from,
-        to: request.to,
-        amount: request.amount,
-        note: request.note,
-      }),
-      [],
-      undefined,
-      messagesRef.current,
-      undefined,
-      request.actor,
-      false,
-      undefined,
-      undefined,
-      'user',
-      undefined,
-      undefined,
-      undefined,
-      false,
-      normalRpMessageFormat,
-      0,
-      undefined,
-      undefined,
-      undefined,
-      undefined,
-      undefined,
-      true,
-    );
-  }
+  const {
+    submitBankTransfer,
+    submitOnlyFriendsWalletTransfer,
+    commitCreatedPhoneNote,
+    updatePhoneNoteColor,
+    deletePhoneNote,
+    commitChatGpdChat,
+  } = useDirectAppActions({
+    runGraph,
+    isRunning,
+    messagesRef,
+    turnsRef,
+    applyTurnCheckpointRuntime,
+    undoLastTurn,
+    replaceLastTurnCreatedPhoneNote,
+    removeLastTurnCreatedPhoneNote,
+    viewedPhoneCharacter,
+    phoneNotesByCharacter,
+    setPhoneNotesByCharacter,
+    notifySystem,
+  });
 
   async function submitSocialPost(request: {
     author: StorybookCharacter;
@@ -7093,20 +6959,16 @@ function App() {
               onChatGpdSidebarOpenChange={setChatGpdSidebarOpen}
               chatGpdSidebarWidth={chatGpdSidebarWidth}
               onChatGpdSidebarWidthChange={setChatGpdSidebarWidth}
+              archivedChatGpdChatIds={viewedPhoneCharacter
+                ? archivedSimulatedAiChatIds(turns, viewedPhoneCharacter.id)
+                : new Set()}
               phoneNotes={viewedPhoneCharacter
                 ? phoneNotesByCharacter[viewedPhoneCharacter.id] ?? []
                 : []}
-              onPhoneNotesChange={(notes) => {
-                if (viewedPhoneCharacter) {
-                  const characterId = viewedPhoneCharacter.id;
-                  setPhoneNotesByCharacter((current) => ({
-                    ...current,
-                    [characterId]: notes,
-                  }));
-                }
-              }}
-              onPhoneNoteCommit={commitManualCreatedPhoneNote}
-              onChatGpdChatCommit={commitManualChatGpdChat}
+              onPhoneNoteDelete={deletePhoneNote}
+              onPhoneNoteColorChange={updatePhoneNoteColor}
+              onPhoneNoteCommit={commitCreatedPhoneNote}
+              onChatGpdChatCommit={commitChatGpdChat}
               phoneDesktopLayout={phoneDesktopLayout}
               onPhoneDesktopLayoutChange={setPhoneDesktopLayout}
               phoneDesktopIconSize={phoneDesktopIconSize}

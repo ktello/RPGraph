@@ -6,6 +6,13 @@ import type {
 } from '../types';
 import { isRecord } from '../utils/records';
 import { phoneVoiceMessageFlag } from './phoneMessages';
+import {
+  phoneNoteColors,
+  type CreatedPhoneNoteCommit,
+  type DeletedPhoneNoteCommit,
+  type PhoneNoteColor,
+  type SimulatedAiChatCommit,
+} from './phoneAppsSessions';
 
 type OutputActionPhoneMessage = {
   from: string;
@@ -52,7 +59,19 @@ export type ParsedOutputActions = {
   contextCapacityBars: OutputActionContextCapacityRequest[];
   uiItems: OutputActionUiItem[];
   controls: OutputActionControl[];
+  createdPhoneNoteCommits: CreatedPhoneNoteCommit[];
+  deletedPhoneNoteCommits: DeletedPhoneNoteCommit[];
+  simulatedAiChatCommits: SimulatedAiChatCommit[];
   warnings: string[];
+};
+
+export type ParseOutputActionsOptions = {
+  /**
+   * Allows the fully specified createdPhoneNote, deletedPhoneNote, and
+   * simulatedAiChat payloads that only direct app action runs may carry.
+   * LLM-driven Output Actions must not change these records.
+   */
+  phoneAppCommits?: boolean;
 };
 
 const emptyOutputActions = (): ParsedOutputActions => ({
@@ -65,6 +84,9 @@ const emptyOutputActions = (): ParsedOutputActions => ({
   contextCapacityBars: [],
   uiItems: [],
   controls: [],
+  createdPhoneNoteCommits: [],
+  deletedPhoneNoteCommits: [],
+  simulatedAiChatCommits: [],
   warnings: [],
 });
 
@@ -210,13 +232,166 @@ function parsePhoneMessage(entry: Record<string, unknown>) {
   };
 }
 
-function parseAction(entry: unknown, result: ParsedOutputActions) {
+function parseCreatedPhoneNoteCommit(entry: unknown): CreatedPhoneNoteCommit | undefined {
+  if (!isRecord(entry)) {
+    return undefined;
+  }
+  const characterId = stringValue(entry, ['characterId']);
+  const characterName = stringValue(entry, ['characterName']);
+  const note = entry.note;
+  if (!characterId || !characterName || !isRecord(note)) {
+    return undefined;
+  }
+  const id = stringValue(note, ['id']);
+  const title = stringValue(note, ['title']);
+  const text = optionalStringValue(note, ['text']);
+  const dayLabel = optionalStringValue(note, ['dayLabel']);
+  const color = note.color;
+  const operation = entry.operation === undefined
+    ? 'create'
+    : entry.operation === 'create' || entry.operation === 'update'
+      ? entry.operation
+      : undefined;
+  if (
+    !id || !title || text === undefined || dayLabel === undefined || !operation ||
+    !phoneNoteColors.includes(color as PhoneNoteColor)
+  ) {
+    return undefined;
+  }
+  return {
+    characterId,
+    characterName,
+    operation,
+    note: { id, title, text, dayLabel, color: color as PhoneNoteColor },
+  };
+}
+
+function parseSimulatedAiChatCommit(entry: unknown): SimulatedAiChatCommit | undefined {
+  if (!isRecord(entry)) {
+    return undefined;
+  }
+  const characterId = stringValue(entry, ['characterId']);
+  const characterName = stringValue(entry, ['characterName']);
+  const chat = entry.chat;
+  if (!characterId || !characterName || !isRecord(chat)) {
+    return undefined;
+  }
+  const id = stringValue(chat, ['id']);
+  const title = stringValue(chat, ['title']);
+  const createdAt = stringValue(chat, ['createdAt']);
+  if (!id || !title || !createdAt || !Array.isArray(chat.messages) || chat.messages.length === 0) {
+    return undefined;
+  }
+  const messages = chat.messages.flatMap((message): SimulatedAiChatCommit['chat']['messages'] => {
+    if (!isRecord(message)) {
+      return [];
+    }
+    const text = stringValue(message, ['text']);
+    return text && (message.role === 'user' || message.role === 'assistant')
+      ? [{ role: message.role, text }]
+      : [];
+  });
+  if (
+    messages.length !== chat.messages.length ||
+    !messages.some((message) => message.role === 'assistant')
+  ) {
+    return undefined;
+  }
+  return { characterId, characterName, chat: { id, title, createdAt, messages } };
+}
+
+function parseDeletedPhoneNoteCommit(entry: unknown): DeletedPhoneNoteCommit | undefined {
+  const parsed = parseCreatedPhoneNoteCommit({
+    ...(isRecord(entry) ? entry : {}),
+    operation: 'update',
+  });
+  return parsed
+    ? {
+        characterId: parsed.characterId,
+        characterName: parsed.characterName,
+        note: parsed.note,
+      }
+    : undefined;
+}
+
+function pushCreatedPhoneNoteCommit(
+  entry: unknown,
+  result: ParsedOutputActions,
+  options: ParseOutputActionsOptions,
+) {
+  if (!options.phoneAppCommits) {
+    result.warnings.push('createdPhoneNote commits are only accepted on direct app action runs.');
+    return;
+  }
+  const commit = parseCreatedPhoneNoteCommit(entry);
+  if (commit) {
+    result.createdPhoneNoteCommits.push(commit);
+  } else {
+    result.warnings.push(
+      'Direct Actions createdPhoneNote needs characterId, characterName, an optional create/update operation, and a full note (id, title, text, dayLabel, valid color).',
+    );
+  }
+}
+
+function pushSimulatedAiChatCommit(
+  entry: unknown,
+  result: ParsedOutputActions,
+  options: ParseOutputActionsOptions,
+) {
+  if (!options.phoneAppCommits) {
+    result.warnings.push('simulatedAiChat commits are only accepted on direct app action runs.');
+    return;
+  }
+  const commit = parseSimulatedAiChatCommit(entry);
+  if (commit) {
+    result.simulatedAiChatCommits.push(commit);
+  } else {
+    result.warnings.push(
+      'Direct Actions simulatedAiChat needs characterId, characterName, and a full chat (id, title, createdAt, user/assistant messages with at least one assistant reply).',
+    );
+  }
+}
+
+function pushDeletedPhoneNoteCommit(
+  entry: unknown,
+  result: ParsedOutputActions,
+  options: ParseOutputActionsOptions,
+) {
+  if (!options.phoneAppCommits) {
+    result.warnings.push('deletedPhoneNote commits are only accepted on direct app action runs.');
+    return;
+  }
+  const commit = parseDeletedPhoneNoteCommit(entry);
+  if (commit) {
+    result.deletedPhoneNoteCommits.push(commit);
+  } else {
+    result.warnings.push(
+      'Direct Actions deletedPhoneNote needs characterId, characterName, and a full note snapshot (id, title, text, dayLabel, valid color).',
+    );
+  }
+}
+
+function parseAction(entry: unknown, result: ParsedOutputActions, options: ParseOutputActionsOptions) {
   if (!isRecord(entry)) {
     result.warnings.push('Output Actions entry is not a JSON object.');
     return;
   }
 
   const type = compactType(entry.type ?? entry.action ?? entry.kind);
+
+  if (type === 'createdphonenote') {
+    pushCreatedPhoneNoteCommit(entry, result, options);
+    return;
+  }
+
+  if (type === 'simulatedaichat') {
+    pushSimulatedAiChatCommit(entry, result, options);
+    return;
+  }
+  if (type === 'deletedphonenote') {
+    pushDeletedPhoneNoteCommit(entry, result, options);
+    return;
+  }
   const typelessBankTransfer =
     !type &&
     !!entry.from &&
@@ -431,9 +606,13 @@ function parseJsonSequence(text: string) {
   return ranges.map((range) => JSON.parse(text.slice(range.start, range.end)) as unknown);
 }
 
-function parseOutputActionsRoot(parsed: unknown, result: ParsedOutputActions) {
+function parseOutputActionsRoot(
+  parsed: unknown,
+  result: ParsedOutputActions,
+  options: ParseOutputActionsOptions,
+) {
   if (Array.isArray(parsed)) {
-    parsed.forEach((entry) => parseAction(entry, result));
+    parsed.forEach((entry) => parseAction(entry, result, options));
     return;
   }
 
@@ -450,12 +629,15 @@ function parseOutputActionsRoot(parsed: unknown, result: ParsedOutputActions) {
     Array.isArray(parsed.choices) ||
     Array.isArray(parsed.infoBoxes) ||
     Array.isArray(parsed.progressBars) ||
-    Array.isArray(parsed.contextCapacityBars);
+    Array.isArray(parsed.contextCapacityBars) ||
+    Array.isArray(parsed.createdPhoneNotes) ||
+    Array.isArray(parsed.deletedPhoneNotes) ||
+    Array.isArray(parsed.simulatedAiChats);
 
   if (Array.isArray(parsed.actions)) {
-    parsed.actions.forEach((entry) => parseAction(entry, result));
+    parsed.actions.forEach((entry) => parseAction(entry, result, options));
   } else if (!hasRootCollections) {
-    parseAction(parsed, result);
+    parseAction(parsed, result, options);
   }
 
   if (Array.isArray(parsed.phoneMessages)) {
@@ -474,31 +656,46 @@ function parseOutputActionsRoot(parsed: unknown, result: ParsedOutputActions) {
   }
 
   if (Array.isArray(parsed.bankTransfers)) {
-    parsed.bankTransfers.forEach((entry) => parseAction({ ...(isRecord(entry) ? entry : {}), type: 'bankTransfer' }, result));
+    parsed.bankTransfers.forEach((entry) => parseAction({ ...(isRecord(entry) ? entry : {}), type: 'bankTransfer' }, result, options));
   }
 
   if (Array.isArray(parsed.chatMessages)) {
-    parsed.chatMessages.forEach((entry) => parseAction({ ...(isRecord(entry) ? entry : {}), type: 'chatMessage' }, result));
+    parsed.chatMessages.forEach((entry) => parseAction({ ...(isRecord(entry) ? entry : {}), type: 'chatMessage' }, result, options));
   }
 
   if (Array.isArray(parsed.choices)) {
-    parsed.choices.forEach((entry) => parseAction(entry, result));
+    parsed.choices.forEach((entry) => parseAction(entry, result, options));
   }
 
   if (Array.isArray(parsed.infoBoxes)) {
-    parsed.infoBoxes.forEach((entry) => parseAction({ ...(isRecord(entry) ? entry : {}), type: 'infoBox' }, result));
+    parsed.infoBoxes.forEach((entry) => parseAction({ ...(isRecord(entry) ? entry : {}), type: 'infoBox' }, result, options));
   }
 
   if (Array.isArray(parsed.progressBars)) {
-    parsed.progressBars.forEach((entry) => parseAction({ ...(isRecord(entry) ? entry : {}), type: 'progressBar' }, result));
+    parsed.progressBars.forEach((entry) => parseAction({ ...(isRecord(entry) ? entry : {}), type: 'progressBar' }, result, options));
   }
 
   if (Array.isArray(parsed.contextCapacityBars)) {
-    parsed.contextCapacityBars.forEach((entry) => parseAction({ ...(isRecord(entry) ? entry : {}), type: 'contextCapacity' }, result));
+    parsed.contextCapacityBars.forEach((entry) => parseAction({ ...(isRecord(entry) ? entry : {}), type: 'contextCapacity' }, result, options));
+  }
+
+  if (Array.isArray(parsed.createdPhoneNotes)) {
+    parsed.createdPhoneNotes.forEach((entry) => pushCreatedPhoneNoteCommit(entry, result, options));
+  }
+
+  if (Array.isArray(parsed.deletedPhoneNotes)) {
+    parsed.deletedPhoneNotes.forEach((entry) => pushDeletedPhoneNoteCommit(entry, result, options));
+  }
+
+  if (Array.isArray(parsed.simulatedAiChats)) {
+    parsed.simulatedAiChats.forEach((entry) => pushSimulatedAiChatCommit(entry, result, options));
   }
 }
 
-export function parseOutputActions(value: string): ParsedOutputActions {
+export function parseOutputActions(
+  value: string,
+  options: ParseOutputActionsOptions = {},
+): ParsedOutputActions {
   const text = withoutJsonCodeFence(value);
   const result = emptyOutputActions();
   if (!text) {
@@ -511,7 +708,7 @@ export function parseOutputActions(value: string): ParsedOutputActions {
   } catch {
     const sequence = parseJsonSequence(text);
     if (sequence) {
-      sequence.forEach((entry) => parseOutputActionsRoot(entry, result));
+      sequence.forEach((entry) => parseOutputActionsRoot(entry, result, options));
       return result;
     }
     return {
@@ -521,7 +718,7 @@ export function parseOutputActions(value: string): ParsedOutputActions {
   }
 
   if (Array.isArray(parsed)) {
-    parseOutputActionsRoot(parsed, result);
+    parseOutputActionsRoot(parsed, result, options);
     return result;
   }
 
@@ -532,6 +729,6 @@ export function parseOutputActions(value: string): ParsedOutputActions {
     };
   }
 
-  parseOutputActionsRoot(parsed, result);
+  parseOutputActionsRoot(parsed, result, options);
   return result;
 }

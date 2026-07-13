@@ -276,9 +276,11 @@ type PhonePanelProps = {
   onChatGpdSidebarOpenChange: (open: boolean) => void;
   chatGpdSidebarWidth: number;
   onChatGpdSidebarWidthChange: (width: number) => void;
+  archivedChatGpdChatIds: ReadonlySet<string>;
   phoneNotes: PhoneNoteRecord[];
-  onPhoneNotesChange: (notes: PhoneNoteRecord[]) => void;
-  onPhoneNoteCommit: (note: PhoneNoteRecord) => void;
+  onPhoneNoteDelete: (noteId: string) => boolean;
+  onPhoneNoteColorChange: (noteId: string, color: PhoneNoteRecord['color']) => void;
+  onPhoneNoteCommit: (note: PhoneNoteRecord) => boolean;
   onChatGpdChatCommit: (chat: ChatGpdChatRecord) => void;
   phoneDesktopLayout: PhoneDesktopLayout;
   onPhoneDesktopLayoutChange: (layout: PhoneDesktopLayout) => void;
@@ -386,8 +388,10 @@ export function PhonePanel({
   onChatGpdSidebarOpenChange,
   chatGpdSidebarWidth,
   onChatGpdSidebarWidthChange,
+  archivedChatGpdChatIds,
   phoneNotes,
-  onPhoneNotesChange,
+  onPhoneNoteDelete,
+  onPhoneNoteColorChange,
   onPhoneNoteCommit,
   onChatGpdChatCommit,
   phoneDesktopLayout,
@@ -736,7 +740,8 @@ export function PhonePanel({
         key={selectedCharacter?.id ?? 'no-owner'}
         owner={selectedCharacter}
         notes={phoneNotes}
-        onNotesChange={onPhoneNotesChange}
+        onDeleteNote={onPhoneNoteDelete}
+        onChangeNoteColor={onPhoneNoteColorChange}
         clockDateTime={clockDateTime}
         rpDateTimeFormat={rpDateTimeFormat}
         rpWeekdayLanguage={rpWeekdayLanguage}
@@ -755,6 +760,7 @@ export function PhonePanel({
         onSidebarOpenChange={onChatGpdSidebarOpenChange}
         sidebarWidth={chatGpdSidebarWidth}
         onSidebarWidthChange={onChatGpdSidebarWidthChange}
+        archivedChatIds={archivedChatGpdChatIds}
         onCommitChat={onChatGpdChatCommit}
         onBack={() => setScreen('desktop')}
       />

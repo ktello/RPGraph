@@ -207,7 +207,12 @@ function isTimelineEntry(value: unknown): value is TimelineEntry {
       typeof value.createdPhoneNote.note.title === 'string' &&
       typeof value.createdPhoneNote.note.text === 'string' &&
       typeof value.createdPhoneNote.note.dayLabel === 'string' &&
-      phoneNoteColors.includes(value.createdPhoneNote.note.color as (typeof phoneNoteColors)[number])
+      phoneNoteColors.includes(value.createdPhoneNote.note.color as (typeof phoneNoteColors)[number]) &&
+      (
+        value.createdPhoneNote.operation === undefined ||
+        value.createdPhoneNote.operation === 'create' ||
+        value.createdPhoneNote.operation === 'update'
+      )
     );
     const validSimulatedAiChat = value.simulatedAiChat === undefined || (
       isRecord(value.simulatedAiChat) &&
@@ -219,14 +224,30 @@ function isTimelineEntry(value: unknown): value is TimelineEntry {
       typeof value.simulatedAiChat.chat.createdAt === 'string' &&
       Array.isArray(value.simulatedAiChat.chat.messages) &&
       value.simulatedAiChat.chat.messages.length >= 2 &&
-      value.simulatedAiChat.chat.messages.length <= 8 &&
-      value.simulatedAiChat.chat.messages.length % 2 === 0 &&
-      value.simulatedAiChat.chat.messages.every((message, index) =>
+      // Manual ChatGPD commits can be longer than LLM-simulated chats and may
+      // contain consecutive user messages after a failed send, so only the
+      // message shape is validated here. The strict 2-8 alternating rule for
+      // LLM output lives in parseSimulatedAiChat.
+      value.simulatedAiChat.chat.messages.every((message) =>
         isRecord(message) &&
-        message.role === (index % 2 === 0 ? 'user' : 'assistant') &&
+        (message.role === 'user' || message.role === 'assistant') &&
         typeof message.text === 'string' &&
         !!message.text.trim()
+      ) &&
+      value.simulatedAiChat.chat.messages.some((message) =>
+        isRecord(message) && message.role === 'assistant'
       )
+    );
+    const validDeletedPhoneNote = value.deletedPhoneNote === undefined || (
+      isRecord(value.deletedPhoneNote) &&
+      typeof value.deletedPhoneNote.characterId === 'string' &&
+      typeof value.deletedPhoneNote.characterName === 'string' &&
+      isRecord(value.deletedPhoneNote.note) &&
+      typeof value.deletedPhoneNote.note.id === 'string' &&
+      typeof value.deletedPhoneNote.note.title === 'string' &&
+      typeof value.deletedPhoneNote.note.text === 'string' &&
+      typeof value.deletedPhoneNote.note.dayLabel === 'string' &&
+      phoneNoteColors.includes(value.deletedPhoneNote.note.color as (typeof phoneNoteColors)[number])
     );
     return (
       typeof value.turnId === 'string' &&
@@ -249,6 +270,7 @@ function isTimelineEntry(value: unknown): value is TimelineEntry {
       validSocialReactions &&
       validSocialDirectMessage &&
       validCreatedPhoneNote &&
+      validDeletedPhoneNote &&
       validSimulatedAiChat
     );
   }
