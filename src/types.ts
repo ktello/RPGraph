@@ -935,6 +935,16 @@ export type NodeMenu = {
   flow: XYPosition;
 };
 
+export type NodeContextMenu = {
+  nodeId: string;
+  screen: XYPosition;
+  selectedNodeIds: string[];
+};
+
+export type PendingBulkNodeRemoval = {
+  nodeCount: number;
+};
+
 export type WorkflowFile = {
   format: 'rpgraph-workflow';
   formatVersion: WorkflowFormatVersion;

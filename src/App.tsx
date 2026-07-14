@@ -285,6 +285,7 @@ import {
   workflowName,
 } from './app/useRpgraphFiles';
 import { useUiScaling } from './app/useUiScaling';
+import { useNodeContextMenu } from './app/useNodeContextMenu';
 import { useNodePalette } from './app/useNodePalette';
 import { useRunLifecycle } from './app/useRunLifecycle';
 import { useProviderConnections } from './app/useProviderConnections';
@@ -1811,6 +1812,18 @@ function App() {
     createId: uniqueId,
     notifySystem,
   });
+  const {
+    nodeContextMenu,
+    closeNodeContextMenu,
+    resetNodeContextMenuState,
+    openNodeContextMenu,
+    openSelectionContextMenu,
+    handleBeforeNodeDelete,
+    removeNodes,
+    pendingBulkNodeRemoval,
+    cancelBulkNodeRemoval,
+    confirmBulkNodeRemoval,
+  } = useNodeContextMenu({ nodesRef, flowInstanceRef });
 
   useEffect(() => {
     chatWidthRef.current = chatWidth;
@@ -2268,6 +2281,7 @@ function App() {
         commitEdges(nextEdges);
       }
       setNodeMenu(null);
+      resetNodeContextMenuState();
       updateDeletedNodeRestoreButton();
       return true;
     }
@@ -2793,6 +2807,7 @@ function App() {
     pendingViewport.current = undefined;
     pendingFitView.current = false;
     setNodeMenu(null);
+    resetNodeContextMenuState();
     setTextDialogNodeId(null);
     setJsonDialogNodeId(null);
     activeWorkflowResetSnapshotRef.current = null;
@@ -3074,6 +3089,7 @@ function App() {
         ) + 1;
     }
     setNodeMenu(null);
+    resetNodeContextMenuState();
     setTextDialogNodeId(null);
     setTextDialogView('text');
     setJsonDialogNodeId(null);
@@ -6326,15 +6342,37 @@ function App() {
                 onInit={initializeFlow}
                 onDragOver={allowNodeDrop}
                 onDrop={dropNode}
-                onPaneContextMenu={openNodeMenu}
+                onPaneContextMenu={(event) => {
+                  closeNodeContextMenu();
+                  openNodeMenu(event);
+                }}
                 onPaneClick={() => {
                   setNodeMenu(null);
+                  closeNodeContextMenu();
                   setIsChatPanelOpen(false);
                 }}
                 onNodeClick={() => {
                   setIsChatPanelOpen(false);
+                  closeNodeContextMenu();
                 }}
                 onNodeDoubleClick={(_event, node) => splitWireLink(node.id)}
+                onNodeContextMenu={(event, node) => {
+                  // Let form controls inside a node keep their native context
+                  // menu — the Remove action would sit right under the cursor.
+                  if (isEditableKeyboardTarget(event.target)) {
+                    return;
+                  }
+                  setNodeMenu(null);
+                  openNodeContextMenu(event, node);
+                }}
+                onSelectionContextMenu={(event, selectedNodes) => {
+                  setNodeMenu(null);
+                  openSelectionContextMenu(event, selectedNodes);
+                }}
+                onMoveStart={closeNodeContextMenu}
+                onNodeDragStart={closeNodeContextMenu}
+                onSelectionDragStart={closeNodeContextMenu}
+                onBeforeDelete={handleBeforeNodeDelete}
                 onNodesChange={onNodesChange}
                 onNodesDelete={rememberDeletedNodes}
                 onEdgesChange={onEdgesChange}
@@ -6443,6 +6481,32 @@ function App() {
                 );
               }) : (
                 <p className="node-menu-empty">Mark nodes with ★ in the side panel.</p>
+              )}
+            </div>
+          )}
+          {nodeContextMenu && (
+            <div
+              className="node-menu"
+              style={{ left: nodeContextMenu.screen.x, top: nodeContextMenu.screen.y }}
+            >
+              <strong>Node Actions</strong>
+              {nodeContextMenu.selectedNodeIds.length >= 2 ? (
+                <button
+                  type="button"
+                  onClick={() => removeNodes(nodeContextMenu.selectedNodeIds)}
+                >
+                  <span className="node-menu-item-label">
+                    <span>Remove All Selected</span>
+                  </span>
+                  <small>{nodeContextMenu.selectedNodeIds.length} nodes selected</small>
+                </button>
+              ) : (
+                <button type="button" onClick={() => removeNodes(nodeContextMenu.selectedNodeIds)}>
+                  <span className="node-menu-item-label">
+                    <span>Remove</span>
+                  </span>
+                  <small>Delete this node</small>
+                </button>
               )}
             </div>
           )}
@@ -7430,6 +7494,42 @@ function App() {
             setShowWelcome(false);
           }}
         />
+      )}
+      {pendingBulkNodeRemoval && (
+        <div
+          className="dialog-backdrop"
+          role="presentation"
+          onClick={cancelBulkNodeRemoval}
+        >
+          <section
+            className="storybook-confirm-dialog"
+            role="alertdialog"
+            aria-modal="true"
+            aria-labelledby="node-bulk-remove-title"
+            aria-describedby="node-bulk-remove-message"
+            onClick={(event) => event.stopPropagation()}
+          >
+            <h3 id="node-bulk-remove-title">
+              Remove {pendingBulkNodeRemoval.nodeCount} Nodes
+            </h3>
+            <p id="node-bulk-remove-message">
+              Remove {pendingBulkNodeRemoval.nodeCount} selected nodes from the graph?
+              You can undo this with Ctrl+Z or the restore button afterward.
+            </p>
+            <div className="storybook-confirm-actions">
+              <button className="inspect-button" type="button" onClick={cancelBulkNodeRemoval}>
+                Cancel
+              </button>
+              <button
+                className="inspect-button danger"
+                type="button"
+                onClick={confirmBulkNodeRemoval}
+              >
+                Remove All Selected
+              </button>
+            </div>
+          </section>
+        </div>
       )}
     </div>
   );

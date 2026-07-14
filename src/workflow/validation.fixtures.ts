@@ -1,6 +1,13 @@
 import { captureTurnRuntime } from '../chat/turns';
 import { currentSessionFormatVersion } from '../session/version';
-import type { MessageRecord, TurnRecord, WorkflowFile, WorkflowNode, WorkflowNodeData } from '../types';
+import type {
+  CharacterStatDefinition,
+  MessageRecord,
+  TurnRecord,
+  WorkflowFile,
+  WorkflowNode,
+  WorkflowNodeData,
+} from '../types';
 import { getRegisteredCoreNode, registerNode } from '../nodes/registry';
 import { currentCoreNodeVersions } from '../nodes/nodeVersion';
 import type { ExecuteContext, NodeCreationDefinition } from '../nodes/types';
@@ -160,6 +167,8 @@ import {
   removeEdgesConnectedToIncompatibleNodes,
 } from './persistence';
 import { formatAppointments, formatChatHistory } from './textHelpers';
+import { characterStatDefinitions, characterStatDefinitionsForEditing } from './nodeHelpers';
+import { defaultCharacterStatDefinitions } from './defaults';
 import { isRpSaveFile, isWorkflowFile } from './validation';
 import { currentWorkflowFormatVersion } from './version';
 import {
@@ -4394,7 +4403,56 @@ function verifyDirectAppActionPayloadFixtures() {
   );
 }
 
+function characterStatData(
+  characterStatDefinitionsValue: CharacterStatDefinition[] | undefined,
+): WorkflowNodeData {
+  return { characterStatDefinitions: characterStatDefinitionsValue } as unknown as WorkflowNodeData;
+}
+
+export function verifyCharacterStatDefinitionFixtures() {
+  // An empty or missing saved list falls back to the defaults (legacy or
+  // hand-authored data, or a list emptied outside the editor's minimum-one floor).
+  assertFixture(
+    characterStatDefinitions(characterStatData([])).length === defaultCharacterStatDefinitions.length,
+    'an empty saved characterStatDefinitions list must fall back to the defaults',
+  );
+  assertFixture(
+    characterStatDefinitionsForEditing(characterStatData(undefined)).length ===
+      defaultCharacterStatDefinitions.length,
+    'a missing characterStatDefinitions list must fall back to the defaults in the editor',
+  );
+
+  // Duplicate ids are deduped, first occurrence winning (matching the old merge).
+  const duplicated: CharacterStatDefinition[] = [
+    { id: 'stress', name: 'Stress', description: 'first', enabled: true },
+    { id: 'stress', name: 'Stress Copy', description: 'second', enabled: false },
+    { id: 'custom-1', name: 'Custom', description: '', enabled: true },
+  ];
+  const deduped = characterStatDefinitionsForEditing(characterStatData(duplicated));
+  assertFixture(
+    deduped.length === 2 && deduped[0]?.description === 'first' && deduped[1]?.id === 'custom-1',
+    'duplicate stat ids must be deduped keeping the first occurrence',
+  );
+
+  // A blank-named entry (a row mid-rename) stays in the editor list but is
+  // excluded from the runtime/prompt list so it never reaches the LLM or state.
+  const withBlankName: CharacterStatDefinition[] = [
+    { id: 'stress', name: 'Stress', description: '', enabled: true },
+    { id: 'confidence', name: '', description: '', enabled: true },
+  ];
+  assertFixture(
+    characterStatDefinitionsForEditing(characterStatData(withBlankName)).length === 2,
+    'a blank-named stat must remain in the editor list so it can still be renamed',
+  );
+  const runtimeDefinitions = characterStatDefinitions(characterStatData(withBlankName));
+  assertFixture(
+    runtimeDefinitions.length === 1 && runtimeDefinitions[0]?.id === 'stress',
+    'a blank-named stat must be excluded from the runtime/prompt definitions',
+  );
+}
+
 verifyWorkflowValidationFixtures();
 verifyDirectAppActionPayloadFixtures();
+verifyCharacterStatDefinitionFixtures();
 void verifyPromptRunFixtures();
 void verifyDirectActionsGraphFixture();

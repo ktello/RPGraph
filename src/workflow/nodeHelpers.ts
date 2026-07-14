@@ -343,26 +343,43 @@ export function contextBuilderText(items: ContextBuilderItem[] = []) {
     .join('\n\n');
 }
 
-function statDefinitions(
+function dedupeStatDefinitionsById(definitions: CharacterStatDefinition[]) {
+  // First occurrence of an id wins, matching the old defaults-merge behavior and
+  // guarding against duplicate React keys from hand-edited or imported workflows.
+  const seen = new Set<string>();
+  return definitions.filter((definition) => {
+    const id = definition.id.trim();
+    if (!id || seen.has(id)) {
+      return false;
+    }
+    seen.add(id);
+    return true;
+  });
+}
+
+function resolvedStatDefinitions(
   savedDefinitions: CharacterStatDefinition[] | undefined,
   defaults: CharacterStatDefinition[],
 ) {
-  const saved = new Map((savedDefinitions ?? []).map((definition) => [definition.id, definition]));
-  const mergedDefaults = defaults.map((definition) => ({
-    ...definition,
-    ...saved.get(definition.id),
-    id: definition.id,
-  }));
-  const custom = (savedDefinitions ?? []).filter(
-    (definition) => !defaults.some((defaultDefinition) => defaultDefinition.id === definition.id),
-  );
-  return [...mergedDefaults, ...custom].filter(
-    (definition) => definition.id.trim() && definition.name.trim(),
+  // A saved list is authoritative: it holds exactly the attributes the user kept,
+  // including any defaults they removed. A missing or empty list falls back to
+  // defaults.
+  const source = savedDefinitions?.length ? savedDefinitions : defaults;
+  return dedupeStatDefinitionsById(source);
+}
+
+// Definitions used by runtime, prompts, and the chart: blank-named entries (a row
+// mid-rename in the editor) are excluded so they never reach the LLM or state.
+export function characterStatDefinitions(data: WorkflowNodeData) {
+  return resolvedStatDefinitions(data.characterStatDefinitions, defaultCharacterStatDefinitions).filter(
+    (definition) => definition.name.trim(),
   );
 }
 
-export function characterStatDefinitions(data: WorkflowNodeData) {
-  return statDefinitions(data.characterStatDefinitions, defaultCharacterStatDefinitions);
+// Definitions shown in the editor: keeps blank-named entries mounted so a stat can
+// be renamed (clearing the field first) without the row unmounting mid-edit.
+export function characterStatDefinitionsForEditing(data: WorkflowNodeData) {
+  return resolvedStatDefinitions(data.characterStatDefinitions, defaultCharacterStatDefinitions);
 }
 
 export function characterStatsMaxChange(data: WorkflowNodeData) {

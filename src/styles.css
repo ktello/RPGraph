@@ -3683,6 +3683,13 @@ input[type="number"]::-webkit-outer-spin-button {
   justify-self: end;
 }
 
+.character-stats-definition-actions {
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: flex-end;
+  gap: 8px;
+}
+
 .character-stats-help-button {
   margin-left: auto;
 }
