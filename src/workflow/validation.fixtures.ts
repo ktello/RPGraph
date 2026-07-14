@@ -62,9 +62,11 @@ import {
   embeddedPhoneMessageCharacters,
   matchingPhoneName,
   phoneContactsForViewer,
+  phoneConversationIsOpen,
   phoneConversationInfoFromMessages,
   phoneConversationKey,
   phoneConversationMessageViews,
+  phoneMessageShouldBeMarkedSeen,
   linkedPhoneMessageIds,
   messageEffectiveRpDateTime,
   phoneMessagesBetween,
@@ -76,6 +78,7 @@ import {
   viewerHasUnreadPhoneMessages,
   visibleMessageRecords,
 } from '../data-management/selectors';
+import { phoneRuntimeCharactersFromMessages } from '../chat/phoneCharacters';
 import {
   canonicalPhoneName,
   embeddedPhoneMessagesLivePreview,
@@ -121,6 +124,8 @@ import {
   parseSocialReactionsOutput,
   socialDirectMessageInputText,
   socialMessageHiddenFromChat,
+  socialPostHistoryText,
+  socialPostInputText,
   socialPostEngagementByPostId,
   socialPostTextFromInput,
   socialReactionsByPostId,
@@ -490,6 +495,22 @@ export function verifyWorkflowValidationFixtures() {
       socialPostOriginInput.includes('Post ID: onlyfriends-post-01') &&
       !socialPostOriginInput.includes('Original comment'),
     'post-only DM origins must describe the post without inventing a comment',
+  );
+  const socialPhotoPost = {
+    app: 'onlyfriends' as const,
+    postId: 'onlyfriends-post-02',
+    author: 'Espen Harper',
+    authorHandle: 'espen.harper',
+    caption: 'Ready for tonight.',
+    imageId: 'espen_harper_image_07',
+  };
+  assertFixture(
+    socialPostInputText(socialPhotoPost).includes('Post ID: onlyfriends-post-02') &&
+      socialPostInputText(socialPhotoPost).includes('Image ID: espen_harper_image_07') &&
+      socialPostHistoryText(socialPhotoPost).includes(
+        '(Post ID: onlyfriends-post-02, Image ID: espen_harper_image_07)',
+      ),
+    'social photo posts must expose both post and image ids to later roleplay turns',
   );
   const parsedSocialThread = parseSocialReactionsOutput(
     '{"reactions":{"postId":"post-1","additionalLikes":2,"comments":[{"from":"Jamie","text":"Love it!"}]},"summary":"Alex asked the thread about the location; Jamie responded positively."}',
@@ -2264,6 +2285,49 @@ export function verifyWorkflowValidationFixtures() {
       selectedPhoneContact.unreadCount === 1 &&
       selectedPhoneConversationMessages(phoneMessages, fixtureCharacters[0], selectedPhoneContact).length === 2,
     'phone selectors must build contact rows and selected conversations for the viewed phone',
+  );
+  assertFixture(
+    !phoneConversationIsOpen('chat', aliceBobKey, aliceBobKey, aliceBobKey) &&
+      phoneConversationIsOpen('phone', aliceBobKey, aliceBobKey) &&
+      phoneMessageShouldBeMarkedSeen('user', 'chat', aliceBobKey, '', undefined) &&
+      !phoneMessageShouldBeMarkedSeen('output', 'chat', aliceBobKey, aliceBobKey, aliceBobKey) &&
+      phoneMessageShouldBeMarkedSeen('output', 'phone', aliceBobKey, aliceBobKey),
+    'phone messages must stay unread unless their phone conversation is open',
+  );
+  const npcPhoneMessages = [{
+    id: 12,
+    role: 'output',
+    originalText: 'Check the photo I sent you.',
+    channel: 'phone',
+    phoneFrom: 'Leo',
+    phoneTo: bankingCharacter.name,
+  }] satisfies MessageRecord[];
+  const npcPhoneCharacters = phoneRuntimeCharactersFromMessages(
+    [bankingCharacter],
+    npcPhoneMessages,
+  );
+  const npcPhoneInfo = phoneConversationInfoFromMessages(npcPhoneMessages, {});
+  const leoContact = phoneContactsForViewer(npcPhoneCharacters, {
+    viewedCharacter: npcPhoneCharacters[0],
+    messages: npcPhoneMessages,
+    conversations: npcPhoneInfo,
+    characterColors: new Map(),
+    fallbackColor: '#abcdef',
+    englishProcessingEnabled: false,
+  }).find((contact) => contact.character.name === 'Leo');
+  assertFixture(
+    npcPhoneCharacters.some((character) => character.name === 'Leo' && character.temporaryPhone) &&
+      leoContact?.unreadCount === 1 &&
+      unreadPhoneConversationsForCharacters(npcPhoneCharacters, {
+        narratorSelected: false,
+        selectedContact: leoContact,
+        conversations: npcPhoneInfo,
+      }).some((conversation) =>
+        conversation.viewerName === bankingCharacter.name &&
+        conversation.contactName === 'Leo' &&
+        conversation.unreadCount === 1
+      ),
+    'incoming NPC messages must create a temporary contact and unread phone badge',
   );
   assertFixture(
     unreadPhoneConversationsForCharacters(fixtureCharacters, {

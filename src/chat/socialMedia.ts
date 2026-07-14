@@ -171,6 +171,7 @@ export function socialPostInputText(post: SocialPostRecord) {
     '[SOCIAL MEDIA POST]',
     `App: ${socialAppNames[post.app]}`,
     `Post ID: ${post.postId}`,
+    ...(!post.textOnly && post.imageId ? [`Image ID: ${post.imageId}`] : []),
     `Author: ${post.author} (@${post.authorHandle})`,
     `Post text: ${singleLine(post.caption)}`,
     ...(post.textOnly
@@ -203,7 +204,11 @@ export function socialThreadCommentTextFromInput(inputText: string) {
 /** Chat-history text that records the post itself, including its visible post id. */
 export function socialPostHistoryText(post: SocialPostRecord) {
   const kind = post.textOnly ? 'posted' : 'posted a photo';
-  return `[${socialAppNames[post.app]}] ${post.author} (@${post.authorHandle}) ${kind} (${post.postId}): "${post.caption}"`;
+  const references = [
+    `Post ID: ${post.postId}`,
+    ...(!post.textOnly && post.imageId ? [`Image ID: ${post.imageId}`] : []),
+  ];
+  return `[${socialAppNames[post.app]}] ${post.author} (@${post.authorHandle}) ${kind} (${references.join(', ')}): "${post.caption}"`;
 }
 
 /**

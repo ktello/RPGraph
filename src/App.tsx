@@ -140,6 +140,7 @@ import { useDirectAppActions } from './app/useDirectAppActions';
 import {
   latestHistoryRpDateTime,
   phoneConversationKey,
+  phoneMessageShouldBeMarkedSeen,
   phoneSeenStateFromMessages,
 } from './data-management/selectors';
 import {
@@ -4711,16 +4712,14 @@ function App() {
       playPhoneMessageSound(sound);
     }
     const conversationKey = phoneConversationKey(canonicalMessage.from, canonicalMessage.to);
-    const conversationIsVisible =
-      chatPanelView === 'chat' ||
-      (
-        chatPanelView === 'phone' &&
-        (
-          openedPhoneConversationKey === conversationKey ||
-          selectedPhoneContact?.conversationKey === conversationKey
-        )
-      );
-    if (conversationIsVisible) {
+    const messageShouldBeMarkedSeen = phoneMessageShouldBeMarkedSeen(
+      role,
+      chatPanelView,
+      conversationKey,
+      openedPhoneConversationKey,
+      selectedPhoneContact?.conversationKey,
+    );
+    if (messageShouldBeMarkedSeen) {
       setPhoneSeenByConversation((current) =>
         id > (current[conversationKey] ?? 0)
           ? { ...current, [conversationKey]: id }
