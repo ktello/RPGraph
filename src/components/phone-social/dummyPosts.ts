@@ -1,4 +1,17 @@
 import type { SocialAppConfig } from './socialApps';
+import fotogramBookshopRainUrl from '../../assets/social/fotogram/bookshop-rain.jpg';
+import fotogramBrunchTableUrl from '../../assets/social/fotogram/brunch-table.jpg';
+import fotogramCeramicClassUrl from '../../assets/social/fotogram/ceramic-class.jpg';
+import fotogramCoastalDriveUrl from '../../assets/social/fotogram/coastal-drive.jpg';
+import fotogramFarmersMarketUrl from '../../assets/social/fotogram/farmers-market.jpg';
+import fotogramLakeRunUrl from '../../assets/social/fotogram/lake-run.jpg';
+import fotogramMarketFindUrl from '../../assets/social/fotogram/market-find.jpg';
+import fotogramParkPicnicUrl from '../../assets/social/fotogram/park-picnic.jpg';
+import fotogramPastaNightUrl from '../../assets/social/fotogram/pasta-night.jpg';
+import fotogramRooftopShowUrl from '../../assets/social/fotogram/rooftop-show.jpg';
+import fotogramTrailViewUrl from '../../assets/social/fotogram/trail-view.jpg';
+import fotogramWaterfrontRideUrl from '../../assets/social/fotogram/waterfront-ride.jpg';
+import fotogramWindowCatUrl from '../../assets/social/fotogram/window-cat.jpg';
 
 export type SocialPost = {
   id: string;
@@ -13,7 +26,7 @@ export type SocialPost = {
   unlockPrice?: number;
   /** Locked posts hide their image and caption until unlocked. */
   locked: boolean;
-  /** Dummy posts render a placeholder instead of a real image. */
+  /** Built-in cosmetic post; entries without image data render a placeholder. */
   dummy: boolean;
   /** Text-only posts have no image area at all; the caption moves on top. */
   textOnly?: boolean;
@@ -40,8 +53,10 @@ type DummyPostTemplate = {
   author: DummyAuthor;
   caption: string;
   likeCount: number;
+  textOnly?: boolean;
   locked?: boolean;
   unlockPrice?: number;
+  imageDataUrl?: string;
   comments: readonly Omit<SocialComment, 'id'>[];
 };
 
@@ -59,6 +74,7 @@ const dummyPostPools: Record<SocialAppConfig['id'], readonly DummyPostTemplate[]
       author: { name: 'Luna Sky', handle: 'luna.sky' },
       caption: 'Dawn laps around the lake before the city wakes up. 🌤️',
       likeCount: 184,
+      imageDataUrl: fotogramLakeRunUrl,
       comments: [
         comment('Riley Moon', 'rileymoon', 'This is the kind of morning I want.'),
         comment('Maya Brooks', 'mayabrooks', 'The light on the water is unreal.'),
@@ -71,6 +87,7 @@ const dummyPostPools: Record<SocialAppConfig['id'], readonly DummyPostTemplate[]
       author: { name: 'Ari Blume', handle: 'ariblume' },
       caption: 'Found this little lamp at the Sunday market and I am obsessed.',
       likeCount: 96,
+      imageDataUrl: fotogramMarketFindUrl,
       comments: [
         comment('Jordan Lee', 'jordansayshi', 'That is such a perfect find.'),
         comment('Sam Rivera', 'samrivera', 'Your apartment is going to look amazing.'),
@@ -84,6 +101,7 @@ const dummyPostPools: Record<SocialAppConfig['id'], readonly DummyPostTemplate[]
       author: { name: 'Max Power', handle: 'maxpower_official' },
       caption: 'Best seat in the house for a rooftop set tonight. 🎸',
       likeCount: 342,
+      imageDataUrl: fotogramRooftopShowUrl,
       comments: [
         comment('Kit Harlow', 'kitharlow', 'That crowd looked electric.'),
         comment('Maya Brooks', 'mayabrooks', 'Still hearing that last song in my head.'),
@@ -96,6 +114,7 @@ const dummyPostPools: Record<SocialAppConfig['id'], readonly DummyPostTemplate[]
       author: { name: 'Nova Reyes', handle: 'nova.reyes' },
       caption: 'Long brunch, strong coffee, zero plans afterwards. ☕',
       likeCount: 128,
+      imageDataUrl: fotogramBrunchTableUrl,
       comments: [
         comment('Cleo Hart', 'cleohart', 'This is my ideal Sunday.'),
         comment('Sam Rivera', 'samrivera', 'The pancakes deserve their own post.'),
@@ -109,6 +128,7 @@ const dummyPostPools: Record<SocialAppConfig['id'], readonly DummyPostTemplate[]
       author: { name: 'Kit Harlow', handle: 'kitharlow' },
       caption: 'The climb was worth it for this view.',
       likeCount: 267,
+      imageDataUrl: fotogramTrailViewUrl,
       comments: [
         comment('Jordan Lee', 'jordansayshi', 'That sky is incredible.'),
         comment('Lena Ford', 'lenaford', 'Adding this trail to my list.'),
@@ -121,6 +141,7 @@ const dummyPostPools: Record<SocialAppConfig['id'], readonly DummyPostTemplate[]
       author: { name: 'Sasha Vale', handle: 'sashavale' },
       caption: 'Rainy afternoon, a new novel, and nowhere else to be.',
       likeCount: 73,
+      imageDataUrl: fotogramBookshopRainUrl,
       comments: [
         comment('Nia Cole', 'niacole', 'This is peak cozy.'),
         comment('Cleo Hart', 'cleohart', 'Please tell me the book is good.'),
@@ -133,6 +154,7 @@ const dummyPostPools: Record<SocialAppConfig['id'], readonly DummyPostTemplate[]
       author: { name: 'Mina Park', handle: 'minapark' },
       caption: 'My first bowl is a little crooked, but it is mine. 🏺',
       likeCount: 154,
+      imageDataUrl: fotogramCeramicClassUrl,
       comments: [
         comment('Drew Parker', 'drewparker', 'It has character!'),
         comment('Luna Sky', 'luna.sky', 'I love it, honestly.'),
@@ -146,6 +168,7 @@ const dummyPostPools: Record<SocialAppConfig['id'], readonly DummyPostTemplate[]
       author: { name: 'Owen Reed', handle: 'owenreed' },
       caption: 'Windows down, no destination, playlist on repeat.',
       likeCount: 211,
+      imageDataUrl: fotogramCoastalDriveUrl,
       comments: [
         comment('Theo Jameson', 'theojameson', 'This is exactly the plan.'),
         comment('Maya Brooks', 'mayabrooks', 'The ocean road never disappoints.'),
@@ -158,6 +181,7 @@ const dummyPostPools: Record<SocialAppConfig['id'], readonly DummyPostTemplate[]
       author: { name: 'Eden Moss', handle: 'edenmoss' },
       caption: 'Made pasta from scratch. The kitchen is a mess, but worth it.',
       likeCount: 119,
+      imageDataUrl: fotogramPastaNightUrl,
       comments: [
         comment('Sam Rivera', 'samrivera', 'This looks restaurant-level.'),
         comment('Nia Cole', 'niacole', 'I can almost smell this through the screen.'),
@@ -171,11 +195,77 @@ const dummyPostPools: Record<SocialAppConfig['id'], readonly DummyPostTemplate[]
       author: { name: 'Ivy Rowan', handle: 'ivyrowan' },
       caption: 'He has been watching birds for an hour and taking it very seriously.',
       likeCount: 301,
+      imageDataUrl: fotogramWindowCatUrl,
       comments: [
         comment('Cleo Hart', 'cleohart', 'A professional bird critic.'),
         comment('Jordan Lee', 'jordansayshi', 'That tiny face!'),
         comment('Maya Brooks', 'mayabrooks', 'Please give him a treat from me.'),
         comment('Theo Jameson', 'theojameson', 'He is clearly on an important mission.'),
+      ],
+    },
+    {
+      id: 'park-picnic',
+      author: { name: 'Maya Brooks', handle: 'mayabrooks' },
+      caption: 'Golden hour, good snacks, and nowhere else to be. 🧺',
+      likeCount: 238,
+      imageDataUrl: fotogramParkPicnicUrl,
+      comments: [
+        comment('Nia Cole', 'niacole', 'This looks like the perfect afternoon.'),
+        comment('Riley Moon', 'rileymoon', 'Save me a spot on the blanket!'),
+        comment('Cleo Hart', 'cleohart', 'The golden light is so good.'),
+        comment('Jules Martin', 'julesmartin', 'We need to do this again soon.'),
+      ],
+    },
+    {
+      id: 'farmers-market',
+      author: { name: 'Jordan Lee', handle: 'jordansayshi' },
+      caption: 'Came for tomatoes, left with half the market. 🥕',
+      likeCount: 147,
+      imageDataUrl: fotogramFarmersMarketUrl,
+      comments: [
+        comment('Sam Rivera', 'samrivera', 'Those vegetables look incredible.'),
+        comment('Lena Ford', 'lenaford', 'A very successful market trip.'),
+        comment('Drew Parker', 'drewparker', 'Fresh produce always gets me too.'),
+        comment('Mina Park', 'minapark', 'Now I want to cook something colorful.'),
+      ],
+    },
+    {
+      id: 'waterfront-ride',
+      author: { name: 'Lena Ford', handle: 'lenaford' },
+      caption: 'Golden hour is better on two wheels. 🚲',
+      likeCount: 276,
+      imageDataUrl: fotogramWaterfrontRideUrl,
+      comments: [
+        comment('Luna Sky', 'luna.sky', 'That route looks beautiful.'),
+        comment('Theo Jameson', 'theojameson', 'Perfect time of day for a ride.'),
+        comment('Maya Brooks', 'mayabrooks', 'The skyline in that light!'),
+        comment('Kit Harlow', 'kitharlow', 'Adding this to the weekend plan.'),
+      ],
+    },
+    {
+      id: 'dead-internet-theory',
+      author: { name: 'Cleo Hart', handle: 'cleohart' },
+      caption: 'Dead internet theory says most of this place is bots talking to bots. Anyway, hello to the six real people still scrolling. 👋',
+      likeCount: 89,
+      textOnly: true,
+      comments: [
+        comment('Theo Jameson', 'theojameson', 'Exactly what a bot would post.'),
+        comment('Nia Cole', 'niacole', 'Can confirm, I failed three captchas today.'),
+        comment('Jules Martin', 'julesmartin', 'Beep boop, nice theory.'),
+        comment('Maya Brooks', 'mayabrooks', 'Still scrolling, so I guess I am real.'),
+      ],
+    },
+    {
+      id: 'nothing-is-real',
+      author: { name: 'Theo Jameson', handle: 'theojameson' },
+      caption: 'None of this is real anyway. The posts, the people, probably this coffee. Maybe it is all AI. Still tastes fine though.',
+      likeCount: 112,
+      textOnly: true,
+      comments: [
+        comment('Cleo Hart', 'cleohart', 'The coffee part is where you lost me.'),
+        comment('Riley Moon', 'rileymoon', 'I feel real enough on weekdays.'),
+        comment('Jordan Lee', 'jordansayshi', 'Please ask the simulation for better weather.'),
+        comment('Sam Rivera', 'samrivera', 'Posting this was part of the algorithm.'),
       ],
     },
   ],
@@ -347,21 +437,33 @@ function seededShuffle<T>(values: T[], random: () => number) {
 }
 
 /**
- * Deterministic opening feed for one account. Each platform has ten fixed
- * templates; the character seed chooses a stable three-to-five-post subset.
- * Later phases replace this cosmetic starter feed with LLM-generated activity.
+ * Deterministic home-page feed for one account. The shuffled template pool is
+ * divided evenly across all player characters. A template overlaps only when
+ * equal-sized partitions cannot be formed without reusing the pool remainder.
+ * These cosmetic discovery posts do not represent followed accounts.
  */
 export function dummySocialPosts(
   app: SocialAppConfig,
-  seed: string,
+  viewerId: string,
+  viewerIds: readonly string[],
   author?: { name: string; handle: string },
 ): SocialPost[] {
-  const random = mulberry32(characterSeed(`${app.id}:${seed}`));
-  const postCount = 3 + Math.floor(random() * 3);
-  return seededShuffle([...dummyPostPools[app.id]], random)
-    .slice(0, postCount)
+  const pool = seededShuffle(
+    [...dummyPostPools[app.id]],
+    mulberry32(characterSeed(`${app.id}:starter-pool`)),
+  );
+  const partitionViewerIds = [...new Set([...viewerIds, viewerId])]
+    .filter((id) => id.trim())
+    .sort((left, right) => left.localeCompare(right));
+  const viewerIndex = Math.max(0, partitionViewerIds.indexOf(viewerId));
+  const partitionSize = Math.ceil(pool.length / Math.max(1, partitionViewerIds.length));
+  const selectedTemplates = Array.from(
+    { length: partitionSize },
+    (_, offset) => pool[(viewerIndex * partitionSize + offset) % pool.length],
+  );
+  return selectedTemplates
     .map((template) => {
-      const postId = `dummy-${app.id}-${seed}-${template.id}`;
+      const postId = `dummy-${app.id}-${viewerId}-${template.id}`;
       const comments = template.comments.map((entry, index) => ({
         ...entry,
         id: `${postId}-comment-${index}`,
@@ -379,6 +481,8 @@ export function dummySocialPosts(
         unlockPrice: locked ? template.unlockPrice : undefined,
         locked,
         dummy: true,
+        textOnly: template.textOnly,
+        imageDataUrl: template.imageDataUrl,
       };
     });
 }
