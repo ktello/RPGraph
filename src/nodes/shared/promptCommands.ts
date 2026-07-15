@@ -236,6 +236,7 @@ const fotogramDirectMessageInstruction = [
   '  "fotogramDirectMessages": [',
   '    {',
   '      "from": "sender name",',
+  '      "handle": "sender_handle",',
   '      "to": "recipient name",',
   '      "text": "message text",',
   '      "postId": "fotogram-post-01"',
@@ -243,7 +244,7 @@ const fotogramDirectMessageInstruction = [
   '  ]',
   '}',
   '',
-  'from and to are required. postId optionally references an existing post from the chat history as the conversation topic; omit it when the DM is unrelated to a post. Do not add a tip field on Fotogram.',
+  'from and to are required. handle is required when the sender comes from an available virtual-user list and must exactly match that listed identity; otherwise it is optional. postId optionally references an existing post from the chat history as the conversation topic; omit it when the DM is unrelated to a post. Do not add a tip field on Fotogram.',
 ].join('\n');
 
 const onlyFriendsDirectMessageInstruction = [
@@ -254,6 +255,7 @@ const onlyFriendsDirectMessageInstruction = [
   '  "onlyFriendsDirectMessages": [',
   '    {',
   '      "from": "sender name",',
+  '      "handle": "sender_handle",',
   '      "to": "recipient name",',
   '      "text": "message text",',
   '      "postId": "onlyfriends-post-01",',
@@ -262,7 +264,7 @@ const onlyFriendsDirectMessageInstruction = [
   '  ]',
   '}',
   '',
-  'from and to are required. postId optionally references an existing post from the chat history as the conversation topic. tip is optional: a positive number credited to the recipient\'s OnlyFriends wallet (not a bank transfer); omit it when no tip is sent.',
+  'from and to are required. handle is required when the sender comes from an available virtual-user list and must exactly match that listed identity; otherwise it is optional. postId optionally references an existing post from the chat history as the conversation topic. tip is optional: a positive number credited to the recipient\'s OnlyFriends wallet (not a bank transfer); omit it when no tip is sent.',
 ].join('\n');
 
 export function defaultPromptCommandInstructionTemplate(commandId: PromptCommandId) {

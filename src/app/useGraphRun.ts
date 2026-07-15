@@ -97,7 +97,10 @@ import {
   socialThreadHistoryText,
   type SocialThreadRunContext,
 } from '../chat/socialMedia';
-import { withBundledSocialIdentityContext } from '../chat/socialCatalogs';
+import {
+  socialHandleFromCatalogIdentity,
+  withBundledSocialIdentityContext,
+} from '../chat/socialCatalogs';
 import { recentInputHistoryContext } from '../chat/inputTransforms';
 import {
   chatGpdFallbackTitle,
@@ -2398,11 +2401,13 @@ export function useGraphRun(options: UseGraphRunOptions) {
           const senderCharacter = phoneCharacters.find((character) =>
             phoneNamesMatch(character.name, from),
           );
-          const fromHandle = incoming.handle
-            ? socialHandleForName(incoming.handle)
-            : senderCharacter
+          const fromHandle = socialHandleFromCatalogIdentity(
+            incoming.app,
+            incoming.from,
+            incoming.handle,
+          ) ?? (senderCharacter
               ? socialHandleForCharacter(senderCharacter, incoming.app)
-              : socialHandleForName(from);
+              : socialHandleForName(from));
           if (socialIdentityMatches(fromHandle, toHandle)) {
             reportRunWarning(
               `A ${socialAppNames[incoming.app]} direct message from "${from}" to themselves was ignored.`,

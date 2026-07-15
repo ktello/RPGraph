@@ -487,18 +487,17 @@ export function PhoneSocialFeedScreen({
     )
     .map(([partnerHandleKey, name]) => {
       const directoryUser = socialDirectoryUsers.find((user) =>
-        socialIdentityMatches(user.handles[app.id] ?? '', partnerHandleKey) ||
-        socialIdentityMatches(user.name, name)
-      );
+        socialIdentityMatches(user.handles[app.id] ?? '', partnerHandleKey)
+      ) ?? socialDirectoryUsers.find((user) => socialIdentityMatches(user.name, name));
+      const character = storyCharacters.find((entry) =>
+        socialIdentityMatches(socialHandleForCharacter(entry, app.id), partnerHandleKey)
+      ) ?? storyCharacters.find((entry) => socialIdentityMatches(entry.name, name));
       return {
         key: `dm-partner-${app.id}-${partnerHandleKey}`,
         socialUserId: directoryUser?.id,
         name,
         handle: partnerHandleKey,
-        character: storyCharacters.find((character) =>
-          socialIdentityMatches(socialHandleForCharacter(character, app.id), partnerHandleKey) ||
-          socialIdentityMatches(character.name, name),
-        ),
+        character,
       };
     });
   // Added people and real DM partners are ordered by conversation recency.
@@ -1215,9 +1214,8 @@ export function PhoneSocialFeedScreen({
   ].map((comment) => {
     const name = comment.authorName ?? `@${comment.authorHandle}`;
     const character = storyCharacters.find((entry) =>
-      socialIdentityMatches(entry.name, name) ||
-      socialIdentityMatches(socialHandleForCharacter(entry, app.id), comment.authorHandle),
-    );
+      socialIdentityMatches(socialHandleForCharacter(entry, app.id), comment.authorHandle)
+    ) ?? storyCharacters.find((entry) => socialIdentityMatches(entry.name, name));
     return {
       key: `comment-author-${app.id}-${comment.authorHandle}`,
       name: character?.name ?? name,
@@ -1890,11 +1888,12 @@ export function PhoneSocialFeedScreen({
                         key={comment.id}
                         onClick={() => {
                           const character = storyCharacters.find((entry) =>
-                            socialIdentityMatches(entry.name, comment.authorName ?? '') ||
                             socialIdentityMatches(
                               socialHandleForCharacter(entry, app.id),
                               comment.authorHandle,
-                            ),
+                            )
+                          ) ?? storyCharacters.find((entry) =>
+                            socialIdentityMatches(entry.name, comment.authorName ?? '')
                           );
                           openDirectMessages({
                             key: `comment-author-${app.id}-${comment.authorHandle}`,

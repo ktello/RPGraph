@@ -149,6 +149,7 @@ import {
 } from '../chat/socialDirectory';
 import {
   bundledSocialIdentityContext,
+  socialHandleFromCatalogIdentity,
   withBundledSocialIdentityContext,
 } from '../chat/socialCatalogs';
 import type { StorybookCharacter, StorybookCreateImageCharacter } from '../storybook/runtime';
@@ -619,6 +620,28 @@ export function verifyWorkflowValidationFixtures() {
   const zephiraSocialUser = socialDirectory.users.find((user) =>
     user.name === 'Zephira Moonquill'
   );
+  const sameNameDirectory = buildSocialDirectory({
+    storyCharacters: [],
+    savedDynamicUsers: {
+      'dynamic:shared-name': {
+        id: 'dynamic:shared-name',
+        name: 'Shared Name',
+        handles: { fotogram: 'shared.first' },
+        source: 'dynamic',
+      },
+    },
+    messages: [{
+      id: 20,
+      role: 'output',
+      originalText: 'Two distinct accounts share one display name.',
+      socialReactions: {
+        app: 'fotogram',
+        postId: 'fotogram-post-shared-name',
+        likes: 0,
+        comments: [{ from: 'Shared Name', handle: 'shared.second', text: 'Hello.' }],
+      },
+    }],
+  });
   const espenSocialUser = socialDirectory.users.find((user) =>
     user.characterId === 'storybook:character:espen-private'
   );
@@ -639,6 +662,12 @@ export function verifyWorkflowValidationFixtures() {
       bundledSocialIdentityContext('onlyfriends').some((line) =>
         line === '- Violet Lane (@violetlane)'
       ) &&
+      socialHandleFromCatalogIdentity('onlyfriends', '  Violet   Lane  ') === 'violetlane' &&
+      socialHandleFromCatalogIdentity(
+        'fotogram',
+        'Max Power',
+        '@maxpower_official',
+      ) === 'maxpower_official' &&
       bundledSocialUsers
         .filter((user) => user.handles.onlyfriends)
         .every((user) => !bundledFotogramNames.has(user.name.toLowerCase())) &&
@@ -651,7 +680,10 @@ export function verifyWorkflowValidationFixtures() {
       ) &&
       zephiraSocialUser?.source === 'dynamic' &&
       !!zephiraSocialUser.handles.fotogram &&
-      !!zephiraSocialUser.handles.onlyfriends,
+      !!zephiraSocialUser.handles.onlyfriends &&
+      sameNameDirectory.users.filter((user) =>
+        user.source === 'dynamic' && user.name === 'Shared Name'
+      ).length === 2,
     'social directories must use separate 100-user catalogs and discover only eligible Storybook or runtime accounts',
   );
   const addedSocialConnections = zephiraSocialUser

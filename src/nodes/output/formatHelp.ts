@@ -189,9 +189,9 @@ A [SOCIAL MEDIA POST] input creates initial reactions:
 {"reactions":{"postId":"the post id from the input","likes":14,"comments":[{"from":"Name","text":"comment text"},{"from":"Another Name","text":"comment text"}]}}
 
 Post and thread runs may additionally send incoming direct messages to the post author (or thread actor) as one extra standalone JSON object after the reactions:
-{"fotogramDirectMessages":[{"from":"Sender Name","text":"message text","postId":"fotogram-post-01"}]}
-{"onlyFriendsDirectMessages":[{"from":"Fan Name","text":"message text","postId":"onlyfriends-post-01","tip":5}]}
-postId is optional and links the DM to that post as conversation context; omit it for a general DM. tip is optional, OnlyFriends-only, a positive number credited to the recipient's wallet. On Fotogram incoming DMs are rare (zero or one, only when it fits naturally). On OnlyFriends one to two fan DMs per post are expected.
+{"fotogramDirectMessages":[{"from":"Sender Name","handle":"sender_handle","text":"message text","postId":"fotogram-post-01"}]}
+{"onlyFriendsDirectMessages":[{"from":"Fan Name","handle":"fan_handle","text":"message text","postId":"onlyfriends-post-01","tip":5}]}
+handle is required for a sender selected from the available virtual-user list and must match that listed identity exactly. postId is optional and links the DM to that post as conversation context; omit it for a general DM. tip is optional, OnlyFriends-only, a positive number credited to the recipient's wallet. On Fotogram incoming DMs are rare (zero or one, only when it fits naturally). On OnlyFriends one to two fan DMs per post are expected.
 
 A [SOCIAL MEDIA THREAD ACTION] input either adds a user comment or loads more comments. Return new reactions to append plus a very short English history summary:
 {"reactions":{"postId":"the post id from the input","additionalLikes":2,"comments":[{"from":"Name","text":"new reply"}]},"summary":"Alex complimented Jamie's photo; Jamie thanked Alex while other people joined the thread."}

@@ -46,7 +46,7 @@ function validSocialDirectoryUser(value: unknown): value is SocialDirectoryUser 
   }
   const entry = value as Partial<SocialDirectoryUser>;
   const handles = entry.handles;
-  return typeof entry.id === 'string' && !!entry.id.trim() &&
+  return typeof entry.id === 'string' && entry.id.startsWith('dynamic:') &&
     typeof entry.name === 'string' && !!entry.name.trim() &&
     entry.source === 'dynamic' &&
     !!handles && typeof handles === 'object' && !Array.isArray(handles) &&
@@ -133,11 +133,27 @@ function findDirectoryUser(
   app?: SocialAppKind,
   handle?: string,
 ) {
+  const allUsers = Array.from(users);
   const normalizedName = normalizedIdentity(name);
   const normalizedHandle = normalizedIdentity(handle ?? '');
-  return Array.from(users).find((user) =>
-    (normalizedHandle && app && normalizedIdentity(user.handles[app] ?? '') === normalizedHandle) ||
-    (normalizedName && normalizedIdentity(user.name) === normalizedName)
+  if (normalizedHandle && app) {
+    const handleMatch = allUsers.find((user) =>
+      normalizedIdentity(user.handles[app] ?? '') === normalizedHandle
+    );
+    if (handleMatch) {
+      return handleMatch;
+    }
+    // A phone-discovered identity can receive its first exact app handle later
+    // in the same directory build. Do not overwrite an established account
+    // merely because a different person uses the same display name.
+    return allUsers.find((user) =>
+      user.source === 'dynamic' &&
+      normalizedIdentity(user.name) === normalizedName &&
+      !user.handles[app]
+    );
+  }
+  return allUsers.find((user) =>
+    normalizedName && normalizedIdentity(user.name) === normalizedName
   );
 }
 

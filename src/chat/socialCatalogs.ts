@@ -30,6 +30,26 @@ export const bundledSocialIdentities: Record<SocialAppKind, BundledSocialIdentit
   onlyfriends: socialIdentities(onlyFriendsCatalogValue),
 };
 
+function normalizedSocialName(value: string) {
+  return value.trim().replace(/\s+/g, ' ').toLowerCase();
+}
+
+/** Preserve an explicit handle or recover the exact bundled handle for a known catalog name. */
+export function socialHandleFromCatalogIdentity(
+  app: SocialAppKind,
+  name: string,
+  explicitHandle?: string,
+) {
+  const cleanHandle = explicitHandle?.trim().replace(/^@/, '').toLowerCase();
+  if (cleanHandle) {
+    return cleanHandle;
+  }
+  const normalizedName = normalizedSocialName(name);
+  return bundledSocialIdentities[app].find((identity) =>
+    normalizedSocialName(identity.name) === normalizedName
+  )?.handle;
+}
+
 /** Exact built-in identities the LLM may use for background comments and post DMs. */
 export function bundledSocialIdentityContext(app: SocialAppKind) {
   return [
