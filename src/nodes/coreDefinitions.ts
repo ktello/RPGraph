@@ -95,8 +95,8 @@ import { executeRpStorybookV1Node } from './rp-storybook-v1/execute';
 import { RpStorybookEditorNodeCard } from './rp-storybook-editor/Card';
 import {
   defaultRpStorybookFormattedTextSettings,
-  emptyRpStorybookV1,
   rpStorybookJsonText,
+  starterRpStorybookV1,
 } from './rp-storybook-v1/model';
 import { TextPreviewNodeCard } from './text-preview/Card';
 import { executeTextPreviewNode } from './text-preview/execute';
@@ -985,10 +985,10 @@ const coreNodeCreationDefinitions: Array<Omit<CoreNodeCreationDefinition, 'saveD
       data: {
         label: 'RP Storybook V2',
         description: 'Complete roleplay storybook',
-        preview: 'No storybook loaded',
+        preview: 'Starter story',
         nodeType: 'rp-storybook-v1',
         connectionId: defaultConnectionId,
-        storybookJson: rpStorybookJsonText(emptyRpStorybookV1),
+        storybookJson: rpStorybookJsonText(starterRpStorybookV1),
         storybookStatus: 'Ready',
         storybookFormattedTextSettings: defaultRpStorybookFormattedTextSettings,
       },
@@ -1019,9 +1019,9 @@ const coreNodeCreationDefinitions: Array<Omit<CoreNodeCreationDefinition, 'saveD
       data: {
         label: 'RP Storybook Editor',
         description: 'Edit storybook text and JSON',
-        preview: 'No storybook loaded',
+        preview: 'Starter story',
         nodeType: 'rp-storybook-editor',
-        storybookJson: rpStorybookJsonText(emptyRpStorybookV1),
+        storybookJson: rpStorybookJsonText(starterRpStorybookV1),
         storybookStatus: 'Ready',
         storybookFormattedTextSettings: defaultRpStorybookFormattedTextSettings,
       },

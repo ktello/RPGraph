@@ -2268,11 +2268,15 @@ input[type="radio"]:focus-visible {
   color: #f2d9de;
 }
 
+.incompatible-core-node .load-text-button {
+  margin-top: 16px;
+}
+
 .incompatible-core-node-hint {
   color: #c49da5;
   font-size: var(--node-secondary-text-size);
   line-height: 1.45;
-  margin: 14px 0 0;
+  margin: 10px 0 0;
 }
 
 .missing-node-ports {

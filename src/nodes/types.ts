@@ -242,6 +242,7 @@ export type NodeActions = {
   showOutputFormatHelp: (kind: OutputFormatHelpKind) => void;
   openStorybookCreator: (nodeId: string) => void;
   openStorybookEditor: (nodeId: string) => void;
+  upgradeNode: (nodeId: string) => void;
   openCustomNodeAssistant: (nodeId: string) => void;
   runCustomNodeButton: (nodeId: string, label: string) => Promise<void>;
   loadStorybookFile: (nodeId: string) => Promise<boolean>;

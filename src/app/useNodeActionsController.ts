@@ -99,6 +99,7 @@ type UseNodeActionsControllerOptions = {
   setOutputFormatHelpKind: Dispatch<SetStateAction<OutputFormatHelpKind | null>>;
   openStorybookCreator: (nodeId: string) => void;
   openStorybookEditor: (nodeId: string) => void;
+  upgradeNode: (nodeId: string) => void;
   openCustomNodeAssistant: (nodeId: string) => void;
   runCustomNodeButton: (nodeId: string, label: string) => Promise<void>;
   loadStorybookFile: (nodeId: string) => Promise<boolean>;
@@ -139,6 +140,7 @@ export function useNodeActionsController({
   setOutputFormatHelpKind,
   openStorybookCreator,
   openStorybookEditor,
+  upgradeNode,
   openCustomNodeAssistant,
   runCustomNodeButton,
   loadStorybookFile,
@@ -871,6 +873,7 @@ export function useNodeActionsController({
     showOutputFormatHelp: setOutputFormatHelpKind,
     openStorybookCreator,
     openStorybookEditor,
+    upgradeNode,
     openCustomNodeAssistant,
     runCustomNodeButton,
     loadStorybookFile,
