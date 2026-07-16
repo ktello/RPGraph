@@ -1073,28 +1073,40 @@ export function useGraphRun(options: UseGraphRunOptions) {
             ? 0
             : 1
     );
-    // While streaming, completed embedded phone JSON blocks render as preview
-    // bubbles (negative placeholder ids — no phone records exist yet) and a
-    // still-incomplete trailing JSON block stays hidden entirely.
+    // While streaming, embedded messenger entries render as preview bubbles
+    // (negative placeholder ids — no phone/social records exist yet). Completed
+    // entries remain visible while the current message text keeps growing.
     const livePhonePreviewFields = (
       preview: EmbeddedPhoneMessagesResult,
-    ): Partial<MessageRecord> =>
-      preview.phoneMessages.length > 0
-        ? {
-            embeddedPhoneMessages: preview.phoneMessages.map((phoneMessage, index) => ({
+    ): Partial<MessageRecord> => {
+      const hasMessengerPreview =
+        preview.phoneMessages.length > 0 || preview.socialDirectMessages.length > 0;
+      return {
+        embeddedPhoneMessages: preview.phoneMessages.length > 0
+          ? preview.phoneMessages.map((phoneMessage, index) => ({
               phoneMessageId: -(index + 1),
               from: phoneMessage.from,
               to: phoneMessage.to,
               message: phoneMessage.message,
-            })),
-            embeddedPhoneTextBefore: preview.textBefore,
-            embeddedPhoneTextAfter: preview.textAfter,
-          }
-        : {
-            embeddedPhoneMessages: undefined,
-            embeddedPhoneTextBefore: undefined,
-            embeddedPhoneTextAfter: undefined,
-          };
+            }))
+          : undefined,
+        embeddedSocialMessages: preview.socialDirectMessages.length > 0
+          ? preview.socialDirectMessages.flatMap((socialMessage, index) =>
+              socialMessage.to
+                ? [{
+                    socialMessageId: -(index + 1),
+                    app: socialMessage.app,
+                    from: socialMessage.from,
+                    to: socialMessage.to,
+                    message: socialMessage.text,
+                  }]
+                : [],
+            )
+          : undefined,
+        embeddedPhoneTextBefore: hasMessengerPreview ? preview.textBefore : undefined,
+        embeddedPhoneTextAfter: hasMessengerPreview ? preview.textAfter : undefined,
+      };
+    };
     const showLiveWorkflowOutput = (text: string) => {
       const definitions = settingsValueDefinitionsRef.current;
       const extracted = extractWorkflowVariableSetCommands(text);
@@ -2536,9 +2548,15 @@ export function useGraphRun(options: UseGraphRunOptions) {
             embeddedSocialMessageLinks.push(link);
           }
         }
-        if (!isPhoneMessage && liveOutputMessageId !== undefined && embeddedSocialMessageLinks.length > 0) {
+        if (
+          !isPhoneMessage &&
+          liveOutputMessageId !== undefined &&
+          embeddedSocialDirectMessages.length > 0
+        ) {
           updateMessage(liveOutputMessageId, {
-            embeddedSocialMessages: embeddedSocialMessageLinks.map((link) => ({ ...link })),
+            embeddedSocialMessages: embeddedSocialMessageLinks.length > 0
+              ? embeddedSocialMessageLinks.map((link) => ({ ...link }))
+              : undefined,
           });
         }
 

@@ -763,6 +763,127 @@ function stripIncompleteEmbeddedJsonTail(value: string) {
   return value;
 }
 
+type PartialMessengerPreview = {
+  phoneMessages: ParsedPhoneMessage[];
+  socialDirectMessages: ParsedIncomingSocialDirectMessage[];
+};
+
+function decodedPartialJsonString(value: string) {
+  const safeValue = value.endsWith('\\') ? value.slice(0, -1) : value;
+  try {
+    return JSON.parse(`"${safeValue}"`) as string;
+  } catch {
+    return undefined;
+  }
+}
+
+function partialStringField(value: string, field: string, allowIncomplete = false) {
+  const fieldPattern = new RegExp(
+    `"${field}"\\s*:\\s*"((?:\\\\.|[^"\\\\])*)${allowIncomplete ? '(?:"|$)' : '"'}`,
+  );
+  const match = value.match(fieldPattern);
+  return match ? decodedPartialJsonString(match[1])?.trim() : undefined;
+}
+
+function completedArrayEntryRanges(value: string) {
+  const ranges: Array<{ start: number; end: number }> = [];
+  let entryStart = -1;
+  let depth = 0;
+  let inString = false;
+  let escaped = false;
+  for (let index = 0; index < value.length; index += 1) {
+    const char = value[index];
+    if (inString) {
+      if (escaped) {
+        escaped = false;
+      } else if (char === '\\') {
+        escaped = true;
+      } else if (char === '"') {
+        inString = false;
+      }
+      continue;
+    }
+    if (char === '"') {
+      inString = true;
+      continue;
+    }
+    if (char === '{') {
+      if (depth === 0) {
+        entryStart = index;
+      }
+      depth += 1;
+      continue;
+    }
+    if (char === '}' && depth > 0) {
+      depth -= 1;
+      if (depth === 0 && entryStart >= 0) {
+        ranges.push({ start: entryStart, end: index + 1 });
+        entryStart = -1;
+      }
+    }
+  }
+  return { ranges, openEntryStart: depth > 0 && entryStart >= 0 ? entryStart : undefined };
+}
+
+function incompleteMessengerPreview(value: string): PartialMessengerPreview | undefined {
+  const { openObjectStart } = scanJsonObjects(value);
+  if (openObjectStart === undefined) {
+    return undefined;
+  }
+  const openObject = value.slice(openObjectStart);
+  const appMatch = openObject.match(
+    /"(phoneMessages|whatsUpApp|fotogramApp|onlyFriendsApp)"\s*:\s*\[/,
+  );
+  if (!appMatch || appMatch.index === undefined) {
+    return undefined;
+  }
+  const key = appMatch[1];
+  const arrayStart = appMatch.index + appMatch[0].length;
+  const arrayValue = openObject.slice(arrayStart);
+  const { ranges, openEntryStart } = completedArrayEntryRanges(arrayValue);
+  const entries = ranges.flatMap((range) => {
+    try {
+      return [JSON.parse(arrayValue.slice(range.start, range.end)) as unknown];
+    } catch {
+      return [];
+    }
+  });
+
+  // Once from/to are complete, show the currently written message too. Its
+  // bubble then grows with the streamed message text instead of waiting for
+  // the closing quote and object brace.
+  if (openEntryStart !== undefined) {
+    const openEntry = arrayValue.slice(openEntryStart);
+    const from = partialStringField(openEntry, 'from');
+    const to = partialStringField(openEntry, 'to');
+    const message = partialStringField(openEntry, 'message', true);
+    if (from && to && message) {
+      entries.push({ from, to, message });
+    }
+  }
+
+  const wrapped = { [key]: entries };
+  if (key === 'phoneMessages') {
+    return {
+      phoneMessages: parseEmbeddedPhoneMessagesObject(wrapped),
+      socialDirectMessages: [],
+    };
+  }
+  return parseMessengerAppMessagesObject(wrapped);
+}
+
 export function embeddedPhoneMessagesLivePreview(value: string): EmbeddedPhoneMessagesResult {
-  return parseEmbeddedPhoneMessagesFromRpOutput(stripIncompleteEmbeddedJsonTail(value));
+  const partial = incompleteMessengerPreview(value);
+  const complete = parseEmbeddedPhoneMessagesFromRpOutput(stripIncompleteEmbeddedJsonTail(value));
+  if (!partial) {
+    return complete;
+  }
+  return {
+    ...complete,
+    phoneMessages: [...complete.phoneMessages, ...partial.phoneMessages],
+    socialDirectMessages: [
+      ...complete.socialDirectMessages,
+      ...partial.socialDirectMessages,
+    ],
+  };
 }
