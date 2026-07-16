@@ -17,3 +17,28 @@ export function stripAutoplayPlanBlocks(text: string) {
     .replace(/\n{3,}/g, '\n\n')
     .trim();
 }
+
+export function stripAutoplayPlanBlocksFromStream(text: string) {
+  const visible = stripAutoplayPlanBlocks(text)
+    .replace(/\[\[[\s\S]*$/, '')
+    .trim();
+  return visible === '[' ? '' : visible;
+}
+
+const autoplayMessengerKeyPattern = /"(?:whatsUpApp|fotogramApp|onlyFriendsApp)"\s*:/;
+
+export function autoplayStreamPreviewText(text: string) {
+  const visible = stripAutoplayPlanBlocksFromStream(text);
+  if (!visible) {
+    return undefined;
+  }
+  const trimmed = visible.trimStart();
+  const structuredOutput =
+    trimmed.startsWith('{') ||
+    trimmed.startsWith('[') ||
+    trimmed.startsWith('```');
+  if (structuredOutput && !autoplayMessengerKeyPattern.test(visible)) {
+    return undefined;
+  }
+  return visible;
+}

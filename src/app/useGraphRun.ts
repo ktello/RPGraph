@@ -121,6 +121,7 @@ import {
 } from '../chat/phoneAppsSessions';
 import { withSpeakerPrefix } from '../chat/instructions';
 import {
+  autoplayStreamPreviewText,
   autoplayMessageFormat,
   socialMediaMessageFormat,
   stripAutoplayPlanBlocks,
@@ -1124,6 +1125,12 @@ export function useGraphRun(options: UseGraphRunOptions) {
       activeInputImages.length > 0
         ? createRpImageOutputStream(showLiveWorkflowOutput)
         : showLiveWorkflowOutput;
+    const showLiveAutoplayOutput = (text: string) => {
+      const previewText = autoplayStreamPreviewText(text);
+      if (previewText !== undefined) {
+        showLiveRpOutput(previewText);
+      }
+    };
     // Direct app replacements must execute their newly submitted raw JSON;
     // replaying the stored turn JSON would silently restore the old record.
     const replacementInputText = replacementGraphInputText(
@@ -1445,11 +1452,12 @@ export function useGraphRun(options: UseGraphRunOptions) {
         },
         streamOutput:
           messageFormat !== socialMediaMessageFormat &&
-          messageFormat !== autoplayMessageFormat &&
           !isPhoneMessage &&
           outputNode.data.streamOutputEnabled &&
           !runEnglishProcessing
-            ? showLiveRpOutput
+            ? isAutoplayRun
+              ? showLiveAutoplayOutput
+              : showLiveRpOutput
             : undefined,
         signal: runSignal,
       });

@@ -94,6 +94,10 @@ import { parseOutputActions } from '../chat/outputActions';
 import { directAppActionJson } from '../chat/directAppActions';
 import { parseRpOutput } from '../chat/rpOutput';
 import { formatPhoneInput } from '../chat/phoneReplies';
+import {
+  autoplayStreamPreviewText,
+  stripAutoplayPlanBlocksFromStream,
+} from '../chat/messageFormats';
 import { nextRpPictureName, rpPicturePhoneAttachment } from '../chat/rpPictures';
 import {
   mergePhoneAppRecordsByCharacter,
@@ -181,6 +185,7 @@ import {
 } from '../nodes/shared/promptActions';
 import { promptImagePass } from '../nodes/shared/promptImagePass';
 import {
+  defaultPromptCommandConfig,
   defaultPromptCommandInstructionTemplate,
   formatPromptCommandTokens,
   knownPromptCommandId,
@@ -4093,15 +4098,16 @@ export function verifyWorkflowValidationFixtures() {
   );
   assertFixture(
     incompleteLivePreview.text === 'Lara types.' &&
-      incompleteLivePreview.phoneMessages.length === 0,
-    'embedded phone live preview must hide incomplete phoneMessages JSON entirely',
+      incompleteLivePreview.phoneMessages[0]?.message === 'Please get',
+    'embedded phone live preview must stream a message before its JSON object closes',
   );
   const fencedLivePreview = embeddedPhoneMessagesLivePreview(
     'Lara types.\n\n```json\n{"phoneMessages":[{"from":"Lara","to":"Robert","message":"Please get',
   );
   assertFixture(
-    fencedLivePreview.text === 'Lara types.' && fencedLivePreview.phoneMessages.length === 0,
-    'embedded phone live preview must hide incomplete fenced phoneMessages JSON entirely',
+    fencedLivePreview.text === 'Lara types.' &&
+      fencedLivePreview.phoneMessages[0]?.message === 'Please get',
+    'embedded phone live preview must stream messages inside an incomplete JSON fence',
   );
   assertFixture(
     formatAppointments([{
@@ -5065,6 +5071,72 @@ async function verifyPromptRunFixtures() {
       actionCallScenario.promptsForCalls[2]?.includes('Action executed: get character phone image list.') &&
       !actionCallScenario.promptsForCalls[2]?.includes('Stored character image search is available'),
     'pre-reply image actions must run as compact request, focused follow-up, and result replay passes',
+  );
+
+  const commandChunks: string[] = [];
+  const commandOutputs = [
+    '[[Ryan checks whether Espen is still shopping.]]\n[commands: messenger_conversation]',
+    '{"whatsUpApp":[' +
+      '{"from":"Ryan Parker","to":"Espen Harper","message":"Still shopping?"},' +
+      '{"from":"Espen Harper","to":"Ryan Parker","message":"Just paying now."}' +
+    ']}',
+  ];
+  const commandStreamResult = await runActionAwarePrompt({
+    node: {
+      id: 'fixture-command-stream',
+      data: { label: 'Fixture Command Stream', connectionId: 'fixture-connection' },
+    } as WorkflowNode,
+    context: {
+      nodes: [],
+      edges: [],
+      historyMessages: [],
+      comfyProviderIds: [],
+      providerHealthById: {},
+      llm: {
+        supportsVision: async () => true,
+        complete: async (request: { onChunk?: (text: string) => void }) => {
+          const text = commandOutputs.shift() ?? '';
+          for (let end = 1; end < text.length; end += 12) {
+            request.onChunk?.(text.slice(0, end));
+          }
+          request.onChunk?.(text);
+          return { text, connection: { label: 'Fixture LLM' } };
+        },
+      },
+      streamOutput: (text: string) => commandChunks.push(text),
+      reportWarning: () => {},
+      reportFormatResult: () => {},
+      updateRuntimeData: () => {},
+    } as unknown as ExecuteContext,
+    inputValue: '[AUTOPLAY]\nPlayer-controlled character: Narrator',
+    images: [],
+    referenceImages: [],
+    promptBefore: '',
+    promptAfter: 'Plan a background message.\n\n@command: Messenger_conversation',
+    actionConfigs: [],
+    commandConfigs: [defaultPromptCommandConfig('messenger_conversation')],
+    streamsVisibleOutput: true,
+    contributesToTokenCalibration: false,
+    callLabel: () => 'Fixture call',
+  });
+  const streamableCommandChunks = commandChunks.flatMap((chunk) => {
+    const previewText = autoplayStreamPreviewText(chunk);
+    return previewText === undefined ? [] : [previewText];
+  });
+  const streamedCommandPreviews = streamableCommandChunks.map((chunk) =>
+    embeddedPhoneMessagesLivePreview(chunk)
+  );
+  assertFixture(
+    stripAutoplayPlanBlocksFromStream('[[Ryan checks whether Espen') === '' &&
+      autoplayStreamPreviewText('[[Ryan checks whether Espen') === undefined &&
+      autoplayStreamPreviewText('{"bankTransfers":[') === undefined &&
+      autoplayStreamPreviewText('Ryan gets dressed and checks the time.') ===
+        'Ryan gets dressed and checks the time.' &&
+      streamableCommandChunks.every((chunk) => !chunk.includes('[[Ryan')) &&
+      streamedCommandPreviews.some((preview) => preview.phoneMessages.length === 1) &&
+      streamedCommandPreviews.some((preview) => preview.phoneMessages.length === 2) &&
+      commandStreamResult.generatedText.includes('"whatsUpApp"'),
+    'a requested messenger command must stream standalone conversation messages one by one',
   );
 }
 

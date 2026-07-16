@@ -709,6 +709,19 @@ export async function runActionAwarePrompt({
     if (uniqueRequestedConfigs.length && visibleReply) {
       const commandNames = uniqueRequestedConfigs.map((config) => config.commandId).join(', ');
       const instruction = promptCommandPassInstruction(visibleReply, uniqueRequestedConfigs, actionResultTexts);
+      const streamCommandOutput = streamsVisibleOutput && context.streamOutput
+        ? (value: string) => {
+            const trimmed = value.trimStart();
+            const couldBeJson =
+              trimmed.startsWith('{') ||
+              trimmed.startsWith('[') ||
+              trimmed.startsWith('```') ||
+              '```'.startsWith(trimmed);
+            if (trimmed && couldBeJson) {
+              context.streamOutput?.([visibleReply, value].filter(Boolean).join('\n'));
+            }
+          }
+        : undefined;
       const historySegments = historySegmentsForInputValue(context, inputValue);
       promptPasses.push({
         label: `Command pass: ${commandNames}`,
@@ -734,6 +747,7 @@ export async function runActionAwarePrompt({
         nodeId: node.id,
         label: `${callLabel(0)} / Command pass`,
         prompt: [inputValue, instruction].filter(Boolean).join('\n\n'),
+        onChunk: streamCommandOutput,
         contributesToTokenCalibration,
         useConnectionSampling: true,
       });
@@ -769,11 +783,15 @@ export async function runActionAwarePrompt({
         context.updateRuntimeData(node.id, {
           preview: 'Invalid command social account blocked; replaying command pass ...',
         });
+        if (streamsVisibleOutput) {
+          context.streamOutput?.(visibleReply);
+        }
         output = await context.llm.complete({
           connectionId: node.data.connectionId,
           nodeId: node.id,
           label: `${callLabel(0)} / Command social account correction`,
           prompt: [inputValue, correction, instruction].filter(Boolean).join('\n\n'),
+          onChunk: streamCommandOutput,
           contributesToTokenCalibration,
           useConnectionSampling: true,
         });
@@ -813,7 +831,13 @@ export async function runActionAwarePrompt({
       const commandJson = unwrapJsonCodeFence(output.text).trim();
       if (commandJson.startsWith('{') || commandJson.startsWith('[')) {
         commandOutputText = commandJson;
+        if (streamsVisibleOutput) {
+          context.streamOutput?.([visibleReply, commandOutputText].filter(Boolean).join('\n'));
+        }
       } else {
+        if (streamsVisibleOutput) {
+          context.streamOutput?.(visibleReply);
+        }
         context.reportWarning(
           `${node.data.label}: Command pass for ${commandNames} returned no JSON output.`,
         );
