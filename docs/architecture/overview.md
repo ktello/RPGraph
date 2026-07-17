@@ -35,7 +35,7 @@ The current UI labels the product as `RPgraph Studio v0.4.8 Beta`.
 
 ## Main Interface
 
-The main app shell is built in [`src/App.tsx`](src/App.tsx). It renders a full studio layout with these major areas:
+The main app shell is built in [`src/App.tsx`](../../src/App.tsx). It renders a full studio layout with these major areas:
 
 - **Topbar**: brand/version, onboarding, options, provider management, assistant, system log, file manager, active save/workflow/storybook status, resource monitoring, and desktop window controls.
 - **Graph panel**: the main React Flow canvas where workflow nodes are placed and connected.
@@ -232,7 +232,7 @@ Singleton nodes are `User Input`, `Chat History`, `Event Manager`, `RP Storybook
 
 ## Execution Runtime
 
-Graph execution is centered in [`src/graph/executeGraph.ts`](src/graph/executeGraph.ts). It receives the current graph, chat/session context, provider APIs, runtime callbacks, settings values, reference images, and cancellation signal.
+Graph execution is centered in [`src/graph/executeGraph.ts`](../../src/graph/executeGraph.ts). It receives the current graph, chat/session context, provider APIs, runtime callbacks, settings values, reference images, and cancellation signal.
 
 The runtime:
 
@@ -250,15 +250,15 @@ The runtime:
 
 ## Important Code Areas
 
-- [`src/App.tsx`](src/App.tsx): main orchestration shell that connects graph state, focused app hooks, panels, and dialogs.
-- [`src/app`](src/app): graph-run orchestration, roleplay-panel state, provider connections, file workflows, runtime patching, lifecycle handling, debug snapshots, and workflow hydration/snapshots.
-- [`src/components`](src/components): reusable UI panels and dialogs, including Chat, Phone, Banking, Gallery, Social Media, voice playback controls, and image generation.
-- [`src/dialogs`](src/dialogs): larger studio dialog surfaces such as options, files, and provider configuration.
-- [`src/nodes`](src/nodes): core node definitions, node UI cards, node execution logic, persistence, custom nodes, and shared node helpers.
-- [`src/graph`](src/graph): graph execution, edges, port compatibility, and edge rendering.
-- [`src/chat`](src/chat): chat input transformation, phone/social parsing, banking and OnlyFriends wallet rules, output parsing, voice handling, structured commands, turn records, reference images, and phone replies.
-- [`src/storybook`](src/storybook): storybook runtime extraction, image library handling, opening history, and storybook actions.
-- [`src/data-management`](src/data-management): session data model, timeline/event/entity stores, selectors, validation, formatting, and debug context.
-- [`src/comfy`](src/comfy): ComfyUI API and workflow compatibility helpers.
-- [`src/llm`](src/llm): LLM API wrapper and token metrics.
-- [`electron`](electron): desktop main process, preload bridge, file formats, encryption, and OS/provider integrations.
+- [`src/App.tsx`](../../src/App.tsx): main orchestration shell that connects graph state, focused app hooks, panels, and dialogs.
+- [`src/app`](../../src/app): graph-run orchestration, roleplay-panel state, provider connections, file workflows, runtime patching, lifecycle handling, debug snapshots, and workflow hydration/snapshots.
+- [`src/components`](../../src/components): reusable UI panels and dialogs, including Chat, Phone, Banking, Gallery, Social Media, voice playback controls, and image generation.
+- [`src/dialogs`](../../src/dialogs): larger studio dialog surfaces such as options, files, and provider configuration.
+- [`src/nodes`](../../src/nodes): core node definitions, node UI cards, node execution logic, persistence, custom nodes, and shared node helpers.
+- [`src/graph`](../../src/graph): graph execution, edges, port compatibility, and edge rendering.
+- [`src/chat`](../../src/chat): chat input transformation, phone/social parsing, banking and OnlyFriends wallet rules, output parsing, voice handling, structured commands, turn records, reference images, and phone replies.
+- [`src/storybook`](../../src/storybook): storybook runtime extraction, image library handling, opening history, and storybook actions.
+- [`src/data-management`](../../src/data-management): session data model, timeline/event/entity stores, selectors, validation, formatting, and debug context.
+- [`src/comfy`](../../src/comfy): ComfyUI API and workflow compatibility helpers.
+- [`src/llm`](../../src/llm): LLM API wrapper and token metrics.
+- [`electron`](../../electron): desktop main process, preload bridge, file formats, encryption, and OS/provider integrations.
