@@ -2166,6 +2166,13 @@ input[type="radio"]:focus-visible {
   margin-top: 12px;
 }
 
+.storybook-actions .load-text-button {
+  padding: 8px 12px;
+  font-size: calc(var(--node-body-text-size) * 1.85);
+  font-weight: 300;
+  line-height: 1;
+}
+
 .storybook-node-summary {
   display: grid;
   gap: 6px;

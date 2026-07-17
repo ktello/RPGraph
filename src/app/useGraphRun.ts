@@ -28,7 +28,7 @@ import type {
 import type { StorybookCharacter } from '../storybook/runtime';
 import { chatAttachmentFromStorybookImage, findChatEndpoints } from '../storybook/runtime';
 import { storybookImageForAttachment } from '../storybook/imageLibrary';
-import type { RpStorybookV1 } from '../nodes/rp-storybook-v1/model';
+import type { RpStorybook } from '../nodes/rp-storybook/model';
 import type { ExecuteTraceFormatResult, ExecuteTraceNodeInfo } from '../nodes/types';
 import type { RunLlmReport, LlmRunHistoryEntry } from '../components/AppDialogs';
 import type { LastRunDebug } from './debugSnapshot';
@@ -235,7 +235,7 @@ type UseGraphRunOptions = Pick<
   phoneCharacters: StorybookCharacter[];
   selectedCharacter: StorybookCharacter | undefined;
   selectedPhoneContact: { character: StorybookCharacter } | undefined;
-  storybooksByNodeId: Map<string, RpStorybookV1>;
+  storybooksByNodeId: Map<string, RpStorybook>;
   characterColors: Map<string, string>;
   englishProcessingEnabled: boolean;
   inputTranslationOnlyEnabled: boolean;
@@ -326,7 +326,7 @@ type UseGraphRunOptions = Pick<
 };
 
 function storybookImageAttachmentById(
-  storybooksByNodeId: Map<string, RpStorybookV1>,
+  storybooksByNodeId: Map<string, RpStorybook>,
   imageId: string | undefined,
 ) {
   const normalizedImageId = imageId?.trim();

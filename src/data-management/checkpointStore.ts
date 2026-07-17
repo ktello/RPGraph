@@ -53,7 +53,7 @@ export const coreNodeDataPolicies: NodeDataPolicyByType = {
       'hasContextLimitConnection',
     ],
   },
-  'rp-storybook-v1': {
+  'rp-storybook': {
     persisted: ['storybookJson'],
     runtime: ['preview', 'storybookStatus'],
     checkpoint: ['storybookJson'],

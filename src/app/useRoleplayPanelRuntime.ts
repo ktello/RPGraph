@@ -66,8 +66,8 @@ import { openingHistoryMessageIds } from '../chat/turns';
 import {
   parseRpStorybookJson,
   rpStorybookPhoneContactAllowed,
-  type RpStorybookV1,
-} from '../nodes/rp-storybook-v1/model';
+  type RpStorybook,
+} from '../nodes/rp-storybook/model';
 import {
   narratorCharacterId,
   narratorSpeakerName,
@@ -95,7 +95,7 @@ type UseRoleplayPanelRuntimeOptions = {
   nodesRef: { current: WorkflowNode[] };
   messages: MessageRecord[];
   turns: TurnRecord[];
-  storybooksByNodeId: Map<string, RpStorybookV1>;
+  storybooksByNodeId: Map<string, RpStorybook>;
   characterStorybookNodeCount: number;
   imageUploadVisionEnabled: boolean;
   englishProcessingEnabled: boolean;

@@ -1,4 +1,4 @@
-import { parseRpStorybookJson, type RpStorybookV1 } from '../nodes/rp-storybook-v1/model';
+import { parseRpStorybookJson, type RpStorybook } from '../nodes/rp-storybook/model';
 import { chatAttachmentFromStorybookImage } from './runtime';
 import { storybookImageSourceById } from './imageLibrary';
 import type { MessageRecord, TurnRecord, RpAppointment, WorkflowNode } from '../types';
@@ -15,9 +15,9 @@ import {
   type SocialConnectionsByCharacter,
 } from '../chat/socialDirectory';
 
-function storybooksFromNodes(nodes: WorkflowNode[]): RpStorybookV1[] {
+function storybooksFromNodes(nodes: WorkflowNode[]): RpStorybook[] {
   return nodes.flatMap((node) => {
-    if (node.data.kind !== undefined || node.data.nodeType !== 'rp-storybook-v1' || !node.data.storybookJson) {
+    if (node.data.kind !== undefined || node.data.nodeType !== 'rp-storybook' || !node.data.storybookJson) {
       return [];
     }
     try {
@@ -65,7 +65,7 @@ export function turnsWithStorybookImageRefs(
  */
 function messageWithRehydratedImages(
   message: MessageRecord,
-  storybooks: RpStorybookV1[],
+  storybooks: RpStorybook[],
 ): MessageRecord {
   if (!message.imageAttachments?.some((image) => !image.dataUrl)) {
     return message;
@@ -85,7 +85,7 @@ function messageWithRehydratedImages(
 
 export function openingHistoryEventsFromNodes(nodes: WorkflowNode[]): RpAppointment[] {
   return nodes.flatMap((node) => {
-    if (node.data.kind !== undefined || node.data.nodeType !== 'rp-storybook-v1' || !node.data.storybookJson) {
+    if (node.data.kind !== undefined || node.data.nodeType !== 'rp-storybook' || !node.data.storybookJson) {
       return [];
     }
     try {
@@ -101,7 +101,7 @@ export function openingHistoryTurnsFromNodes(nodes: WorkflowNode[]) {
   // id-only image references whose pixels live in the character galleries.
   const storybooks = storybooksFromNodes(nodes);
   return nodes.flatMap((node) => {
-    if (node.data.kind !== undefined || node.data.nodeType !== 'rp-storybook-v1' || !node.data.storybookJson) {
+    if (node.data.kind !== undefined || node.data.nodeType !== 'rp-storybook' || !node.data.storybookJson) {
       return [];
     }
     let storybook;
@@ -143,7 +143,7 @@ export function openingHistoryTurnsFromNodes(nodes: WorkflowNode[]) {
 
 export function openingHistoryCheckpointsFromNodes(nodes: WorkflowNode[]) {
   return nodes.flatMap((node) => {
-    if (node.data.kind !== undefined || node.data.nodeType !== 'rp-storybook-v1' || !node.data.storybookJson) {
+    if (node.data.kind !== undefined || node.data.nodeType !== 'rp-storybook' || !node.data.storybookJson) {
       return [];
     }
     try {
@@ -198,7 +198,7 @@ export function remapOpeningTurnMessageIds(openingTurns: TurnRecord[], startId: 
 export function openingHistorySocialLikesFromNodes(nodes: WorkflowNode[]) {
   const likesByAccount: Record<string, string[]> = {};
   nodes.forEach((node) => {
-    if (node.data.kind !== undefined || node.data.nodeType !== 'rp-storybook-v1' || !node.data.storybookJson) {
+    if (node.data.kind !== undefined || node.data.nodeType !== 'rp-storybook' || !node.data.storybookJson) {
       return;
     }
     let storybook;
@@ -257,7 +257,7 @@ export function openingHistorySocialConnectionsFromNodes(
 export function openingHistoryNotesFromNodes(nodes: WorkflowNode[]): PhoneNotesByCharacter {
   let notes: PhoneNotesByCharacter = {};
   nodes.forEach((node) => {
-    if (node.data.kind !== undefined || node.data.nodeType !== 'rp-storybook-v1' || !node.data.storybookJson) {
+    if (node.data.kind !== undefined || node.data.nodeType !== 'rp-storybook' || !node.data.storybookJson) {
       return;
     }
     try {
@@ -276,7 +276,7 @@ export function openingHistoryNotesFromNodes(nodes: WorkflowNode[]): PhoneNotesB
 export function openingHistoryChatGpdChatsFromNodes(nodes: WorkflowNode[]): ChatGpdChatsByCharacter {
   let chats: ChatGpdChatsByCharacter = {};
   nodes.forEach((node) => {
-    if (node.data.kind !== undefined || node.data.nodeType !== 'rp-storybook-v1' || !node.data.storybookJson) {
+    if (node.data.kind !== undefined || node.data.nodeType !== 'rp-storybook' || !node.data.storybookJson) {
       return;
     }
     try {

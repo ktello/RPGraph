@@ -73,7 +73,7 @@ export type RpStorybookCharacterSocial = {
   onlyfriendsUsername: string;
 };
 
-export type RpStorybookV1Character = {
+export type RpStorybookCharacter = {
   id: string;
   name: string;
   description: string;
@@ -140,7 +140,7 @@ export function rpStorybookVersionStatus(value: unknown): RpStorybookVersionStat
   return rpFormatVersionStatus(value, currentRpStorybookVersion);
 }
 
-export type RpStorybookV1 = {
+export type RpStorybook = {
   format: 'rpgraph-storybook';
   version: typeof currentRpStorybookVersion;
   title: string;
@@ -151,7 +151,7 @@ export type RpStorybookV1 = {
     openingSituation: string;
     currentSituation: string;
   };
-  characters: RpStorybookV1Character[];
+  characters: RpStorybookCharacter[];
   /** Bidirectional pairs hidden from the default Phone + Fotogram contact display. */
   phoneContacts: {
     blocked: RpStorybookPhoneContactBlock[];
@@ -178,7 +178,7 @@ export type RpStorybookAssistantResult = {
   reply: string;
   changedFields: string[];
   patchPaths: string[];
-  storybook: RpStorybookV1;
+  storybook: RpStorybook;
 };
 
 type JsonPatchOperation = {
@@ -259,7 +259,7 @@ export function rpStorybookImageDescriptionPromptText(value: unknown) {
     : defaultRpStorybookImageDescriptionPrompt;
 }
 
-export const emptyRpStorybookV1: RpStorybookV1 = {
+export const emptyRpStorybook: RpStorybook = {
   format: 'rpgraph-storybook',
   version: currentRpStorybookVersion,
   title: '',
@@ -528,7 +528,7 @@ export function rpStorybookCharacterVoiceConfig(value: unknown): RpStorybookChar
   };
 }
 
-function normalizeCharacter(value: unknown, index: number, usedImageIds: Set<string>): RpStorybookV1Character {
+function normalizeCharacter(value: unknown, index: number, usedImageIds: Set<string>): RpStorybookCharacter {
   const character = recordValue(value);
   const name = stringValue(character.name);
   const id = stringValue(character.id) ||
@@ -561,7 +561,7 @@ export function normalizeRpStorybookCharacter(
   value: unknown,
   index: number,
   usedImageIds: Set<string>,
-): RpStorybookV1Character {
+): RpStorybookCharacter {
   return normalizeCharacter(value, index, usedImageIds);
 }
 
@@ -582,7 +582,7 @@ function phoneContactPairBlock(leftRef: string, rightRef: string): RpStorybookPh
   return { owner, contact };
 }
 
-function normalizePhoneContacts(value: unknown, validRefs: Set<string>): RpStorybookV1['phoneContacts'] {
+function normalizePhoneContacts(value: unknown, validRefs: Set<string>): RpStorybook['phoneContacts'] {
   const phoneContacts = recordValue(value);
   const blocked = Array.isArray(phoneContacts.blocked) ? phoneContacts.blocked : [];
   const normalized = blocked.flatMap((entry) => {
@@ -721,7 +721,7 @@ function normalizeOpeningHistoryEvent(value: unknown): RpAppointment | undefined
   };
 }
 
-export function normalizeRpStorybookV1(value: unknown): RpStorybookV1 {
+export function normalizeRpStorybook(value: unknown): RpStorybook {
   const storybook = recordValue(value);
   const scenario = recordValue(storybook.scenario);
   const characters = Array.isArray(storybook.characters) ? storybook.characters : [];
@@ -742,7 +742,7 @@ export function normalizeRpStorybookV1(value: unknown): RpStorybookV1 {
     : [];
 
   return {
-    ...emptyRpStorybookV1,
+    ...emptyRpStorybook,
     version: currentRpStorybookVersion,
     title: stringValue(storybook.title),
     introduction: stringValue(storybook.introduction),
@@ -775,9 +775,9 @@ export function normalizeRpStorybookV1(value: unknown): RpStorybookV1 {
 }
 
 const storybookParseCacheMaxEntries = 1;
-const storybookParseCache: Array<{ text: string; storybook: RpStorybookV1 }> = [];
+const storybookParseCache: Array<{ text: string; storybook: RpStorybook }> = [];
 
-export function parseRpStorybookJson(text: string): RpStorybookV1 {
+export function parseRpStorybookJson(text: string): RpStorybook {
   const cachedIndex = storybookParseCache.findIndex((entry) => entry.text === text);
   if (cachedIndex >= 0) {
     const [cached] = storybookParseCache.splice(cachedIndex, 1);
@@ -803,7 +803,7 @@ export function parseRpStorybookJson(text: string): RpStorybookV1 {
   if (versionStatus === 'invalid') {
     throw new Error(`Incompatible RP Storybook format version. Expected ${currentRpStorybookVersion}.`);
   }
-  const storybook = normalizeRpStorybookV1(parsed);
+  const storybook = normalizeRpStorybook(parsed);
   storybookParseCache.unshift({ text, storybook });
   storybookParseCache.splice(storybookParseCacheMaxEntries);
   return storybook;
@@ -951,7 +951,7 @@ function applyJsonPatchOperation(target: unknown, operation: JsonPatchOperation)
   }
 }
 
-function applyStorybookJsonPatch(value: RpStorybookV1, patch: unknown) {
+function applyStorybookJsonPatch(value: RpStorybook, patch: unknown) {
   if (!Array.isArray(patch)) {
     throw new Error('Assistant response must include a JSON Patch array in "patch".');
   }
@@ -982,7 +982,7 @@ function changedFieldsFromJsonPatch(patch: unknown[]) {
   return Array.from(fields);
 }
 
-export function parseRpStorybookAssistantResult(text: string, fallback: RpStorybookV1): RpStorybookAssistantResult {
+export function parseRpStorybookAssistantResult(text: string, fallback: RpStorybook): RpStorybookAssistantResult {
   const stripped = text.replace(/^```(?:json)?\s*/i, '').replace(/\s*```$/i, '').trim();
   const start = stripped.indexOf('{');
   const end = stripped.lastIndexOf('}');
@@ -1003,7 +1003,7 @@ export function parseRpStorybookAssistantResult(text: string, fallback: RpStoryb
 
   const patchedStorybook = applyStorybookJsonPatch(fallback, patch);
   const normalizedStorybook = withPreservedCharacterImages(
-    normalizeRpStorybookV1(patchedStorybook),
+    normalizeRpStorybook(patchedStorybook),
     fallback,
   );
 
@@ -1021,14 +1021,14 @@ export function parseRpStorybookAssistantResult(text: string, fallback: RpStoryb
   };
 }
 
-export function rpStorybookJsonText(storybook: RpStorybookV1) {
+export function rpStorybookJsonText(storybook: RpStorybook) {
   return JSON.stringify({
     ...storybook,
     imageDescriptionPrompt: rpStorybookImageDescriptionPromptSaveSettings(storybook.imageDescriptionPrompt),
   }, null, 2);
 }
 
-export function rpStorybookPromptJsonText(storybook: RpStorybookV1) {
+export function rpStorybookPromptJsonText(storybook: RpStorybook) {
   const omittedTurns = storybook.openingHistory.turns.length;
   const omittedNote = omittedTurns
     ? `[${omittedTurns} Opening History turn${omittedTurns === 1 ? '' : 's'} stored but omitted from this view; the app manages them.]`
@@ -1063,14 +1063,14 @@ export function rpStorybookPromptJsonText(storybook: RpStorybookV1) {
  * Rough prompt-size estimate (~4 characters per token) of the storybook as an
  * LLM sees it: image and voice data URLs excluded, Opening History summarized.
  */
-export function estimatedRpStorybookPromptTokens(storybook: RpStorybookV1) {
+export function estimatedRpStorybookPromptTokens(storybook: RpStorybook) {
   return Math.ceil(rpStorybookPromptJsonText(storybook).length / 4);
 }
 
 function withPreservedCharacterImages(
-  storybook: RpStorybookV1,
-  fallback: RpStorybookV1,
-): RpStorybookV1 {
+  storybook: RpStorybook,
+  fallback: RpStorybook,
+): RpStorybook {
   const fallbackCharacters = new Map(fallback.characters.map((character) => [character.id, character]));
   return {
     ...storybook,
@@ -1096,7 +1096,7 @@ function withPreservedCharacterImages(
 }
 
 export function rpStorybookFormattedText(
-  storybook: RpStorybookV1,
+  storybook: RpStorybook,
   settingsInput?: Partial<RpStorybookFormattedTextSettings>,
 ) {
   const settings = rpStorybookFormattedTextSettings(settingsInput);
@@ -1144,7 +1144,7 @@ export function rpStorybookFormattedText(
   ].filter((line, index, lines) => line || lines[index - 1]).join('\n').trim();
 }
 
-export function rpStorybookPhoneContactCharacters(storybook: RpStorybookV1) {
+export function rpStorybookPhoneContactCharacters(storybook: RpStorybook) {
   return storybook.characters.map((character, index) => ({
     ref: character.id || `character-${index + 1}`,
     name: character.name || character.id || `Character ${index + 1}`,
@@ -1153,7 +1153,7 @@ export function rpStorybookPhoneContactCharacters(storybook: RpStorybookV1) {
 }
 
 export function rpStorybookPhoneContactBlocked(
-  storybook: RpStorybookV1,
+  storybook: RpStorybook,
   ownerRef: string,
   contactRef: string,
 ) {
@@ -1163,7 +1163,7 @@ export function rpStorybookPhoneContactBlocked(
 }
 
 export function rpStorybookPhoneContactAllowed(
-  storybook: RpStorybookV1,
+  storybook: RpStorybook,
   ownerRef: string,
   contactRef: string,
 ) {
@@ -1171,11 +1171,11 @@ export function rpStorybookPhoneContactAllowed(
 }
 
 export function withRpStorybookPhoneContactPairBlocked(
-  storybook: RpStorybookV1,
+  storybook: RpStorybook,
   leftRef: string,
   rightRef: string,
   blocked: boolean,
-): RpStorybookV1 {
+): RpStorybook {
   const target = phoneContactPairBlock(leftRef, rightRef);
   const targetPairKey = phoneContactPairKey(leftRef, rightRef);
   const nextBlocked = storybook.phoneContacts.blocked.filter(
@@ -1190,18 +1190,18 @@ export function withRpStorybookPhoneContactPairBlocked(
 }
 
 export function withRpStorybookPhoneContactPairAllowed(
-  storybook: RpStorybookV1,
+  storybook: RpStorybook,
   leftRef: string,
   rightRef: string,
-): RpStorybookV1 {
+): RpStorybook {
   return withRpStorybookPhoneContactPairBlocked(storybook, leftRef, rightRef, false);
 }
 
 export function withRpStorybookCharacterPhoneWallpaper(
-  storybook: RpStorybookV1,
+  storybook: RpStorybook,
   characterId: string,
   wallpaperId: string,
-): RpStorybookV1 {
+): RpStorybook {
   const nextWallpaperId = wallpaperId.trim() || defaultRpStorybookCharacterPhoneSettings().wallpaperId;
   return {
     ...storybook,
@@ -1214,11 +1214,11 @@ export function withRpStorybookCharacterPhoneWallpaper(
 }
 
 export function withRpStorybookCharacterSocialUsername(
-  storybook: RpStorybookV1,
+  storybook: RpStorybook,
   characterId: string,
   app: 'fotogram' | 'onlyfriends',
   username: string,
-): RpStorybookV1 {
+): RpStorybook {
   const field = app === 'fotogram' ? 'fotogramUsername' : 'onlyfriendsUsername';
   return {
     ...storybook,
@@ -1242,8 +1242,8 @@ export function withRpStorybookCharacterSocialUsername(
  * orphans messages, phone conversations, and social posts.
  */
 export function rpStorybookIdentityLockViolations(
-  current: RpStorybookV1,
-  next: RpStorybookV1,
+  current: RpStorybook,
+  next: RpStorybook,
 ): string[] {
   const violations: string[] = [];
   const nextById = new Map(next.characters.map((character) => [character.id, character]));
@@ -1269,7 +1269,7 @@ export function rpStorybookIdentityLockViolations(
   return violations;
 }
 
-export function parseNodeStorybookJson(text: string | undefined): RpStorybookV1 | undefined {
+export function parseNodeStorybookJson(text: string | undefined): RpStorybook | undefined {
   if (!text) {
     return undefined;
   }

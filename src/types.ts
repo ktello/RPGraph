@@ -482,7 +482,7 @@ type LlmPromptNodeData = CoreWorkflowNodeCommonFields & { nodeType: 'llm-prompt'
 type CombinerNodeData = CoreWorkflowNodeCommonFields & { nodeType: 'combiner' };
 type CharacterStatsNodeData = CoreWorkflowNodeCommonFields & { nodeType: 'character-stats' };
 type OutputNodeData = CoreWorkflowNodeCommonFields & { nodeType: 'output' };
-type RpStorybookV1NodeData = CoreWorkflowNodeCommonFields & { nodeType: 'rp-storybook-v1' };
+type RpStorybookNodeData = CoreWorkflowNodeCommonFields & { nodeType: 'rp-storybook' };
 type PhoneAppsNodeData = CoreWorkflowNodeCommonFields & { nodeType: 'phone-apps' };
 
 type ConcreteCoreWorkflowNodeData =
@@ -511,7 +511,7 @@ type ConcreteCoreWorkflowNodeData =
   | CombinerNodeData
   | CharacterStatsNodeData
   | OutputNodeData
-  | RpStorybookV1NodeData
+  | RpStorybookNodeData
   | PhoneAppsNodeData;
 
 type MissingNodeWorkflowData = WorkflowNodeCommonFields & {

@@ -5,7 +5,7 @@ import { getRegisteredCoreNode, registerNode } from '../nodes/registry';
 import { currentCoreNodeVersions } from '../nodes/nodeVersion';
 import type { ExecuteContext, NodeCreationDefinition } from '../nodes/types';
 import {
-  emptyRpStorybookV1,
+  emptyRpStorybook,
   parseRpStorybookAssistantResult,
   parseRpStorybookJson,
   rpStorybookFormattedText,
@@ -13,7 +13,7 @@ import {
   rpStorybookEditPrompt,
   rpStorybookJsonText,
   withRpStorybookPhoneContactPairBlocked,
-} from '../nodes/rp-storybook-v1/model';
+} from '../nodes/rp-storybook/model';
 import {
   storybookImageById,
   storybookImageDescriptions,
@@ -965,13 +965,13 @@ export function verifyWorkflowValidationFixtures() {
     'adding a Storybook Fotogram account must connect both characters while OnlyFriends remains one-way',
   );
   const hiddenPhoneAndFotogramPair = withRpStorybookPhoneContactPairBlocked(
-    emptyRpStorybookV1,
+    emptyRpStorybook,
     'espen',
     'ryan',
     true,
   );
   assertFixture(
-    rpStorybookPhoneContactAllowed(emptyRpStorybookV1, 'espen', 'ryan') &&
+    rpStorybookPhoneContactAllowed(emptyRpStorybook, 'espen', 'ryan') &&
       !rpStorybookPhoneContactAllowed(hiddenPhoneAndFotogramPair, 'espen', 'ryan') &&
       !rpStorybookPhoneContactAllowed(hiddenPhoneAndFotogramPair, 'ryan', 'espen'),
     'Phone + Fotogram contact visibility must default to mutual and hide pairs bidirectionally',
@@ -1023,10 +1023,10 @@ export function verifyWorkflowValidationFixtures() {
   );
 
   const assistantStorybook = {
-    ...emptyRpStorybookV1,
+    ...emptyRpStorybook,
     title: 'Old title',
     openingHistory: {
-      ...emptyRpStorybookV1.openingHistory,
+      ...emptyRpStorybook.openingHistory,
       summary: 'Imported opening context',
     },
     characters: [{
@@ -1088,7 +1088,7 @@ export function verifyWorkflowValidationFixtures() {
     () => parseRpStorybookAssistantResult(JSON.stringify({
       reply: 'Rewrite.',
       changedFields: ['storybook'],
-      patch: [{ op: 'replace', path: '', value: emptyRpStorybookV1 }],
+      patch: [{ op: 'replace', path: '', value: emptyRpStorybook }],
     }), assistantStorybook),
     'Storybook assistant must reject root replacement JSON patches',
   );
@@ -1123,7 +1123,7 @@ export function verifyWorkflowValidationFixtures() {
     },
   };
   const sillyTavernInstruction = sillyTavernImportInstruction(
-    emptyRpStorybookV1,
+    emptyRpStorybook,
     sillyTavernCard,
     'mira.json',
   );
@@ -1158,9 +1158,9 @@ export function verifyWorkflowValidationFixtures() {
       },
       { op: 'replace', path: '/scenario/summary', value: 'Mira arrives at a sealed library.' },
     ],
-  }), emptyRpStorybookV1);
+  }), emptyRpStorybook);
   const validatedSillyTavernImport = validateSillyTavernImportResult(
-    emptyRpStorybookV1,
+    emptyRpStorybook,
     importedMira,
     sillyTavernCard,
   );
@@ -1170,7 +1170,7 @@ export function verifyWorkflowValidationFixtures() {
     'SillyTavern imports must confirm that the model actually added the requested character',
   );
   const occupiedScenarioStorybook = {
-    ...emptyRpStorybookV1,
+    ...emptyRpStorybook,
     scenario: {
       summary: 'An established group story.',
       openingSituation: 'The group is already together.',
@@ -1191,10 +1191,10 @@ export function verifyWorkflowValidationFixtures() {
     reply: 'Imported Mira.',
     changedFields: [],
     patch: [],
-  }), emptyRpStorybookV1);
+  }), emptyRpStorybook);
   assertThrowsFixture(
     () => validateSillyTavernImportResult(
-      emptyRpStorybookV1,
+      emptyRpStorybook,
       emptySillyTavernResult,
       sillyTavernCard,
     ),
@@ -1277,7 +1277,7 @@ export function verifyWorkflowValidationFixtures() {
   );
 
   const referenceStorybook = {
-    ...emptyRpStorybookV1,
+    ...emptyRpStorybook,
     characters: [{
       id: 'sarah-miller',
       name: 'Sarah Miller',
@@ -1297,10 +1297,10 @@ export function verifyWorkflowValidationFixtures() {
   };
   const referenceNodes = [{
     id: 'storybook',
-    type: 'rp-storybook-v1',
+    type: 'rp-storybook',
     position: { x: 0, y: 0 },
     data: {
-      nodeType: 'rp-storybook-v1',
+      nodeType: 'rp-storybook',
       label: 'Storybook',
       description: '',
       preview: '',
@@ -1555,7 +1555,7 @@ export function verifyWorkflowValidationFixtures() {
     'a recently selected reference image must receive the same dynamic marker at every history occurrence',
   );
 
-  const storybookWithUsedImage = structuredClone(emptyRpStorybookV1);
+  const storybookWithUsedImage = structuredClone(emptyRpStorybook);
   storybookWithUsedImage.characters = [{
     id: 'emily-miller',
     name: 'Emily Miller',
@@ -1709,9 +1709,9 @@ export function verifyWorkflowValidationFixtures() {
     },
   }];
   const openingHistoryNode = structuredClone(
-    currentWorkflow.nodes.find((node) => node.data.nodeType === 'rp-storybook-v1'),
+    currentWorkflow.nodes.find((node) => node.data.nodeType === 'rp-storybook'),
   ) as WorkflowNode | undefined;
-  if (!openingHistoryNode || openingHistoryNode.data.nodeType !== 'rp-storybook-v1') {
+  if (!openingHistoryNode || openingHistoryNode.data.nodeType !== 'rp-storybook') {
     throw new Error('Workflow validation fixture failed: default Storybook node is missing');
   }
   // Import stores gallery-backed images as id-only references (no base64
@@ -2104,12 +2104,12 @@ export function verifyWorkflowValidationFixtures() {
     type: 'workflow',
     position: { x: 200, y: 0 },
     data: {
-      nodeType: 'rp-storybook-v1',
+      nodeType: 'rp-storybook',
       label: 'Storybook',
       description: 'Storybook',
       preview: 'Ready',
       storybookJson: rpStorybookJsonText({
-        ...emptyRpStorybookV1,
+        ...emptyRpStorybook,
         title: 'Fixture Storybook',
         openingHistory: {
           summary: 'Opening event fixture',
@@ -3780,7 +3780,7 @@ export function verifyWorkflowValidationFixtures() {
     'output action parser must preserve Storybook image ids',
   );
   const imageTransferStorybook = {
-    ...emptyRpStorybookV1,
+    ...emptyRpStorybook,
     characters: [
       {
         id: 'lara_miller',
@@ -4020,7 +4020,7 @@ export function verifyWorkflowValidationFixtures() {
     'existing own Storybook images must not be relabeled as received images',
   );
   const normalizedDuplicateIds = parseRpStorybookJson(JSON.stringify({
-    ...emptyRpStorybookV1,
+    ...emptyRpStorybook,
     characters: [{
       id: 'lara_miller',
       name: 'Lara Miller',
@@ -4055,7 +4055,7 @@ export function verifyWorkflowValidationFixtures() {
     'storybook image normalization must avoid duplicate ids inside one character library',
   );
   const storybookWithFormattedTextImage = {
-    ...emptyRpStorybookV1,
+    ...emptyRpStorybook,
     characters: [{
       id: 'lara_miller',
       name: 'Lara Miller',
@@ -4214,7 +4214,7 @@ export function verifyWorkflowValidationFixtures() {
     memorySlotText: 'SECRET RP MEMORY',
     fullText: 'SECRET RP MEMORY',
   });
-  const storybook = workflowWithRuntimeData.nodes.find((node) => node.data.nodeType === 'rp-storybook-v1');
+  const storybook = workflowWithRuntimeData.nodes.find((node) => node.data.nodeType === 'rp-storybook');
   if (!storybook) {
     throw new Error('Workflow validation fixture failed: default workflow has no storybook');
   }
@@ -4285,7 +4285,7 @@ export function verifyWorkflowValidationFixtures() {
       !('eventLastResponse' in runtimeSnapshot.nodes[eventManager.id]!),
     'turn runtime snapshots must omit bounded debug prompt and response fields',
   );
-  const persistedStorybook = persistedWorkflow.nodes.find((node) => node.data.nodeType === 'rp-storybook-v1');
+  const persistedStorybook = persistedWorkflow.nodes.find((node) => node.data.nodeType === 'rp-storybook');
   assertFixture(
     !!persistedStorybook &&
       typeof persistedStorybook.data.storybookJson === 'string' &&
@@ -4450,14 +4450,14 @@ export function verifyWorkflowValidationFixtures() {
 
   const workflowWithOldStorybookNode = structuredClone(currentWorkflow);
   const oldStorybookNode = workflowWithOldStorybookNode.nodes.find(
-    (node) => node.data.nodeType === 'rp-storybook-v1',
+    (node) => node.data.nodeType === 'rp-storybook',
   );
   if (!oldStorybookNode) {
     throw new Error('Workflow validation fixture failed: missing storybook node');
   }
   oldStorybookNode.data.nodeDataVersion = '1.12.0';
   oldStorybookNode.data.storybookJson = JSON.stringify({
-    ...emptyRpStorybookV1,
+    ...emptyRpStorybook,
     version: '1.15.0',
   });
   assertFixture(
@@ -4468,12 +4468,12 @@ export function verifyWorkflowValidationFixtures() {
   assertFixture(
     oldStorybookHydrated.kind === 'incompatible-core-node' &&
       oldStorybookHydrated.nodeDataVersion === '1.12.0' &&
-      oldStorybookHydrated.currentNodeVersion === currentCoreNodeVersions['rp-storybook-v1'],
+      oldStorybookHydrated.currentNodeVersion === currentCoreNodeVersions['rp-storybook'],
     'an old storybook node must hydrate as an incompatible placeholder before parsing old storybook JSON',
   );
 
   const corruptedStorybookNode = structuredClone(oldStorybookNode);
-  corruptedStorybookNode.data.nodeDataVersion = currentCoreNodeVersions['rp-storybook-v1'];
+  corruptedStorybookNode.data.nodeDataVersion = currentCoreNodeVersions['rp-storybook'];
   corruptedStorybookNode.data.storybookJson = '{invalid json';
   assertThrowsFixture(
     () => hydrateNodeData(corruptedStorybookNode.data, versionHydrateContext),
@@ -4779,9 +4779,9 @@ async function verifyPromptRunFixtures() {
       type: 'workflow',
       position: { x: 0, y: 0 },
       data: {
-        nodeType: 'rp-storybook-v1',
+        nodeType: 'rp-storybook',
         storybookJson: JSON.stringify({
-          ...emptyRpStorybookV1,
+          ...emptyRpStorybook,
           characters: [{
             id: 'sarah-miller',
             name: 'Sarah Miller',
@@ -4932,9 +4932,9 @@ async function verifyPromptRunFixtures() {
       type: 'workflow',
       position: { x: 0, y: 0 },
       data: {
-        nodeType: 'rp-storybook-v1',
+        nodeType: 'rp-storybook',
         storybookJson: JSON.stringify({
-          ...emptyRpStorybookV1,
+          ...emptyRpStorybook,
           characters: [
             {
               id: 'espen-harper',

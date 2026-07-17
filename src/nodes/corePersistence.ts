@@ -32,11 +32,11 @@ import {
   defaultContextCompressionTokenLimit,
 } from '../workflow/defaults';
 import {
-  emptyRpStorybookV1,
+  emptyRpStorybook,
   parseRpStorybookJson,
   rpStorybookFormattedTextSettings,
   rpStorybookJsonText,
-} from './rp-storybook-v1/model';
+} from './rp-storybook/model';
 import type { CoreNodeType, HydrateContext } from './types';
 import { customNodeDefinition } from './custom-node/model';
 import { lastRpOutputPersistence } from './last-rp-output/persistence';
@@ -365,11 +365,11 @@ export const corePersistence: Record<CoreNodeType, CorePersistence> = {
       settingsValueEntries: settingsValueEntries(data),
     }),
   },
-  'rp-storybook-v1': {
+  'rp-storybook': {
     saveData: (data) => {
       const storybook = data.storybookJson
         ? parseRpStorybookJson(data.storybookJson)
-        : emptyRpStorybookV1;
+        : emptyRpStorybook;
       return preservedData(data, 'No storybook loaded', {
         connectionId: data.connectionId,
         storybookJson: rpStorybookJsonText(storybook),
@@ -380,7 +380,7 @@ export const corePersistence: Record<CoreNodeType, CorePersistence> = {
     hydrateData: (data, context) => {
       const storybook = data.storybookJson
         ? parseRpStorybookJson(data.storybookJson)
-        : emptyRpStorybookV1;
+        : emptyRpStorybook;
       return preservedData(data, 'No storybook loaded', {
         connectionId: connectionId(data, context),
         storybookJson: rpStorybookJsonText(storybook),

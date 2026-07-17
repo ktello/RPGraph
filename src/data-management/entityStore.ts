@@ -1,4 +1,4 @@
-import { parseNodeStorybookJson } from '../nodes/rp-storybook-v1/model';
+import { parseNodeStorybookJson } from '../nodes/rp-storybook/model';
 import type { TurnRecord, WorkflowNode } from '../types';
 import { eventEntitiesFromNodes } from './eventStore';
 import type { ImageEntity, SessionEntities } from './types';
@@ -26,7 +26,7 @@ export function entitiesFromCurrentState(nodes: WorkflowNode[], turns: TurnRecor
     if (node.data.kind !== undefined) {
       return;
     }
-    if (node.data.nodeType === 'rp-storybook-v1') {
+    if (node.data.nodeType === 'rp-storybook') {
       const storybook = parseNodeStorybookJson(node.data.storybookJson);
       if (storybook) {
         entities.storybook = {

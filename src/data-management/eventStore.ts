@@ -1,5 +1,5 @@
 import type { RpAppointment, WorkflowNode } from '../types';
-import { parseRpStorybookJson } from '../nodes/rp-storybook-v1/model';
+import { parseRpStorybookJson } from '../nodes/rp-storybook/model';
 import {
   appointmentFromEventEntity,
   eventEntityFromAppointment,
@@ -78,7 +78,7 @@ export function appointmentsEqual(left: RpAppointment[], right: RpAppointment[])
 export function eventEntitiesFromNodes(nodes: WorkflowNode[]) {
   const storybookOpeningEventIds = new Set(
     nodes
-      .filter((node) => node.data.kind === undefined && node.data.nodeType === 'rp-storybook-v1')
+      .filter((node) => node.data.kind === undefined && node.data.nodeType === 'rp-storybook')
       .flatMap((node) => {
         try {
           return node.data.storybookJson

@@ -1,7 +1,7 @@
 import type { Edge } from '@xyflow/react';
 import type { WorkflowFile, WorkflowNode, WorkflowNodeData } from '../types';
 import { withWorkflowConnectionColor } from '../graph/edges';
-import { emptyRpStorybookV1, rpStorybookJsonText } from '../nodes/rp-storybook-v1/model';
+import { emptyRpStorybook, rpStorybookJsonText } from '../nodes/rp-storybook/model';
 import { persistentNodeData } from '../workflow/persistence';
 import { currentWorkflowFormatVersion } from '../workflow/version';
 
@@ -10,13 +10,13 @@ function workflowNodeDataForSave(
   includeStorybook: boolean,
 ): WorkflowNodeData {
   const savedData = persistentNodeData(data);
-  if (includeStorybook || savedData.nodeType !== 'rp-storybook-v1') {
+  if (includeStorybook || savedData.nodeType !== 'rp-storybook') {
     return savedData;
   }
   return {
     ...savedData,
     preview: 'No storybook loaded',
-    storybookJson: rpStorybookJsonText(emptyRpStorybookV1),
+    storybookJson: rpStorybookJsonText(emptyRpStorybook),
     storybookStatus: 'Ready',
     storybookFileName: undefined,
     storybookFilePath: undefined,

@@ -43,7 +43,7 @@ export function useRuntimeNodePatching({
     const shouldRefreshOpeningHistory =
       previousNode !== undefined &&
       previousNode.data.kind === undefined &&
-      previousNode.data.nodeType === 'rp-storybook-v1' &&
+      previousNode.data.nodeType === 'rp-storybook' &&
       nextStorybookJson !== undefined &&
       openingHistorySignature(previousNode.data.storybookJson) !==
         openingHistorySignature(nextStorybookJson);

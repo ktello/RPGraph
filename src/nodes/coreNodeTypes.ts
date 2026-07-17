@@ -24,7 +24,7 @@ export const coreNodeTypes = [
   'combiner',
   'character-stats',
   'output',
-  'rp-storybook-v1',
+  'rp-storybook',
   'phone-apps',
 ] as const;
 

@@ -259,15 +259,15 @@ import {
 } from './nodes/custom-node/images';
 import {
   defaultRpStorybookImageDescriptionPrompt,
-  emptyRpStorybookV1,
+  emptyRpStorybook,
   parseRpStorybookJson,
   rpStorybookJsonText,
   withRpStorybookCharacterPhoneWallpaper,
   withRpStorybookCharacterSocialUsername,
   withRpStorybookPhoneContactPairAllowed,
   type RpStorybookCharacterImage,
-  type RpStorybookV1,
-} from './nodes/rp-storybook-v1/model';
+  type RpStorybook,
+} from './nodes/rp-storybook/model';
 import {
   buildOutputSpeakerPrompt,
   outputSpeakerFormatInstructions,
@@ -1173,7 +1173,7 @@ function App() {
   const storybooksByNodeId = useMemo(() => {
     return new Map(
       nodeViewNodes.flatMap((node) => {
-        if (node.data.kind !== undefined || node.data.nodeType !== 'rp-storybook-v1' || !node.data.storybookJson) {
+        if (node.data.kind !== undefined || node.data.nodeType !== 'rp-storybook' || !node.data.storybookJson) {
           return [];
         }
         try {
@@ -1735,7 +1735,7 @@ function App() {
     image: RpStorybookCharacterImage,
     descriptionPrompt: string,
   ) {
-    if (node.data.nodeType !== 'rp-storybook-v1') {
+    if (node.data.nodeType !== 'rp-storybook') {
       throw new Error('Storybook image descriptions require an RP Storybook node.');
     }
     const prompt = [
@@ -1907,7 +1907,7 @@ function App() {
             node.data.nodeType === 'input' ||
             node.data.nodeType === 'history' ||
             node.data.nodeType === 'output' ||
-            node.data.nodeType === 'rp-storybook-v1' ||
+            node.data.nodeType === 'rp-storybook' ||
             node.data.nodeType === 'character-stats' ||
             node.data.nodeType === 'context-compression') &&
           !connections.some((connection) => connection.id === node.data.connectionId && isLlmConnection(connection))
@@ -2776,14 +2776,14 @@ function App() {
 
   function currentStorybookForSave() {
     const storybookNode =
-      nodesRef.current.find((node) => node.id === storybookCreatorNodeId && node.data.nodeType === 'rp-storybook-v1') ??
-      nodesRef.current.find((node) => node.data.nodeType === 'rp-storybook-v1');
-    if (!storybookNode || storybookNode.data.nodeType !== 'rp-storybook-v1') {
+      nodesRef.current.find((node) => node.id === storybookCreatorNodeId && node.data.nodeType === 'rp-storybook') ??
+      nodesRef.current.find((node) => node.data.nodeType === 'rp-storybook');
+    if (!storybookNode || storybookNode.data.nodeType !== 'rp-storybook') {
       throw new Error('Add an RP Storybook V2 node before saving a storybook file.');
     }
     const storybook = storybookNode.data.storybookJson
       ? parseRpStorybookJson(storybookNode.data.storybookJson)
-      : emptyRpStorybookV1;
+      : emptyRpStorybook;
     return {
       storybook,
       name: storybookNode.data.storybookFileName
@@ -2873,8 +2873,8 @@ function App() {
     }
     if (result.type === 'storybook') {
       const storybookNode =
-        nodesRef.current.find((node) => node.id === storybookCreatorNodeId && node.data.nodeType === 'rp-storybook-v1') ??
-        nodesRef.current.find((node) => node.data.nodeType === 'rp-storybook-v1');
+        nodesRef.current.find((node) => node.id === storybookCreatorNodeId && node.data.nodeType === 'rp-storybook') ??
+        nodesRef.current.find((node) => node.data.nodeType === 'rp-storybook');
       if (!storybookNode) {
         throw new Error('Add an RP Storybook V2 node before opening a storybook file.');
       }
@@ -2899,8 +2899,8 @@ function App() {
     }
     if (result.type === 'character-card') {
       const storybookNode =
-        nodesRef.current.find((node) => node.id === storybookCreatorNodeId && node.data.nodeType === 'rp-storybook-v1') ??
-        nodesRef.current.find((node) => node.data.nodeType === 'rp-storybook-v1');
+        nodesRef.current.find((node) => node.id === storybookCreatorNodeId && node.data.nodeType === 'rp-storybook') ??
+        nodesRef.current.find((node) => node.data.nodeType === 'rp-storybook');
       if (!storybookNode) {
         throw new Error('Add an RP Storybook V2 node before importing a character card.');
       }
@@ -3949,7 +3949,7 @@ function App() {
       return undefined;
     }
     for (const node of nodesRef.current) {
-      if (node.data.kind !== undefined || node.data.nodeType !== 'rp-storybook-v1' || !node.data.storybookJson) {
+      if (node.data.kind !== undefined || node.data.nodeType !== 'rp-storybook' || !node.data.storybookJson) {
         continue;
       }
       try {
@@ -4253,7 +4253,7 @@ function App() {
       return;
     }
     const storybookNode = nodesRef.current.find(
-      (node) => node.id === fromCharacter.storybookNodeId && node.data.nodeType === 'rp-storybook-v1',
+      (node) => node.id === fromCharacter.storybookNodeId && node.data.nodeType === 'rp-storybook',
     );
     if (!storybookNode?.data.storybookJson) {
       return;
@@ -4276,7 +4276,7 @@ function App() {
 
   function changeStorybookPhoneWallpaper(character: StorybookCharacter, wallpaperId: string) {
     const storybookNode = nodesRef.current.find(
-      (node) => node.id === character.storybookNodeId && node.data.nodeType === 'rp-storybook-v1',
+      (node) => node.id === character.storybookNodeId && node.data.nodeType === 'rp-storybook',
     );
     if (!storybookNode?.data.storybookJson) {
       return;
@@ -4303,7 +4303,7 @@ function App() {
     username: string,
   ) {
     const storybookNode = nodesRef.current.find(
-      (node) => node.id === character.storybookNodeId && node.data.nodeType === 'rp-storybook-v1',
+      (node) => node.id === character.storybookNodeId && node.data.nodeType === 'rp-storybook',
     );
     if (!storybookNode?.data.storybookJson) {
       return;
@@ -4368,7 +4368,7 @@ function App() {
       return undefined;
     }
     const storybookNode = nodesRef.current.find(
-      (node) => node.id === character.storybookNodeId && node.data.nodeType === 'rp-storybook-v1',
+      (node) => node.id === character.storybookNodeId && node.data.nodeType === 'rp-storybook',
     );
     if (!storybookNode?.data.storybookJson) {
       return undefined;
@@ -4399,7 +4399,7 @@ function App() {
       return;
     }
     nodesRef.current.forEach((node) => {
-      if (node.data.kind !== undefined || node.data.nodeType !== 'rp-storybook-v1' || !node.data.storybookJson) {
+      if (node.data.kind !== undefined || node.data.nodeType !== 'rp-storybook' || !node.data.storybookJson) {
         return;
       }
       const storybook = parseRpStorybookJson(node.data.storybookJson);
@@ -4431,7 +4431,7 @@ function App() {
     const beforeCaption = storybookImageDescriptionById.get(normalizedImageId)?.trim() || undefined;
     let updated = false;
     nodesRef.current.forEach((node) => {
-      if (node.data.kind !== undefined || node.data.nodeType !== 'rp-storybook-v1' || !node.data.storybookJson) {
+      if (node.data.kind !== undefined || node.data.nodeType !== 'rp-storybook' || !node.data.storybookJson) {
         return;
       }
       const storybook = parseRpStorybookJson(node.data.storybookJson);
@@ -4504,7 +4504,7 @@ function App() {
 
   function pruneStorybookExternalImagesForMessages(activeMessages = messagesRef.current) {
     nodesRef.current.forEach((node) => {
-      if (node.data.kind !== undefined || node.data.nodeType !== 'rp-storybook-v1' || !node.data.storybookJson) {
+      if (node.data.kind !== undefined || node.data.nodeType !== 'rp-storybook' || !node.data.storybookJson) {
         return;
       }
       const storybook = parseRpStorybookJson(node.data.storybookJson);
@@ -5817,7 +5817,7 @@ function App() {
       ? `Turn ${activeSessionSavedTurn} Saved`
       : null;
   const headerStorybookNode = nodeViewNodes.find(
-    (node) => node.data.kind === undefined && node.data.nodeType === 'rp-storybook-v1',
+    (node) => node.data.kind === undefined && node.data.nodeType === 'rp-storybook',
   );
   const headerStorybookFileName = headerStorybookNode?.data.storybookFileName;
   const headerStorybookJson = headerStorybookNode?.data.storybookJson;
@@ -7073,7 +7073,7 @@ function App() {
       )}
 
 
-      {storybookCreatorNode && storybookCreatorNode.data.nodeType === 'rp-storybook-v1' && (
+      {storybookCreatorNode && storybookCreatorNode.data.nodeType === 'rp-storybook' && (
         <StorybookCreatorDialog
           node={storybookCreatorNode}
           workflowNodes={nodeViewNodes}
@@ -7089,7 +7089,7 @@ function App() {
           setPromptTextCustomPresets={setPromptTextCustomPresets}
           usedImageIds={usedStorybookImageIds}
           imageCaptionChangesById={phoneImageCaptionChangesById}
-          onUpdateStorybook={(storybook: RpStorybookV1, status?: string) =>
+          onUpdateStorybook={(storybook: RpStorybook, status?: string) =>
             updateStorybook(storybookCreatorNode.id, storybook, status)
           }
           onChangeImageCaptionUpdate={changeImageCaptionUpdate}

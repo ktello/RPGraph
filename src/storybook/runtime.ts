@@ -12,7 +12,7 @@ import {
   type RpStorybookCharacterProfileImage,
   type RpStorybookCharacterVoiceConfig,
   type RpStorybookCharacterPhoneSettings,
-} from '../nodes/rp-storybook-v1/model';
+} from '../nodes/rp-storybook/model';
 
 type StorybookCharacterKind = 'character';
 
@@ -83,7 +83,7 @@ export type StorybookCharacterRef = {
 
 export function storyCharactersFromNodes(nodes: WorkflowNode[]): StorybookCharacter[] {
   return nodes.flatMap((node) => {
-    if (node.data.kind !== undefined || node.data.nodeType !== 'rp-storybook-v1') {
+    if (node.data.kind !== undefined || node.data.nodeType !== 'rp-storybook') {
       return [];
     }
     const storybook = parseNodeStorybookJson(node.data.storybookJson);
@@ -150,7 +150,7 @@ function storybookImageListId(characterId: string) {
 
 export function storybookImageListsFromNodes(nodes: WorkflowNode[]): StorybookImageList[] {
   return nodes.flatMap((node) => {
-    if (node.data.kind !== undefined || node.data.nodeType !== 'rp-storybook-v1') {
+    if (node.data.kind !== undefined || node.data.nodeType !== 'rp-storybook') {
       return [];
     }
     const storybook = parseNodeStorybookJson(node.data.storybookJson);
@@ -190,7 +190,7 @@ export function storybookImageListsFromNodes(nodes: WorkflowNode[]): StorybookIm
 export function storybookOpeningSituation(nodes: WorkflowNode[]) {
   return nodes
     .flatMap((node) => {
-      if (node.data.kind !== undefined || node.data.nodeType !== 'rp-storybook-v1') {
+      if (node.data.kind !== undefined || node.data.nodeType !== 'rp-storybook') {
         return [];
       }
       const storybook = parseNodeStorybookJson(node.data.storybookJson);
@@ -239,7 +239,7 @@ export function storybookCharacterInfoText(text: string) {
 
 export function findChatEndpoints(nodes: WorkflowNode[]) {
   const storybookNodes = nodes.filter(
-    (node) => node.data.kind === undefined && node.data.nodeType === 'rp-storybook-v1',
+    (node) => node.data.kind === undefined && node.data.nodeType === 'rp-storybook',
   );
   const storybookHasCharacters = storybookNodes.some((node) => {
     const storybook = parseNodeStorybookJson(node.data.storybookJson);

@@ -18,7 +18,7 @@ import {
   defaultRpStorybookCharacterVoiceConfig,
   defaultRpStorybookImageDescriptionPrompt,
   defaultRpStorybookImageDescriptionPromptSettings,
-  emptyRpStorybookV1,
+  emptyRpStorybook,
   nextStorybookCharacterImageId,
   parseRpStorybookJson,
   rpStorybookCharacterBanking,
@@ -37,12 +37,12 @@ import {
   type RpStorybookCharacterComfyConfig,
   type RpStorybookCharacterSocial,
   type RpStorybookCharacterVoiceConfig,
-  type RpStorybookV1Character,
+  type RpStorybookCharacter,
   type RpStorybookCharacterImage,
   type RpStorybookCharacterProfileImage,
   type RpStorybookFormattedTextSettings,
-  type RpStorybookV1,
-} from '../nodes/rp-storybook-v1/model';
+  type RpStorybook,
+} from '../nodes/rp-storybook/model';
 import { NodeCustomSelect } from '../nodes/shared/NodeCustomSelect';
 import { runStateClassName } from '../nodes/shared/CardView';
 import { providerOption } from '../nodes/shared/providerHealthLabels';
@@ -1065,7 +1065,7 @@ type StorybookCreatorDialogProps = {
   setPromptTextCustomPresets: (updater: (current: Record<string, string>) => Record<string, string>) => void;
   usedImageIds: ReadonlySet<string>;
   imageCaptionChangesById: ReadonlyMap<string, ImageCaptionChange[]>;
-  onUpdateStorybook: (storybook: RpStorybookV1, status?: string) => void;
+  onUpdateStorybook: (storybook: RpStorybook, status?: string) => void;
   onChangeImageCaptionUpdate: (change: ImageCaptionChange, caption: string) => void;
   onUpdateFormattedTextSettings: (settings: RpStorybookFormattedTextSettings) => void;
   onDescribeCharacterImage: (
@@ -1128,12 +1128,12 @@ function storybookImageOwnerKey(owner: StorybookImageOwner) {
   return `character:${owner.characterId}`;
 }
 
-function storybookImageOwnerName(storybook: RpStorybookV1, owner: StorybookImageOwner) {
+function storybookImageOwnerName(storybook: RpStorybook, owner: StorybookImageOwner) {
   const character = storybook.characters.find((entry) => entry.id === owner.characterId);
   return character?.name || character?.id || 'Character';
 }
 
-function storybookImageOwnerContext(storybook: RpStorybookV1, owner: StorybookImageOwner) {
+function storybookImageOwnerContext(storybook: RpStorybook, owner: StorybookImageOwner) {
   const character = storybook.characters.find((entry) => entry.id === owner.characterId);
   if (!character) {
     return `Name: ${storybookImageOwnerName(storybook, owner)}`;
@@ -1147,15 +1147,15 @@ function storybookImageOwnerContext(storybook: RpStorybookV1, owner: StorybookIm
   ].filter(Boolean).join('\n') || `Name: ${storybookImageOwnerName(storybook, owner)}`;
 }
 
-function storybookImageOwnerImages(storybook: RpStorybookV1, owner: StorybookImageOwner) {
+function storybookImageOwnerImages(storybook: RpStorybook, owner: StorybookImageOwner) {
   return storybook.characters.find((character) => character.id === owner.characterId)?.images ?? [];
 }
 
 function withStorybookImageOwnerImages(
-  storybook: RpStorybookV1,
+  storybook: RpStorybook,
   owner: StorybookImageOwner,
   images: RpStorybookCharacterImage[],
-): RpStorybookV1 {
+): RpStorybook {
   return {
     ...storybook,
     characters: storybook.characters.map((character) =>
@@ -1173,10 +1173,10 @@ function withStorybookImageOwnerImages(
 }
 
 function withStorybookCharacterProfileImage(
-  storybook: RpStorybookV1,
+  storybook: RpStorybook,
   owner: StorybookImageOwner,
   profileImage: RpStorybookCharacterProfileImage,
-): RpStorybookV1 {
+): RpStorybook {
   return {
     ...storybook,
     characters: storybook.characters.map((character) =>
@@ -1185,11 +1185,11 @@ function withStorybookCharacterProfileImage(
   };
 }
 
-function storybookImageOwnerProfileImage(storybook: RpStorybookV1, owner: StorybookImageOwner) {
+function storybookImageOwnerProfileImage(storybook: RpStorybook, owner: StorybookImageOwner) {
   return storybook.characters.find((character) => character.id === owner.characterId)?.profileImage;
 }
 
-function storybookCharacterComfyConfig(storybook: RpStorybookV1, characterId: string) {
+function storybookCharacterComfyConfig(storybook: RpStorybook, characterId: string) {
   return storybook.characters.find((character) => character.id === characterId)?.comfyConfig ?? {
     loraName: '',
     loraUrl: '',
@@ -1305,10 +1305,10 @@ function storybookCharacterComfyStatus({
 }
 
 function withStorybookCharacterComfyConfig(
-  storybook: RpStorybookV1,
+  storybook: RpStorybook,
   characterId: string,
   comfyConfig: RpStorybookCharacterComfyConfig,
-): RpStorybookV1 {
+): RpStorybook {
   return {
     ...storybook,
     characters: storybook.characters.map((character) =>
@@ -1320,7 +1320,7 @@ function withStorybookCharacterComfyConfig(
 }
 
 function storybookCharacterVoiceConfig(
-  storybook: RpStorybookV1,
+  storybook: RpStorybook,
   characterId: string,
 ): RpStorybookCharacterVoiceConfig {
   return storybook.characters.find((character) => character.id === characterId)?.voiceConfig ??
@@ -1328,10 +1328,10 @@ function storybookCharacterVoiceConfig(
 }
 
 function withStorybookCharacterVoiceConfig(
-  storybook: RpStorybookV1,
+  storybook: RpStorybook,
   characterId: string,
   voiceConfig: RpStorybookCharacterVoiceConfig,
-): RpStorybookV1 {
+): RpStorybook {
   return {
     ...storybook,
     characters: storybook.characters.map((character) =>
@@ -1343,7 +1343,7 @@ function withStorybookCharacterVoiceConfig(
 }
 
 function storybookCharacterBanking(
-  storybook: RpStorybookV1,
+  storybook: RpStorybook,
   characterId: string,
 ): RpStorybookCharacterBanking {
   return storybook.characters.find((character) => character.id === characterId)?.banking ??
@@ -1351,7 +1351,7 @@ function storybookCharacterBanking(
 }
 
 function storybookCharacterSocial(
-  storybook: RpStorybookV1,
+  storybook: RpStorybook,
   characterId: string,
 ): RpStorybookCharacterSocial {
   return storybook.characters.find((character) => character.id === characterId)?.social ??
@@ -1359,11 +1359,11 @@ function storybookCharacterSocial(
 }
 
 function withStorybookCharacterPhoneAccounts(
-  storybook: RpStorybookV1,
+  storybook: RpStorybook,
   characterId: string,
   banking: RpStorybookCharacterBanking,
   social: RpStorybookCharacterSocial,
-): RpStorybookV1 {
+): RpStorybook {
   return {
     ...storybook,
     characters: storybook.characters.map((character) =>
@@ -1374,7 +1374,7 @@ function withStorybookCharacterPhoneAccounts(
   };
 }
 
-function characterPhoneSummaryText(character: RpStorybookV1Character) {
+function characterPhoneSummaryText(character: RpStorybookCharacter) {
   const banking = character.banking ?? defaultRpStorybookCharacterBanking();
   const parts = [`Bank: $${banking.startBalance}`];
   if (character.social?.fotogramUsername) {
@@ -1425,11 +1425,11 @@ function lastItem<T>(items: T[]) {
   return items.length ? items[items.length - 1] : undefined;
 }
 
-function storybookImages(storybook: RpStorybookV1) {
+function storybookImages(storybook: RpStorybook) {
   return storybook.characters.flatMap((character) => character.images);
 }
 
-function storybookImageOwnerBase(storybook: RpStorybookV1, owner: StorybookImageOwner) {
+function storybookImageOwnerBase(storybook: RpStorybook, owner: StorybookImageOwner) {
   const character = storybook.characters.find((entry) => entry.id === owner.characterId);
   return storybookCharacterImageOwnerIdBase(character?.name ?? '', character?.id ?? owner.characterId);
 }
@@ -1678,12 +1678,12 @@ function CharacterImagesDialog({
   onDescribeCharacterImage,
   onClose,
 }: {
-  storybook: RpStorybookV1;
+  storybook: RpStorybook;
   owner: StorybookImageOwner;
   initialMode: CharacterImagesDialogMode;
   usedImageIds: ReadonlySet<string>;
   imageCaptionChangesById: ReadonlyMap<string, ImageCaptionChange[]>;
-  onUpdateStorybook: (storybook: RpStorybookV1, status?: string) => void;
+  onUpdateStorybook: (storybook: RpStorybook, status?: string) => void;
   onChangeImageCaptionUpdate: (change: ImageCaptionChange, caption: string) => void;
   onDescribeCharacterImage: StorybookCreatorDialogProps['onDescribeCharacterImage'];
   promptTextCustomPresets: Record<string, string>;
@@ -2339,12 +2339,12 @@ function CharacterSetupDialog({
   promptActionSettings,
   onClose,
 }: {
-  storybook: RpStorybookV1;
+  storybook: RpStorybook;
   characterId: string;
   workflowNodes: WorkflowNode[];
   connections: ConnectionPreset[];
   providerHealthById: Record<string, ProviderConnectionHealth>;
-  onUpdateStorybook: (storybook: RpStorybookV1, status?: string) => void;
+  onUpdateStorybook: (storybook: RpStorybook, status?: string) => void;
   onLoadCharacterComfyLoras: StorybookCreatorDialogProps['onLoadCharacterComfyLoras'];
   onGenerateCharacterComfyPreview: StorybookCreatorDialogProps['onGenerateCharacterComfyPreview'];
   onGenerateCharacterVoicePreview: StorybookCreatorDialogProps['onGenerateCharacterVoicePreview'];
@@ -3067,9 +3067,9 @@ export function StorybookCreatorDialog({
   const backdropDismiss = useBackdropDismiss<HTMLDivElement>(onClose);
   const storybook = useMemo(() => {
     try {
-      return node.data.storybookJson ? parseRpStorybookJson(node.data.storybookJson) : emptyRpStorybookV1;
+      return node.data.storybookJson ? parseRpStorybookJson(node.data.storybookJson) : emptyRpStorybook;
     } catch {
-      return emptyRpStorybookV1;
+      return emptyRpStorybook;
     }
   }, [node.data.storybookJson]);
   const estimatedPromptTokens = useMemo(

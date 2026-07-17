@@ -1,5 +1,5 @@
 import type { Edge } from '@xyflow/react';
-import type { RpStorybookV1 } from '../nodes/rp-storybook-v1/model';
+import type { RpStorybook } from '../nodes/rp-storybook/model';
 import type {
   BankTransferRecord,
   SocialDirectMessageRecord,
@@ -151,7 +151,7 @@ export type TimelineEntry =
 
 type StorybookEntity = {
   sourceNodeId: string;
-  value: RpStorybookV1;
+  value: RpStorybook;
   fileName?: string;
   filePath?: string;
 };

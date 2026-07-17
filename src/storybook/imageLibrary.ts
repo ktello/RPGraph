@@ -4,11 +4,11 @@ import {
   nextStorybookCharacterImageId,
   storybookCharacterImageOwnerIdBase,
   type RpStorybookCharacterImage,
-  type RpStorybookV1,
-} from '../nodes/rp-storybook-v1/model';
+  type RpStorybook,
+} from '../nodes/rp-storybook/model';
 
 export type StorybookImageLibraryEnsureResult = {
-  storybook: RpStorybookV1;
+  storybook: RpStorybook;
   addedCount: number;
   updatedCount: number;
   imageIds: string[];
@@ -21,7 +21,7 @@ export type StorybookImageLibraryEnsureOptions = {
 };
 
 export function storybookImageSourceById(
-  storybooks: Iterable<RpStorybookV1>,
+  storybooks: Iterable<RpStorybook>,
   imageId: string,
 ) {
   const normalizedImageId = imageId.trim();
@@ -44,12 +44,12 @@ export function storybookImageSourceById(
   return fallback;
 }
 
-export function storybookImageById(storybooks: Iterable<RpStorybookV1>, imageId: string) {
+export function storybookImageById(storybooks: Iterable<RpStorybook>, imageId: string) {
   return storybookImageSourceById(storybooks, imageId)?.image;
 }
 
 export function storybookImageForAttachment(
-  storybook: RpStorybookV1 | undefined,
+  storybook: RpStorybook | undefined,
   characterSourceId: string | undefined,
   attachment: ChatImageAttachment | undefined,
 ) {
@@ -63,7 +63,7 @@ export function storybookImageForAttachment(
     );
 }
 
-export function storybookImageDescriptions(storybooks: Iterable<RpStorybookV1>) {
+export function storybookImageDescriptions(storybooks: Iterable<RpStorybook>) {
   const descriptions = new Map<string, { description: string; external: boolean }>();
   for (const storybook of storybooks) {
     storybook.characters.forEach((character) => {
@@ -82,7 +82,7 @@ export function storybookImageDescriptions(storybooks: Iterable<RpStorybookV1>) 
 }
 
 export function withStorybookImageDescriptionUpdated(
-  storybook: RpStorybookV1,
+  storybook: RpStorybook,
   imageId: string,
   dataUrl: string,
   description: string,
@@ -113,8 +113,8 @@ export function withStorybookImageDescriptionUpdated(
 }
 
 export function withChangedStorybookImageDescriptionsSynchronized(
-  currentStorybook: RpStorybookV1,
-  nextStorybook: RpStorybookV1,
+  currentStorybook: RpStorybook,
+  nextStorybook: RpStorybook,
 ) {
   const currentImages = new Map(
     currentStorybook.characters.flatMap((character) =>
@@ -140,7 +140,7 @@ export function withChangedStorybookImageDescriptionsSynchronized(
 }
 
 export function withStorybookExternalImagesPruned(
-  storybook: RpStorybookV1,
+  storybook: RpStorybook,
   messages: readonly MessageRecord[],
 ) {
   const usedImageIds = new Set<string>();
@@ -247,7 +247,7 @@ function receivedImageIdentity(
 }
 
 export function withImagesEnsuredForStorybookCharacter(
-  storybook: RpStorybookV1,
+  storybook: RpStorybook,
   characterSourceId: string,
   images: ChatImageAttachment[],
   description: string,

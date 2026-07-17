@@ -10,7 +10,7 @@ import { customNodeDefinition } from '../nodes/custom-node/model';
 import {
   parseRpStorybookJson,
   rpStorybookJsonText,
-} from '../nodes/rp-storybook-v1/model';
+} from '../nodes/rp-storybook/model';
 import {
   defaultComfyCheckpointName,
   defaultComfyDiffusionModelName,
@@ -488,7 +488,7 @@ export async function executeGraph({
     );
 
     const storybookNodeCandidate = nodeById.get(phoneOwner.storybookNodeId);
-    const storybookNode = storybookNodeCandidate?.data.nodeType === 'rp-storybook-v1'
+    const storybookNode = storybookNodeCandidate?.data.nodeType === 'rp-storybook'
       ? storybookNodeCandidate
       : undefined;
     const storybookJson = storybookNode
