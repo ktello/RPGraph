@@ -54,7 +54,7 @@ export default tseslint.config(
     },
   },
   {
-    files: ['e2e/**/*.ts'],
+    files: ['test/e2e/**/*.ts'],
     extends: [js.configs.recommended, ...tseslint.configs.recommended],
     languageOptions: {
       ecmaVersion: 2022,

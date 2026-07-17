@@ -3,9 +3,9 @@ import fs from 'node:fs';
 import fsp from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
-import { currentCoreNodeVersions } from '../src/nodes/nodeVersion';
+import { currentCoreNodeVersions } from '../../src/nodes/nodeVersion';
 
-const repoRoot = path.resolve(__dirname, '..');
+const repoRoot = path.resolve(__dirname, '..', '..');
 
 export type WorkflowFixture = {
   format: 'rpgraph-workflow';
@@ -161,6 +161,71 @@ export function outdatedLlmWorkflow(): WorkflowFixture {
       },
     },
   ]);
+}
+
+function overrideEdge(id: string, source: string, targetHandle: string): Record<string, unknown> {
+  return { id, source, sourceHandle: null, target: 'llm-under-test', targetHandle };
+}
+
+/**
+ * A live `llm-prompt` node with authored before/after text, optionally pre-connected to a
+ * single text source (`last-rp-output`) on its `prompt-before` and/or `prompt-after`
+ * override handles. A connected handle should mark that field overridden in the card while
+ * leaving the authored text untouched; edge validation is shape-only, so a seeded override
+ * edge loads and drives the badge without needing a live provider.
+ */
+export function llmPromptOverrideWorkflow(
+  options: { before?: boolean; after?: boolean } = {},
+): WorkflowFixture {
+  const nodes: Array<Record<string, unknown>> = [
+    {
+      id: 'llm-under-test',
+      type: 'workflow',
+      position: { x: 420, y: 40 },
+      data: {
+        nodeType: 'llm-prompt',
+        nodeDataVersion: currentCoreNodeVersions['llm-prompt'],
+        label: 'LLM Prompt',
+        description: 'LLM provider call',
+        preview: 'Not run yet',
+        llmPromptBefore: 'AUTHORED BEFORE TEXT',
+        llmPromptAfter: 'AUTHORED AFTER TEXT',
+        llmPromptAutoFormatJson: false,
+        llmPromptActions: [],
+        llmPromptCommands: [],
+        runAfterRpOutput: false,
+      },
+    },
+  ];
+  const edges: Array<Record<string, unknown>> = [];
+  if (options.before || options.after) {
+    nodes.push({
+      id: 'override-source',
+      type: 'workflow',
+      position: { x: 40, y: 40 },
+      data: {
+        nodeType: 'last-rp-output',
+        nodeDataVersion: currentCoreNodeVersions['last-rp-output'],
+        label: 'Last RP Output',
+        description: 'Latest RP output',
+        preview: 'Not run yet',
+      },
+    });
+    if (options.before) {
+      edges.push(overrideEdge('edge-before', 'override-source', 'prompt-before'));
+    }
+    if (options.after) {
+      edges.push(overrideEdge('edge-after', 'override-source', 'prompt-after'));
+    }
+  }
+  return {
+    format: 'rpgraph-workflow',
+    formatVersion: '1.2',
+    savedAt: '2026-07-16T00:00:00.000Z',
+    viewport: { x: 0, y: 0, zoom: 1 },
+    nodes,
+    edges,
+  };
 }
 
 /**

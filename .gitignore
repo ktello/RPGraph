@@ -8,7 +8,7 @@ release/
 out/
 
 # Playwright e2e output
-test-results/
+test/results/
 playwright-report/
 .playwright/
 

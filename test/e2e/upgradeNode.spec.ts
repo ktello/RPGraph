@@ -1,5 +1,5 @@
 import { test, expect, type Locator, type Page } from '@playwright/test';
-import { currentCoreNodeVersions } from '../src/nodes/nodeVersion';
+import { currentCoreNodeVersions } from '../../src/nodes/nodeVersion';
 import {
   launchAppWithWorkflow,
   cleanup,
@@ -8,7 +8,7 @@ import {
   type LaunchedApp,
 } from './helpers';
 
-const LLM_CURRENT = currentCoreNodeVersions['llm-prompt']; // '1.2.0'
+const LLM_CURRENT = currentCoreNodeVersions['llm-prompt']; // '1.2.1'
 
 let app: LaunchedApp | undefined;
 
