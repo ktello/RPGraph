@@ -66,6 +66,9 @@ export type CreateNodeContext = {
 export type HydrateContext = {
   defaultConnectionId: string;
   connectionIds: Set<string>;
+  // Core node types the user has disabled; instances hydrate as inert
+  // disabled-core-node placeholders. Read only at load time (reload-required).
+  disabledNodeTypes: Set<string>;
 };
 
 export type ExecuteTraceNodeInfo = {
@@ -156,6 +159,9 @@ export type NodeDefinition<
   requiresPostOutputPermission?: boolean;
   passiveRuntime?: boolean;
   requiresPreparedInputEdge?: boolean;
+  // Whether the Node Manager may disable this type (default true). Load-bearing
+  // types (input, output) set false so they can never be disabled.
+  disableable?: boolean;
   layout: NodeLayout;
   // Legacy/manual style override consulted by the layout normalizer before
   // clamping (text-preview's legacy-dimension migration, memory-slot's
@@ -199,6 +205,9 @@ export type NodeCreationDefinition = {
   requiresPostOutputPermission?: boolean;
   passiveRuntime?: boolean;
   requiresPreparedInputEdge?: boolean;
+  // Whether the Node Manager may disable this type (default true). Load-bearing
+  // types (input, output) set false so they can never be disabled.
+  disableable?: boolean;
   layout: NodeLayout;
   // Legacy/manual style override consulted by the layout normalizer before
   // clamping. Most nodes must not define this.

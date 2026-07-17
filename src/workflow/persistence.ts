@@ -6,7 +6,7 @@ import type { HydrateContext } from '../nodes/types';
 import type { WorkflowNode, WorkflowNodeData } from '../types';
 
 export function persistentNodeData(data: WorkflowNodeData): WorkflowNodeData {
-  if (data.kind === 'incompatible-core-node') {
+  if (data.kind === 'incompatible-core-node' || data.kind === 'disabled-core-node') {
     return structuredClone(data.storedData) as WorkflowNodeData;
   }
   if (data.kind === 'missing-plugin-node' && data.storedData) {
@@ -61,6 +61,23 @@ export function hydrateNodeData(
       preview: data.preview,
       kind: 'incompatible-core-node',
       storedData: structuredClone(data as Record<string, unknown>),
+    } as WorkflowNodeData;
+  }
+  if (context.disabledNodeTypes.has(data.nodeType)) {
+    // Degrade a disabled type to an inert placeholder that preserves the
+    // original data (for restore on re-enable) and its ports (so its edges
+    // stay attached). Ports are computed from the hydrated data because some
+    // node types derive ports from their data.
+    const hydrated = definition.hydrateData(data as WorkflowNodeData, context);
+    return {
+      nodeType: data.nodeType,
+      nodeDataVersion: data.nodeDataVersion,
+      label: data.label,
+      description: data.description,
+      preview: data.preview,
+      kind: 'disabled-core-node',
+      storedData: structuredClone(data as Record<string, unknown>),
+      portsSnapshot: definition.ports(hydrated),
     } as WorkflowNodeData;
   }
   return definition.hydrateData(data as WorkflowNodeData, context);

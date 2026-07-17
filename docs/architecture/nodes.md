@@ -58,7 +58,7 @@ Type: `WorkflowNodeData` (`src/types.ts`). Discriminated union.
 
 Discriminants:
 - `nodeType` — string literal.
-- `kind` — `undefined` for core nodes; `'missing-plugin-node'` or `'incompatible-core-node'` for placeholders.
+- `kind` — `undefined` for core nodes; `'missing-plugin-node'`, `'incompatible-core-node'`, or `'disabled-core-node'` for placeholders.
 
 Base: `WorkflowNodeCommonFields` — one flat interface.
 - Required: `label`, `description`, `preview`.
@@ -75,10 +75,11 @@ CoreWorkflowNodeCommonFields = WorkflowNodeCommonFields & { kind?: undefined; st
 Placeholder variants:
 - `MissingNodeWorkflowData` — `kind: 'missing-plugin-node'`, `storedData`, `portsSnapshot`.
 - `IncompatibleCoreNodeWorkflowData` — `kind: 'incompatible-core-node'`, `nodeDataVersion`, `currentNodeVersion`, `storedData`.
+- `DisabledCoreNodeWorkflowData` — `kind: 'disabled-core-node'`, `nodeDataVersion`, `storedData`, `portsSnapshot`.
 
 Full union:
 ```
-WorkflowNodeData = ConcreteCoreWorkflowNodeData | MissingNodeWorkflowData | IncompatibleCoreNodeWorkflowData
+WorkflowNodeData = ConcreteCoreWorkflowNodeData | MissingNodeWorkflowData | IncompatibleCoreNodeWorkflowData | DisabledCoreNodeWorkflowData
 ```
 
 Parallel typing: `src/nodes/types.ts` defines generic `SharedNodeData<TType>`, `StoredNodeData<TType, TConfig>`, `NodeDefinition<TType, TConfig, TData>`. The runtime React Flow store holds the flat `WorkflowNodeData` (`src/types.ts`), not the generic form.
@@ -102,7 +103,8 @@ Single React Flow node type: `nodeTypes = { workflow: WorkflowNodeRenderer }` (`
 
 Dispatch — `WorkflowNodeRenderer` (`src/nodes/WorkflowNodeRenderer.tsx`):
 1. `kind: 'incompatible-core-node'` → `IncompatibleCoreNodeCard`.
-2. `kind: 'missing-plugin-node'` or unregistered type → `MissingNodeCard`.
+2. `kind: 'disabled-core-node'` → `DisabledCoreNodeCard`.
+3. `kind: 'missing-plugin-node'` or unregistered type → `MissingNodeCard`.
 3. Otherwise → `definition.Component`.
 
 Shared card behavior (composition): `useNodeLayoutSync`, `runStateClassName`, `LlmCallMetrics` (`src/nodes/shared/CardView.tsx`); contexts `useNodeActions`, `useNodeView`.
@@ -144,6 +146,13 @@ Containment: port handles intentionally overhang the card edge (−15/−16/−2
 - `dataVersion`: `MAJOR.MINOR.PATCH`. Current values: `currentCoreNodeVersions` (`src/nodes/nodeVersion.ts`).
 - Compatibility — `areNodeVersionsCompatible` (`src/nodes/nodeVersion.ts`): MAJOR and MINOR must match; PATCH ignored.
 - Incompatible stored version → `kind: 'incompatible-core-node'`; `storedData` preserved for upgrade.
+
+## Node Manager (enable/disable)
+
+- Users disable node types via the Node Manager dialog; the set persists app-wide in `settings.options.disabledNodeTypes` (never in a workflow).
+- Disabled types are hidden from the add-node palette (`useNodePalette` filters by the set).
+- On load, an instance of a disabled type hydrates as a `disabled-core-node` placeholder: original data kept in `storedData`, ports synthesized via `definition.ports(hydrated)` into `portsSnapshot` (edges preserved — not deleted like incompatible nodes), execution refused. `persistentNodeData` unwraps it back to the original data, so saves round-trip and re-enabling + reload restores the node. Reload-required: the disabled set is read only at load (`HydrateContext.disabledNodeTypes`).
+- `disableable: false` on a definition (e.g. `input`, `output`) locks the type on.
 - Core type ids: `coreNodeTypes` tuple (`src/nodes/coreNodeTypes.ts`).
 
 ## Registration points (per new core node type)

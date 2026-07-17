@@ -540,10 +540,19 @@ type IncompatibleCoreNodeWorkflowData = WorkflowNodeCommonFields & {
   storedData: Record<string, unknown>;
 };
 
+type DisabledCoreNodeWorkflowData = WorkflowNodeCommonFields & {
+  nodeType: WorkflowNodeType;
+  nodeDataVersion: NodeVersion;
+  kind: 'disabled-core-node';
+  storedData: Record<string, unknown>;
+  portsSnapshot: PortSnapshot[];
+};
+
 export type WorkflowNodeData =
   | ConcreteCoreWorkflowNodeData
   | MissingNodeWorkflowData
-  | IncompatibleCoreNodeWorkflowData;
+  | IncompatibleCoreNodeWorkflowData
+  | DisabledCoreNodeWorkflowData;
 
 export type WorkflowNode = Node<WorkflowNodeData>;
 
@@ -936,6 +945,7 @@ export type AppSettings = {
     chatGpdSidebarWidth?: number;
     chatGpdModel?: string;
     phoneNotificationSwitchHintSeen?: boolean;
+    disabledNodeTypes?: string[];
   };
   layout?: {
     chatPanelWidth: number;

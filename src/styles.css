@@ -2271,6 +2271,117 @@ input[type="radio"]:focus-visible {
   gap: 10px;
 }
 
+.workflow-node.disabled-core-node {
+  --node-status-color: #7d8798;
+  min-width: 285px;
+  border-color: rgba(125, 135, 152, 0.5);
+  background: #1b2130;
+}
+
+.disabled-core-node-note {
+  color: #aeb8cc;
+  font-size: var(--node-body-text-size);
+  font-weight: 700;
+  margin: 16px 0 10px;
+}
+
+.disabled-core-node-ports {
+  display: grid;
+  gap: 10px;
+}
+
+.disabled-core-node-hint {
+  color: #8b95a9;
+  font-size: var(--node-secondary-text-size);
+  line-height: 1.45;
+  margin: 10px 0 0;
+}
+
+.node-manager-dialog {
+  display: flex;
+  flex-direction: column;
+  width: min(560px, 92vw);
+  max-height: 82vh;
+  padding: 20px 22px 22px;
+  border: 1px solid #343e53;
+  border-radius: 14px;
+  background: #1a2233;
+  color: #eff2ff;
+  box-shadow: 0 26px 60px rgba(0, 0, 0, 0.5);
+}
+
+.node-manager-close {
+  margin-left: auto;
+  border: none;
+  background: none;
+  color: #9aa6bc;
+  font-size: 22px;
+  line-height: 1;
+  cursor: pointer;
+}
+
+.node-manager-close:hover {
+  color: #eff2ff;
+}
+
+.node-manager-note {
+  margin: 6px 0 14px;
+  color: #9aa6bc;
+  font-size: 13px;
+  line-height: 1.5;
+}
+
+.node-manager-groups {
+  overflow-y: auto;
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
+}
+
+.node-manager-group h3 {
+  margin: 0 0 8px;
+  color: #8794b1;
+  font-size: 12px;
+  font-weight: 700;
+  letter-spacing: 0.1em;
+  text-transform: uppercase;
+}
+
+.node-manager-row {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 6px 8px;
+  border-radius: 8px;
+  cursor: pointer;
+}
+
+.node-manager-row:hover {
+  background: #212a3b;
+}
+
+.node-manager-row input[disabled] {
+  cursor: default;
+}
+
+.node-manager-label {
+  font-weight: 600;
+}
+
+.node-manager-type {
+  color: #6f7c96;
+  font-family: var(--rpgraph-mono-font, monospace);
+  font-size: 12px;
+}
+
+.node-manager-locked {
+  margin-left: auto;
+  color: #7d8798;
+  font-size: 11px;
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+}
+
 .llm-prompt-resize-control {
   border-bottom: 3px solid transparent !important;
   cursor: ns-resize;

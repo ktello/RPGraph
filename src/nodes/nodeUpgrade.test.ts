@@ -17,6 +17,7 @@ const createContext: CreateNodeContext = {
 const hydrateContext: HydrateContext = {
   defaultConnectionId: 'default',
   connectionIds: new Set(['default']),
+  disabledNodeTypes: new Set<string>(),
 };
 
 function incompatibleNode(
@@ -103,7 +104,7 @@ describe('buildUpgradedNode', () => {
     const node = incompatibleNode('llm-prompt', { connectionId: 'gone' });
     const result = buildUpgradedNode(node, {
       createContext,
-      hydrateContext: { defaultConnectionId: 'default', connectionIds: new Set(['real']) },
+      hydrateContext: { defaultConnectionId: 'default', connectionIds: new Set(['real']), disabledNodeTypes: new Set<string>() },
     });
 
     expect(result!.data.connectionId).toBe('default');

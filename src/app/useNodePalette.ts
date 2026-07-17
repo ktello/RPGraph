@@ -46,6 +46,7 @@ type UseNodePaletteOptions = {
   rpDateTimeFormat: RpDateTimeFormat;
   rpWeekdayLanguage: RpWeekdayLanguage;
   settingsValueDefinitions: SettingsValueDefinition[];
+  disabledNodeTypes: string[];
   createId: () => string;
   notifySystem: (level: 'info' | 'warning' | 'error', text: string) => void;
 };
@@ -93,6 +94,7 @@ export function useNodePalette({
   rpDateTimeFormat,
   rpWeekdayLanguage,
   settingsValueDefinitions,
+  disabledNodeTypes,
   createId,
   notifySystem,
 }: UseNodePaletteOptions) {
@@ -100,7 +102,21 @@ export function useNodePalette({
   const [favoriteNodeTypes, setFavoriteNodeTypes] = useState<AddNodeType[]>(loadFavoriteNodeTypes);
   const reconnectSuccessful = useRef(true);
   const favoriteNodeTypeSet = useMemo(() => new Set(favoriteNodeTypes), [favoriteNodeTypes]);
-  const favoriteNodeItems = addableNodeItems.filter((item) => favoriteNodeTypeSet.has(item.type));
+  // Disabled types are hidden from the add-node palette (registry-derived).
+  const disabledNodeTypeSet = useMemo(() => new Set(disabledNodeTypes), [disabledNodeTypes]);
+  const enabledGroupedPaletteItems = useMemo(
+    () =>
+      groupedNodePaletteItems
+        .map((group) => ({
+          ...group,
+          items: group.items.filter((item) => !disabledNodeTypeSet.has(item.type)),
+        }))
+        .filter((group) => group.items.length > 0),
+    [disabledNodeTypeSet],
+  );
+  const favoriteNodeItems = addableNodeItems.filter(
+    (item) => favoriteNodeTypeSet.has(item.type) && !disabledNodeTypeSet.has(item.type),
+  );
 
   useEffect(() => {
     window.localStorage.setItem(favoriteNodeTypesStorageKey, JSON.stringify(favoriteNodeTypes));
@@ -330,7 +346,7 @@ export function useNodePalette({
   }
 
   return {
-    groupedNodePaletteItems,
+    groupedNodePaletteItems: enabledGroupedPaletteItems,
     nodeMenu,
     setNodeMenu,
     favoriteNodeTypeSet,

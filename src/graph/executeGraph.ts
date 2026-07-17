@@ -576,6 +576,9 @@ export async function executeGraph({
           if (node.data.kind === 'incompatible-core-node') {
             throw new Error(`Cannot execute incompatible core node: ${node.data.nodeType}.`);
           }
+          if (node.data.kind === 'disabled-core-node') {
+            throw new Error(`Cannot execute disabled node: ${node.data.nodeType}.`);
+          }
           const definition = getRegisteredNode(node.data.nodeType);
           if (!definition) {
             throw new Error(`Cannot execute unknown node type: ${node.data.nodeType}.`);

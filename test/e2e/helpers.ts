@@ -44,7 +44,10 @@ function bundledDefaultBasename(): string {
  * so there is no race) with `workflow` as the startup workflow. Dismisses the welcome
  * dialog. The caller must `cleanup()` in afterEach.
  */
-export async function launchAppWithWorkflow(workflow: WorkflowFixture): Promise<LaunchedApp> {
+export async function launchAppWithWorkflow(
+  workflow: WorkflowFixture,
+  options: { settings?: unknown } = {},
+): Promise<LaunchedApp> {
   const distIndex = path.join(repoRoot, 'dist', 'index.html');
   if (!fs.existsSync(distIndex)) {
     throw new Error('dist/index.html is missing — run "npm run build" before the e2e suite.');
@@ -52,6 +55,14 @@ export async function launchAppWithWorkflow(workflow: WorkflowFixture): Promise<
 
   const profile = await fsp.mkdtemp(path.join(os.tmpdir(), 'rpgraph-e2e-'));
   await fsp.mkdir(path.join(profile, 'files'), { recursive: true });
+  if (options.settings !== undefined) {
+    // The app reads settings.json from the userData dir (== the profile).
+    await fsp.writeFile(
+      path.join(profile, 'settings.json'),
+      JSON.stringify(options.settings, null, 2),
+      'utf8',
+    );
+  }
   await fsp.writeFile(
     path.join(profile, 'files', 'fixture.json'),
     JSON.stringify(workflow, null, 2),

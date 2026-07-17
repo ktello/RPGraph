@@ -22,6 +22,7 @@ export const definition: CoreNodeFolderDefinition = {
   paletteOrder: 4,
   origin: 'core',
   singleton: true,
+  disableable: false,
   usesLlm: true,
   ports: () => [
     input('default', 'text', 'Normal RP'),

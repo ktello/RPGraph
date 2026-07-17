@@ -208,6 +208,7 @@ import {
   useNodesState,
 } from '@xyflow/react';
 import { StudioDialogs } from './dialogs/StudioDialogs';
+import { NodeManagerDialog } from './dialogs/NodeManagerDialog';
 import { ComfyGeneratedImageDialog } from './comfy/ComfyGeneratedImageDialog';
 import { isComfyImageConnection, isComfyVoiceConnection } from './comfy/connectionRole';
 import { useDialogueVoice } from './chat/useDialogueVoice';
@@ -833,6 +834,8 @@ function App() {
     setPromptActionSettings,
     promptTextCustomPresets,
     setPromptTextCustomPresets,
+    disabledNodeTypes,
+    setDisabledNodeTypes,
     chatTextSize,
     setChatTextSize,
     phoneChatTextSize,
@@ -1083,6 +1086,7 @@ function App() {
   });
   const [characterDropdownOpen, setCharacterDropdownOpen] = useState(false);
   const [showOptions, setShowOptions] = useState(false);
+  const [showNodeManager, setShowNodeManager] = useState(false);
   const [textDialogNodeId, setTextDialogNodeId] = useState<string | null>(null);
   const [textDialogView, setTextDialogView] =
     useState<
@@ -1829,6 +1833,7 @@ function App() {
     rpDateTimeFormat,
     rpWeekdayLanguage,
     settingsValueDefinitions,
+    disabledNodeTypes,
     createId: uniqueId,
     notifySystem,
   });
@@ -3090,6 +3095,7 @@ function App() {
       workflow,
       defaultConnectionId: firstLlmConnection().id,
       connectionIds: new Set(connections.filter(isLlmConnection).map((connection) => connection.id)),
+      disabledNodeTypes: new Set(disabledNodeTypes),
       hydrateOpeningHistory,
     });
   }
@@ -3658,6 +3664,9 @@ function App() {
       hydrateContext: {
         defaultConnectionId,
         connectionIds: new Set(connections.map((connection) => connection.id)),
+        // An explicit upgrade always yields a working node, even if the type is
+        // currently disabled.
+        disabledNodeTypes: new Set<string>(),
       },
     });
     if (!upgraded) {
@@ -6296,6 +6305,14 @@ function App() {
             <button
               className="connection-button"
               type="button"
+              onClick={() => setShowNodeManager(true)}
+              title="Enable or disable node types"
+            >
+              Nodes
+            </button>
+            <button
+              className="connection-button"
+              type="button"
               onClick={() => {
                 setNodeAssistantNodeId(null);
                 setWorkflowAssistantOpen(true);
@@ -7341,6 +7358,13 @@ function App() {
         />
       )}
 
+      {showNodeManager ? (
+        <NodeManagerDialog
+          disabledNodeTypes={disabledNodeTypes}
+          setDisabledNodeTypes={setDisabledNodeTypes}
+          onClose={() => setShowNodeManager(false)}
+        />
+      ) : null}
       <StudioDialogs
         textDialogNode={textDialogNode}
         nodes={nodeViewNodes}

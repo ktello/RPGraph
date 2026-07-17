@@ -4300,6 +4300,7 @@ export function verifyWorkflowValidationFixtures() {
     ? hydrateNodeData(persistedStorybook.data, {
         defaultConnectionId: 'active-default',
         connectionIds: new Set(['active-default']),
+        disabledNodeTypes: new Set<string>(),
       })
     : undefined;
   assertFixture(
@@ -4312,6 +4313,7 @@ export function verifyWorkflowValidationFixtures() {
     ? hydrateNodeData(persistedPrompt.data, {
         defaultConnectionId: 'active-default',
         connectionIds: new Set(['active-default']),
+        disabledNodeTypes: new Set<string>(),
       })
     : undefined;
   assertFixture(
@@ -4333,6 +4335,7 @@ export function verifyWorkflowValidationFixtures() {
   const hydratedTextReplace = hydrateNodeData(persistedTextReplace, {
     defaultConnectionId: 'active-default',
     connectionIds: new Set(['active-default']),
+    disabledNodeTypes: new Set<string>(),
   });
   assertFixture(
     JSON.stringify(hydratedTextReplace.textReplaceEntries) ===
@@ -4414,6 +4417,7 @@ export function verifyWorkflowValidationFixtures() {
   const hydratedMissing = hydrateNodeData(missingPluginData, {
     defaultConnectionId: 'active-default',
     connectionIds: new Set(['active-default']),
+    disabledNodeTypes: new Set<string>(),
   });
   assertFixture(
     hydratedMissing.kind === 'missing-plugin-node',
@@ -4433,6 +4437,7 @@ export function verifyWorkflowValidationFixtures() {
   const versionHydrateContext = {
     defaultConnectionId: 'active-default',
     connectionIds: new Set(['active-default']),
+    disabledNodeTypes: new Set<string>(),
   };
   const inputData = currentWorkflow.nodes.find((node) => node.data.nodeType === 'input')?.data;
   if (!inputData) {

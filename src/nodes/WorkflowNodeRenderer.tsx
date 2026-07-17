@@ -1,6 +1,7 @@
 import { memo, type CSSProperties } from 'react';
 import type { NodeProps } from '@xyflow/react';
 import type { WorkflowNode } from '../types';
+import { DisabledCoreNodeCard } from './DisabledCoreNodeCard';
 import { IncompatibleCoreNodeCard } from './IncompatibleCoreNodeCard';
 import { getRegisteredNode } from './registry';
 import { MissingNodeCard } from './MissingNodeCard';
@@ -25,6 +26,8 @@ function WorkflowNodeRendererComponent(props: NodeProps<WorkflowNode>) {
   let card;
   if (props.data.kind === 'incompatible-core-node') {
     card = <IncompatibleCoreNodeCard {...props} />;
+  } else if (props.data.kind === 'disabled-core-node') {
+    card = <DisabledCoreNodeCard {...props} />;
   } else if (props.data.kind === 'missing-plugin-node' || !definition) {
     card = <MissingNodeCard {...props} />;
   } else {

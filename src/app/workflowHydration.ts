@@ -44,11 +44,13 @@ export function hydrateLoadedWorkflow({
   workflow,
   defaultConnectionId,
   connectionIds,
+  disabledNodeTypes = new Set<string>(),
   hydrateOpeningHistory = true,
 }: {
   workflow: unknown;
   defaultConnectionId: string;
   connectionIds: Set<string>;
+  disabledNodeTypes?: Set<string>;
   hydrateOpeningHistory?: boolean;
 }): HydratedWorkflow {
   const migratedWorkflow = migrateStoredWorkflow(workflow);
@@ -59,6 +61,7 @@ export function hydrateLoadedWorkflow({
   const hydrateContext = {
     defaultConnectionId,
     connectionIds,
+    disabledNodeTypes,
   };
   let loadedNodes: WorkflowNode[] = migratedWorkflow.nodes.map((node): WorkflowNode => {
     const data = hydrateNodeData(node.data, hydrateContext);
