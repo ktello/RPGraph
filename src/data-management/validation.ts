@@ -43,6 +43,12 @@ function isTimelineEntry(value: unknown): value is TimelineEntry {
       Array.isArray(value.images) &&
       value.images.every((image) => isRecord(image) && typeof image.imageId === 'string')
     );
+    const validEmbeddedMessageIds = [
+      value.embeddedPhoneMessageIds,
+      value.embeddedSocialMessageIds,
+    ].every((ids) => ids === undefined || (
+      Array.isArray(ids) && ids.every((id) => typeof id === 'string')
+    ));
     const validEmbeddedPhoneText = value.embeddedPhoneText === undefined || (
       isRecord(value.embeddedPhoneText) &&
       (
@@ -262,6 +268,7 @@ function isTimelineEntry(value: unknown): value is TimelineEntry {
         (value.channel === 'phone' && typeof value.replyToMessageId === 'string')
       ) &&
       validImages &&
+      validEmbeddedMessageIds &&
       validVoiceClips &&
       validEmbeddedPhoneText &&
       validPhone &&
@@ -305,6 +312,30 @@ function isNestedNonNegativeNumberRecord(value: unknown) {
         (amount) => typeof amount === 'number' && Number.isFinite(amount) && amount >= 0,
       )
     )
+  );
+}
+
+function isSocialConnectionsRecord(value: unknown) {
+  return isRecord(value) && Object.values(value).every((apps) =>
+    isRecord(apps) &&
+    (apps.fotogram === undefined || (
+      Array.isArray(apps.fotogram) && apps.fotogram.every((entry) => typeof entry === 'string')
+    )) &&
+    (apps.onlyfriends === undefined || (
+      Array.isArray(apps.onlyfriends) && apps.onlyfriends.every((entry) => typeof entry === 'string')
+    ))
+  );
+}
+
+function isDynamicSocialUsersRecord(value: unknown) {
+  return isRecord(value) && Object.entries(value).every(([id, user]) =>
+    isRecord(user) &&
+    user.id === id &&
+    typeof user.name === 'string' &&
+    user.source === 'dynamic' &&
+    isRecord(user.handles) &&
+    (user.handles.fotogram === undefined || typeof user.handles.fotogram === 'string') &&
+    (user.handles.onlyfriends === undefined || typeof user.handles.onlyfriends === 'string')
   );
 }
 
@@ -469,6 +500,8 @@ export function isRpgraphSessionV2(value: unknown): value is RpgraphSessionV2 {
     (value.ui.phoneAppSeenByCharacter === undefined || isNumberRecord(value.ui.phoneAppSeenByCharacter)) &&
     isStringArrayRecord(value.ui.bankingContactsByCharacter) &&
     isStringArrayRecord(value.ui.socialLikesByAccount) &&
+    isDynamicSocialUsersRecord(value.ui.dynamicSocialUsers) &&
+    isSocialConnectionsRecord(value.ui.socialConnectionsByCharacter) &&
     isNestedNonNegativeNumberRecord(value.ui.onlyFriendsPurchasesByCharacter) &&
     isNumberRecord(value.ui.phoneDividerAfterByConversation) &&
     (

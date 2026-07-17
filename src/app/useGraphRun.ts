@@ -8,6 +8,7 @@ import type {
   ChatImageAttachment,
   ConnectionPreset,
   EmbeddedPhoneMessageLink,
+  EmbeddedSocialMessageLink,
   ImageCaptionChange,
   MessageRecord,
   SocialDirectMessageRecord,
@@ -65,6 +66,7 @@ import {
   type WorkflowVariableSetCommand,
 } from '../workflow';
 import { formatPhoneInput, formatPhoneReplyInput } from '../chat/phoneReplies';
+import { nextRpPictureName, rpPicturePhoneAttachment } from '../chat/rpPictures';
 import { nodesPreparedAfterOutput } from '../graph/edges';
 import {
   parseOutputActions,
@@ -96,6 +98,15 @@ import {
   socialThreadHistoryText,
   type SocialThreadRunContext,
 } from '../chat/socialMedia';
+import {
+  establishedSocialHandle,
+} from '../chat/socialDirectory';
+import {
+  isBundledSocialHandle,
+  socialHandleFromCatalogIdentity,
+  withBundledSocialIdentityContext,
+} from '../chat/socialCatalogs';
+import { resolveSocialMessageIdentity } from '../chat/socialMessageValidation';
 import { recentInputHistoryContext } from '../chat/inputTransforms';
 import {
   chatGpdFallbackTitle,
@@ -110,6 +121,7 @@ import {
 } from '../chat/phoneAppsSessions';
 import { withSpeakerPrefix } from '../chat/instructions';
 import {
+  autoplayStreamPreviewText,
   autoplayMessageFormat,
   socialMediaMessageFormat,
   stripAutoplayPlanBlocks,
@@ -312,21 +324,6 @@ type UseGraphRunOptions = Pick<
   setRunLlmReport: (report: RunLlmReport | null) => void;
   activeRunCancelReason: Ref<CancelReason>;
 };
-
-const rpPictureNamePattern = /^RP Picture (\d+)$/;
-
-function formatRpPictureName(index: number) {
-  return `RP Picture ${String(Math.max(1, index)).padStart(2, '0')}`;
-}
-
-function nextRpPictureName(messages: readonly MessageRecord[]) {
-  const existingNumbers = messages
-    .map((message) => message.rpImageName?.trim().match(rpPictureNamePattern)?.[1])
-    .filter((value): value is string => !!value)
-    .map((value) => Number(value))
-    .filter((value) => Number.isFinite(value));
-  return formatRpPictureName((existingNumbers.length ? Math.max(...existingNumbers) : 0) + 1);
-}
 
 function storybookImageAttachmentById(
   storybooksByNodeId: Map<string, RpStorybookV1>,
@@ -1077,28 +1074,40 @@ export function useGraphRun(options: UseGraphRunOptions) {
             ? 0
             : 1
     );
-    // While streaming, completed embedded phone JSON blocks render as preview
-    // bubbles (negative placeholder ids — no phone records exist yet) and a
-    // still-incomplete trailing JSON block stays hidden entirely.
+    // While streaming, embedded messenger entries render as preview bubbles
+    // (negative placeholder ids — no phone/social records exist yet). Completed
+    // entries remain visible while the current message text keeps growing.
     const livePhonePreviewFields = (
       preview: EmbeddedPhoneMessagesResult,
-    ): Partial<MessageRecord> =>
-      preview.phoneMessages.length > 0
-        ? {
-            embeddedPhoneMessages: preview.phoneMessages.map((phoneMessage, index) => ({
+    ): Partial<MessageRecord> => {
+      const hasMessengerPreview =
+        preview.phoneMessages.length > 0 || preview.socialDirectMessages.length > 0;
+      return {
+        embeddedPhoneMessages: preview.phoneMessages.length > 0
+          ? preview.phoneMessages.map((phoneMessage, index) => ({
               phoneMessageId: -(index + 1),
               from: phoneMessage.from,
               to: phoneMessage.to,
               message: phoneMessage.message,
-            })),
-            embeddedPhoneTextBefore: preview.textBefore,
-            embeddedPhoneTextAfter: preview.textAfter,
-          }
-        : {
-            embeddedPhoneMessages: undefined,
-            embeddedPhoneTextBefore: undefined,
-            embeddedPhoneTextAfter: undefined,
-          };
+            }))
+          : undefined,
+        embeddedSocialMessages: preview.socialDirectMessages.length > 0
+          ? preview.socialDirectMessages.flatMap((socialMessage, index) =>
+              socialMessage.to
+                ? [{
+                    socialMessageId: -(index + 1),
+                    app: socialMessage.app,
+                    from: socialMessage.from,
+                    to: socialMessage.to,
+                    message: socialMessage.text,
+                  }]
+                : [],
+            )
+          : undefined,
+        embeddedPhoneTextBefore: hasMessengerPreview ? preview.textBefore : undefined,
+        embeddedPhoneTextAfter: hasMessengerPreview ? preview.textAfter : undefined,
+      };
+    };
     const showLiveWorkflowOutput = (text: string) => {
       const definitions = settingsValueDefinitionsRef.current;
       const extracted = extractWorkflowVariableSetCommands(text);
@@ -1116,6 +1125,12 @@ export function useGraphRun(options: UseGraphRunOptions) {
       activeInputImages.length > 0
         ? createRpImageOutputStream(showLiveWorkflowOutput)
         : showLiveWorkflowOutput;
+    const showLiveAutoplayOutput = (text: string) => {
+      const previewText = autoplayStreamPreviewText(text);
+      if (previewText !== undefined) {
+        showLiveRpOutput(previewText);
+      }
+    };
     // Direct app replacements must execute their newly submitted raw JSON;
     // replaying the stored turn JSON would silently restore the old record.
     const replacementInputText = replacementGraphInputText(
@@ -1140,6 +1155,10 @@ export function useGraphRun(options: UseGraphRunOptions) {
       (isPhoneMessage && phoneRecipientName
         ? formatCurrentPhoneInput(inputText)
         : withSpeakerPrefix(inputCharacterName, inputText)));
+    const socialCatalogApp = socialPost?.app ?? socialThreadAction?.app;
+    const executionOriginalInput = socialCatalogApp
+      ? withBundledSocialIdentityContext(originalInput, socialCatalogApp)
+      : originalInput;
     const storedInputGraphText = directActionOnly
       ? originalInput
       : replacement && !replacement.replaceInput
@@ -1374,7 +1393,7 @@ export function useGraphRun(options: UseGraphRunOptions) {
         outputSourceHandle: directActionOnly ? 'direct-actions' : undefined,
         nodes: executionNodes,
         edges,
-        originalInput,
+        originalInput: executionOriginalInput,
         visibleInput,
         lastRpOutput,
         inputImages: activeInputImages,
@@ -1433,11 +1452,12 @@ export function useGraphRun(options: UseGraphRunOptions) {
         },
         streamOutput:
           messageFormat !== socialMediaMessageFormat &&
-          messageFormat !== autoplayMessageFormat &&
           !isPhoneMessage &&
           outputNode.data.streamOutputEnabled &&
           !runEnglishProcessing
-            ? showLiveRpOutput
+            ? isAutoplayRun
+              ? showLiveAutoplayOutput
+              : showLiveRpOutput
             : undefined,
         signal: runSignal,
       });
@@ -1472,7 +1492,11 @@ export function useGraphRun(options: UseGraphRunOptions) {
       }
       const rpDisplayImageAttachment =
         !isPhoneMessage
-          ? storybookImageAttachmentById(storybooksByNodeId, parsedRpOutput.displayImageId)
+          ? storybookImageAttachmentById(storybooksByNodeId, parsedRpOutput.displayImageId) ??
+            rpPicturePhoneAttachment(
+              [...messagesRef.current, ...(activeTurnCollectorRef.current?.inputMessages ?? [])],
+              parsedRpOutput.displayImageId,
+            )
           : undefined;
       if (!isPhoneMessage && parsedRpOutput.displayImageId && !rpDisplayImageAttachment) {
         reportRunWarning(
@@ -1532,9 +1556,10 @@ export function useGraphRun(options: UseGraphRunOptions) {
         ...embeddedPhoneResult.socialDirectMessages,
         ...(phoneOutputBankResult?.socialDirectMessages ?? []),
       ];
+      const embeddedSocialMessageLinks: EmbeddedSocialMessageLink[] = [];
       if (embeddedSocialDirectMessages.length > 0) {
         reportFormatResult({
-          name: 'Social direct messages',
+          name: 'Social messenger messages',
           status: 'ok',
           detail: `${embeddedSocialDirectMessages.length} social direct message(s) parsed.`,
         });
@@ -1687,63 +1712,89 @@ export function useGraphRun(options: UseGraphRunOptions) {
       const parsedPhoneMessage = parsePhoneMessageOutput(phoneMessageOutput, {
         allowIncomingImageAction: runPromptSwitchVisionFeaturesEnabled,
       });
-      if (parsedPhoneMessage) {
+      // Autonomous phone prompts may answer with one {"phoneMessages": [...]}
+      // conversation object instead of the single bare reply object; every entry
+      // becomes its own phone message in order.
+      const parsedPhoneMessages = parsedPhoneMessage
+        ? [parsedPhoneMessage]
+        : phoneOutputBankResult?.phoneMessages ?? [];
+      if (parsedPhoneMessages.length) {
         reportFormatResult({
-          name: 'Phone Message JSON',
+          name: 'Messenger Apps JSON',
           status: 'ok',
-          detail: `${parsedPhoneMessage.from} → ${parsedPhoneMessage.to}`,
+          detail: parsedPhoneMessages
+            .map((entry) => `${entry.from} → ${entry.to}`)
+            .join(', '),
         });
-        let phoneImageCaptionChange: ImageCaptionChange | undefined;
-        const phoneImageAction = runPromptSwitchVisionFeaturesEnabled
-          ? parsedPhoneMessage.incomingImageAction ?? phoneOutputBankResult?.phoneImageActions[0]
-          : undefined;
-        if (phoneImageAction) {
-          phoneImageCaptionChange = applyPhoneImageActionFromLlm(
-            phoneImageAction,
-            phoneReplyTo,
-            parsedPhoneMessage.imageId,
-          );
-        }
-        if (runEnglishProcessing) {
-          try {
-            parsedPhoneMessage.translatedMessage = await translateText(
-              parsedPhoneMessage.message,
-              'to-display',
-              outputNode.data.connectionId ?? defaultConnectionId,
-              outputNode.id,
-              undefined,
-              turnContext.displayLanguage,
-              runSignal,
-              inputHistoryContext,
-            );
-          } catch (error) {
-            if (isRunCancelledError(error)) {
-              throw error;
-            }
-            notifySystem(
-              'error',
-              `Phone message translation failed: ${error instanceof Error ? error.message : String(error)}`,
+        const appendedPhoneMessageLinks: EmbeddedPhoneMessageLink[] = [];
+        for (const [messageIndex, phoneReply] of parsedPhoneMessages.entries()) {
+          let phoneImageCaptionChange: ImageCaptionChange | undefined;
+          const phoneImageAction = runPromptSwitchVisionFeaturesEnabled && messageIndex === 0
+            ? phoneReply.incomingImageAction ?? phoneOutputBankResult?.phoneImageActions[0]
+            : undefined;
+          if (phoneImageAction) {
+            phoneImageCaptionChange = applyPhoneImageActionFromLlm(
+              phoneImageAction,
+              phoneReplyTo,
+              phoneReply.imageId,
             );
           }
+          if (runEnglishProcessing) {
+            try {
+              phoneReply.translatedMessage = await translateText(
+                phoneReply.message,
+                'to-display',
+                outputNode.data.connectionId ?? defaultConnectionId,
+                outputNode.id,
+                undefined,
+                turnContext.displayLanguage,
+                runSignal,
+                inputHistoryContext,
+              );
+            } catch (error) {
+              if (isRunCancelledError(error)) {
+                throw error;
+              }
+              notifySystem(
+                'error',
+                `Phone message translation failed: ${error instanceof Error ? error.message : String(error)}`,
+              );
+            }
+          }
+          const canonicalParsedPhoneMessage = {
+            ...phoneReply,
+            from: canonicalPhoneName(phoneCharacters, phoneReply.from),
+            to: canonicalPhoneName(phoneCharacters, phoneReply.to),
+          };
+          const outgoingRpPicture = rpPicturePhoneAttachment(
+            [...messagesRef.current, ...(activeTurnCollectorRef.current?.inputMessages ?? [])],
+            canonicalParsedPhoneMessage.imageId,
+          );
+          const phoneMessageId = appendPhoneMessage(
+            {
+              ...canonicalParsedPhoneMessage,
+              imageId: outgoingRpPicture?.id ?? canonicalParsedPhoneMessage.imageId,
+              imageDescription: outgoingRpPicture?.description,
+              imageAttachments: outgoingRpPicture ? [outgoingRpPicture] : undefined,
+              phoneImageCaptionChange,
+            },
+            messageIndex === 0
+              ? phoneOutputSoundOverride ?? (isAutoTurn ? 'sent' : 'received')
+              : undefined,
+            'output',
+            isNarratorPhoneAutoTurn ? 'narrator' : undefined,
+            messageIndex === 0 && responseWorkflowVariableSetCommands.length > 0
+              ? structuredClone(responseWorkflowVariableSetCommands)
+              : undefined,
+          );
+          appendedPhoneMessageLinks.push({
+            phoneMessageId,
+            from: canonicalParsedPhoneMessage.from,
+            to: canonicalParsedPhoneMessage.to,
+            message: canonicalParsedPhoneMessage.message,
+            translatedMessage: canonicalParsedPhoneMessage.translatedMessage,
+          });
         }
-        const canonicalParsedPhoneMessage = {
-          ...parsedPhoneMessage,
-          from: canonicalPhoneName(phoneCharacters, parsedPhoneMessage.from),
-          to: canonicalPhoneName(phoneCharacters, parsedPhoneMessage.to),
-        };
-        const phoneMessageId = appendPhoneMessage(
-          {
-            ...canonicalParsedPhoneMessage,
-            imageDescription: undefined,
-            phoneImageCaptionChange,
-          },
-          phoneOutputSoundOverride ?? (isAutoTurn ? 'sent' : 'received'),
-          'output',
-          isNarratorPhoneAutoTurn ? 'narrator' : undefined,
-          responseWorkflowVariableSetCommands.length > 0
-            ? structuredClone(responseWorkflowVariableSetCommands)
-            : undefined,
-        );
         if (isAutoTurn && isPhoneMessage) {
           const autoTurnInput = autoTurnInputMessageId
             ? activeTurnCollectorRef.current?.inputMessages.find((message) => message.id === autoTurnInputMessageId)
@@ -1755,13 +1806,7 @@ export function useGraphRun(options: UseGraphRunOptions) {
               );
           if (autoTurnInput) {
             updateMessage(autoTurnInput.id, {
-              embeddedPhoneMessages: [{
-                phoneMessageId,
-                from: canonicalParsedPhoneMessage.from,
-                to: canonicalParsedPhoneMessage.to,
-                message: canonicalParsedPhoneMessage.message,
-                translatedMessage: canonicalParsedPhoneMessage.translatedMessage,
-              }],
+              embeddedPhoneMessages: appendedPhoneMessageLinks,
               embeddedPhoneTextBefore: autoTurnInput.originalText,
               embeddedPhoneTextAfter: '',
             });
@@ -1769,12 +1814,12 @@ export function useGraphRun(options: UseGraphRunOptions) {
         }
       } else if (phoneMessageOutput.trim()) {
         reportFormatResult({
-          name: 'Phone Message JSON',
+          name: 'Messenger Apps JSON',
           status: 'error',
-          detail: 'RP Output Phone Message could not be parsed.',
+          detail: 'RP Output Messenger Apps could not be parsed.',
           preview: phoneMessageOutput,
         });
-        reportRunWarning('RP Output Phone Message could not be parsed.', outputNodeTraceInfo);
+        reportRunWarning('RP Output Messenger Apps could not be parsed.', outputNodeTraceInfo);
       }
       const outputActions = parseOutputActions(outputActionsText);
       if (outputActionsText.trim()) {
@@ -1879,9 +1924,16 @@ export function useGraphRun(options: UseGraphRunOptions) {
             from: canonicalPhoneName(phoneCharacters, embeddedPhoneMessage.from),
             to: canonicalPhoneName(phoneCharacters, embeddedPhoneMessage.to),
           };
+          const outgoingRpPicture = rpPicturePhoneAttachment(
+            [...messagesRef.current, ...(activeTurnCollectorRef.current?.inputMessages ?? [])],
+            canonicalEmbeddedPhoneMessage.imageId,
+          );
           const phoneMessageId = appendPhoneMessage(
             {
               ...canonicalEmbeddedPhoneMessage,
+              imageId: outgoingRpPicture?.id ?? canonicalEmbeddedPhoneMessage.imageId,
+              imageDescription: outgoingRpPicture?.description,
+              imageAttachments: outgoingRpPicture ? [outgoingRpPicture] : undefined,
               turnContext,
             },
             index === 0 ? 'received' : undefined,
@@ -2058,7 +2110,7 @@ export function useGraphRun(options: UseGraphRunOptions) {
         workflowVariableSetCommands: workflowVariableSetCommandsForOutput,
       };
       if (!isPhoneMessage && liveOutputMessageId === undefined) {
-        appendMessage({
+        liveOutputMessageId = appendMessage({
           role: 'output',
           originalText: rpOutput,
           translatedText: translatedOutput,
@@ -2368,39 +2420,73 @@ export function useGraphRun(options: UseGraphRunOptions) {
           incoming: ParsedIncomingSocialDirectMessage,
           defaultRecipient?: { name: string; handle: string },
           runPost?: SocialPostRecord,
-        ) => {
+        ): Promise<EmbeddedSocialMessageLink | undefined> => {
           const recipientName = incoming.to ?? defaultRecipient?.name;
           if (!recipientName) {
             reportRunWarning(
               `A ${socialAppNames[incoming.app]} direct message from "${incoming.from}" was ignored because it has no recipient.`,
               outputNodeTraceInfo,
             );
-            return;
+            return undefined;
           }
-          const to = canonicalPhoneName(phoneCharacters, recipientName);
-          const recipientCharacter = phoneCharacters.find((character) =>
-            phoneNamesMatch(character.name, to),
-          );
+          const resolvedRecipient = resolveSocialMessageIdentity({
+            characters: storyCharacters,
+            messages: messagesRef.current,
+            app: incoming.app,
+            identity: recipientName,
+          });
+          if (!resolvedRecipient.available) {
+            reportRunWarning(
+              `A ${socialAppNames[incoming.app]} direct message was ignored. ${resolvedRecipient.reason}`,
+              outputNodeTraceInfo,
+            );
+            return undefined;
+          }
+          const to = resolvedRecipient.name;
+          const recipientCharacter = resolvedRecipient.character;
           const toHandle = !incoming.to && defaultRecipient
             ? defaultRecipient.handle
-            : recipientCharacter
-              ? socialHandleForCharacter(recipientCharacter, incoming.app)
-              : socialHandleForName(to);
-          const from = canonicalPhoneName(phoneCharacters, incoming.from);
-          const senderCharacter = phoneCharacters.find((character) =>
-            phoneNamesMatch(character.name, from),
+            : resolvedRecipient.handle ??
+              (recipientCharacter
+                ? socialHandleForCharacter(recipientCharacter, incoming.app)
+                : establishedSocialHandle(messagesRef.current, incoming.app, to) ??
+                  socialHandleForName(to));
+          const resolvedSender = resolveSocialMessageIdentity({
+            characters: storyCharacters,
+            messages: messagesRef.current,
+            app: incoming.app,
+            identity: incoming.from,
+          });
+          if (!resolvedSender.available) {
+            reportRunWarning(
+              `A ${socialAppNames[incoming.app]} direct message was ignored. ${resolvedSender.reason}`,
+              outputNodeTraceInfo,
+            );
+            return undefined;
+          }
+          const from = resolvedSender.name;
+          const senderCharacter = resolvedSender.character;
+          const explicitOrCatalogHandle = socialHandleFromCatalogIdentity(
+            incoming.app,
+            incoming.from,
+            incoming.handle,
           );
-          const fromHandle = incoming.handle
-            ? socialHandleForName(incoming.handle)
-            : senderCharacter
+          const knownFromHandle = resolvedSender.handle ??
+            (senderCharacter
               ? socialHandleForCharacter(senderCharacter, incoming.app)
-              : socialHandleForName(from);
+              : establishedSocialHandle(messagesRef.current, incoming.app, from));
+          const fromHandle = senderCharacter
+            ? knownFromHandle ?? socialHandleForName(from)
+            : explicitOrCatalogHandle &&
+                (!knownFromHandle || isBundledSocialHandle(incoming.app, explicitOrCatalogHandle))
+              ? explicitOrCatalogHandle
+              : knownFromHandle ?? socialHandleForName(from);
           if (socialIdentityMatches(fromHandle, toHandle)) {
             reportRunWarning(
               `A ${socialAppNames[incoming.app]} direct message from "${from}" to themselves was ignored.`,
               outputNodeTraceInfo,
             );
-            return;
+            return undefined;
           }
           let originPost = runPost && runPost.postId === incoming.postId ? runPost : undefined;
           if (!originPost && incoming.postId) {
@@ -2446,7 +2532,7 @@ export function useGraphRun(options: UseGraphRunOptions) {
           const persistedRecord = translatedDmText
             ? { ...record, displayText: translatedDmText }
             : record;
-          appendMessage({
+          const socialMessageId = appendMessage({
             role: 'output',
             originalText: socialDirectMessageHistoryText(record),
             translatedText: translatedDmText
@@ -2455,9 +2541,31 @@ export function useGraphRun(options: UseGraphRunOptions) {
             includeInHistory: true,
             socialDirectMessage: persistedRecord,
           });
+          return {
+            socialMessageId,
+            app: record.app,
+            from: record.from,
+            to: record.to,
+            message: record.text,
+            translatedMessage: translatedDmText,
+          };
         };
         for (const incomingSocialDm of embeddedSocialDirectMessages) {
-          await appendIncomingSocialDirectMessage(incomingSocialDm);
+          const link = await appendIncomingSocialDirectMessage(incomingSocialDm);
+          if (link) {
+            embeddedSocialMessageLinks.push(link);
+          }
+        }
+        if (
+          !isPhoneMessage &&
+          liveOutputMessageId !== undefined &&
+          embeddedSocialDirectMessages.length > 0
+        ) {
+          updateMessage(liveOutputMessageId, {
+            embeddedSocialMessages: embeddedSocialMessageLinks.length > 0
+              ? embeddedSocialMessageLinks.map((link) => ({ ...link }))
+              : undefined,
+          });
         }
 
         // Social-media runs record the post itself plus the generated

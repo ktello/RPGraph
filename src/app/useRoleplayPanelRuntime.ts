@@ -27,7 +27,14 @@ import type {
 } from '../chat/phoneAppsSessions';
 import { normalizePhoneName } from '../chat/phoneMessages';
 import {
+  buildSocialDirectory,
+  withSocialDirectoryConnectionAdded,
+  type DynamicSocialUsers,
+  type SocialConnectionsByCharacter,
+} from '../chat/socialDirectory';
+import {
   socialCharacterForPost,
+  socialIdentityMatches,
   socialLikeAccountKey,
   socialMessageHiddenFromChat,
 } from '../chat/socialMedia';
@@ -68,8 +75,10 @@ import {
 import type {
   ChatImageAttachment,
   EmbeddedPhoneMessageLink,
+  EmbeddedSocialMessageLink,
   MessageRecord,
   SocialAppKind,
+  SocialDirectMessageOpenRequest,
   SocialPostRecord,
   TurnRecord,
   WorkflowNode,
@@ -123,6 +132,9 @@ export function useRoleplayPanelRuntime({
   const [bankingContactsByCharacter, setBankingContactsByCharacter] = useState<Record<string, string[]>>({});
   // Liked post ids per "characterId/app" account key; part of the RP save.
   const [socialLikesByAccount, setSocialLikesByAccount] = useState<Record<string, string[]>>({});
+  const [savedDynamicSocialUsers, setDynamicSocialUsers] = useState<DynamicSocialUsers>({});
+  const [socialConnectionsByCharacter, setSocialConnectionsByCharacter] =
+    useState<SocialConnectionsByCharacter>({});
   // Notes and ChatGPD chats per character id; part of the RP save.
   const [phoneNotesByCharacter, setPhoneNotesByCharacter] = useState<PhoneNotesByCharacter>({});
   const [chatGpdChatsByCharacter, setChatGpdChatsByCharacter] = useState<ChatGpdChatsByCharacter>({});
@@ -134,6 +146,8 @@ export function useRoleplayPanelRuntime({
     app: SocialPostRecord['app'];
     postId: string;
   }>();
+  const [socialDirectMessageOpenRequest, setSocialDirectMessageOpenRequest] =
+    useState<SocialDirectMessageOpenRequest>();
   const [phoneDividerAfterByConversation, setPhoneDividerAfterByConversation] = useState<Record<string, number>>({});
   const [recentlyUsedEmojis, setRecentlyUsedEmojis] = useState<string[]>([]);
   const [recentChatCharacterIds, setRecentChatCharacterIds] = useState<string[]>([]);
@@ -198,6 +212,47 @@ export function useRoleplayPanelRuntime({
       ),
     [phoneCharacters],
   );
+  const socialDirectory = useMemo(
+    () => buildSocialDirectory({
+      storyCharacters,
+      messages,
+      savedDynamicUsers: savedDynamicSocialUsers,
+    }),
+    [messages, savedDynamicSocialUsers, storyCharacters],
+  );
+  const fotogramContactsByCharacter = useMemo(
+    () => Object.fromEntries(storyCharacters.map((viewer) => [
+      viewer.id,
+      storyCharacters.flatMap((contact) => {
+        if (viewer.id === contact.id) {
+          return [];
+        }
+        if (viewer.storybookNodeId !== contact.storybookNodeId) {
+          return [contact.id];
+        }
+        const storybook = storybooksByNodeId.get(viewer.storybookNodeId);
+        return storybook && rpStorybookPhoneContactAllowed(
+          storybook,
+          viewer.sourceId,
+          contact.sourceId,
+        )
+          ? [contact.id]
+          : [];
+      }),
+    ])),
+    [storyCharacters, storybooksByNodeId],
+  );
+  function addSocialConnection(characterId: string, app: SocialAppKind, socialUserId: string) {
+    setSocialConnectionsByCharacter((current) =>
+      withSocialDirectoryConnectionAdded(
+        current,
+        socialDirectory.users,
+        characterId,
+        app,
+        socialUserId,
+      )
+    );
+  }
   const selectedCharacter =
     selectedCharacterId === narratorCharacterId
       ? undefined
@@ -655,6 +710,46 @@ export function useRoleplayPanelRuntime({
     selectChatPanelView('phone');
   }
 
+  function openEmbeddedSocialMessage(message: EmbeddedSocialMessageLink) {
+    const directMessage = messages.find((entry) => entry.id === message.socialMessageId)
+      ?.socialDirectMessage;
+    if (!directMessage) {
+      notifySystem('warning', 'Could not find the linked social message.');
+      return;
+    }
+    const characterForIdentity = (name: string, handle: string) =>
+      storyCharacters.find((character) => {
+        const accountHandle = directMessage.app === 'fotogram'
+          ? character.social.fotogramUsername
+          : character.social.onlyfriendsUsername;
+        return !!accountHandle.trim() && (
+          socialIdentityMatches(character.name, name) ||
+          socialIdentityMatches(accountHandle, handle)
+        );
+      });
+    const senderCharacter = characterForIdentity(directMessage.from, directMessage.fromHandle);
+    const recipientCharacter = characterForIdentity(directMessage.to, directMessage.toHandle);
+    const owner = senderCharacter ?? recipientCharacter;
+    if (!owner) {
+      notifySystem('warning', 'Could not find a playable character for this social conversation.');
+      return;
+    }
+    const ownerIsSender = owner.id === senderCharacter?.id;
+    setSelectedCharacterId(owner.id);
+    setViewedPhoneCharacterId(owner.id);
+    rememberChatCharacter(owner.id);
+    setHighlightedPhoneMessage(undefined);
+    setSocialPostOpenRequest(undefined);
+    setSocialDirectMessageOpenRequest((current) => ({
+      requestId: (current?.requestId ?? 0) + 1,
+      app: directMessage.app,
+      messageId: directMessage.messageId,
+      participantName: ownerIsSender ? directMessage.to : directMessage.from,
+      participantHandle: ownerIsSender ? directMessage.toHandle : directMessage.fromHandle,
+    }));
+    setChatPanelView('phone');
+  }
+
   // Posted photos are stored as Storybook/Gallery image ids; resolve the
   // pixels from the image library wherever a post is rendered.
   const socialImageById = useCallback(
@@ -706,6 +801,7 @@ export function useRoleplayPanelRuntime({
       rememberChatCharacter(author.id);
     }
     setHighlightedPhoneMessage(undefined);
+    setSocialDirectMessageOpenRequest(undefined);
     setSocialPostOpenRequest((current) => ({
       requestId: (current?.requestId ?? 0) + 1,
       app: post.app,
@@ -1170,11 +1266,20 @@ export function useRoleplayPanelRuntime({
     unreadPhoneSwitchName,
     openUnreadPhoneConversation,
     openEmbeddedPhoneMessage,
+    openEmbeddedSocialMessage,
     openSocialPost,
     socialPostOpenRequest,
+    socialDirectMessageOpenRequest,
     socialImageById,
     socialLikesByAccount,
     setSocialLikesByAccount,
+    socialDirectoryUsers: socialDirectory.users,
+    fotogramContactsByCharacter,
+    dynamicSocialUsers: socialDirectory.dynamicUsers,
+    setDynamicSocialUsers,
+    socialConnectionsByCharacter,
+    setSocialConnectionsByCharacter,
+    addSocialConnection,
     phoneNotesByCharacter,
     setPhoneNotesByCharacter,
     chatGpdChatsByCharacter,

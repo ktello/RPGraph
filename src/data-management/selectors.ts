@@ -85,6 +85,33 @@ export function phoneConversationKey(left: string, right: string) {
   return [normalizePhoneName(left), normalizePhoneName(right)].sort().join('::');
 }
 
+export function phoneConversationIsOpen(
+  panelView: 'chat' | 'phone' | 'events',
+  conversationKey: string,
+  openedConversationKey: string,
+  selectedConversationKey?: string,
+) {
+  return panelView === 'phone' && (
+    openedConversationKey === conversationKey ||
+    selectedConversationKey === conversationKey
+  );
+}
+
+export function phoneMessageShouldBeMarkedSeen(
+  role: Extract<MessageRecord['role'], 'user' | 'output'>,
+  panelView: 'chat' | 'phone' | 'events',
+  conversationKey: string,
+  openedConversationKey: string,
+  selectedConversationKey?: string,
+) {
+  return role === 'user' || phoneConversationIsOpen(
+    panelView,
+    conversationKey,
+    openedConversationKey,
+    selectedConversationKey,
+  );
+}
+
 function phoneMessageParticipants(message: MessageRecord) {
   if (message.channel !== 'phone') {
     return undefined;
@@ -518,7 +545,11 @@ export function visibleMessageRecords(
   const linkedIds = linkedPhoneMessageIds(messages);
   return messages.filter((message) =>
     message.role !== 'error' &&
-    !(options.hideMessage?.(message) && !message.embeddedPhoneMessages?.length) &&
+    !(
+      options.hideMessage?.(message) &&
+      !message.embeddedPhoneMessages?.length &&
+      !message.embeddedSocialMessages?.length
+    ) &&
     (message.channel !== 'phone' || !linkedIds.has(message.id))
   );
 }

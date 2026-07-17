@@ -11,6 +11,12 @@ import type {
 } from '../types';
 import type { OnlyFriendsPurchasesByCharacter } from '../chat/onlyFriendsWallet';
 import {
+  normalizeDynamicSocialUsers,
+  normalizeSocialConnectionsByCharacter,
+  type DynamicSocialUsers,
+  type SocialConnectionsByCharacter,
+} from '../chat/socialDirectory';
+import {
   normalizeChatGpdChatsByCharacter,
   normalizePhoneNotesByCharacter,
   type ChatGpdChatsByCharacter,
@@ -49,6 +55,8 @@ export type SessionV2AppState = {
   phoneAppSeenByCharacter: Record<string, number>;
   bankingContactsByCharacter: Record<string, string[]>;
   socialLikesByAccount: Record<string, string[]>;
+  dynamicSocialUsers: DynamicSocialUsers;
+  socialConnectionsByCharacter: SocialConnectionsByCharacter;
   onlyFriendsPurchasesByCharacter: OnlyFriendsPurchasesByCharacter;
   phoneDividerAfterByConversation: Record<string, number>;
   recentlyUsedEmojis?: string[];
@@ -68,6 +76,8 @@ export type SessionV2CurrentStateInput = {
   phoneAppSeenByCharacter?: Record<string, number>;
   bankingContactsByCharacter?: Record<string, string[]>;
   socialLikesByAccount?: Record<string, string[]>;
+  dynamicSocialUsers?: DynamicSocialUsers;
+  socialConnectionsByCharacter?: SocialConnectionsByCharacter;
   onlyFriendsPurchasesByCharacter?: OnlyFriendsPurchasesByCharacter;
   phoneDividerAfterByConversation?: Record<string, number>;
   recentlyUsedEmojis?: string[];
@@ -161,6 +171,10 @@ export function sessionV2FromCurrentState(
       phoneAppSeenByCharacter: state.phoneAppSeenByCharacter ?? {},
       bankingContactsByCharacter: state.bankingContactsByCharacter ?? {},
       socialLikesByAccount: state.socialLikesByAccount ?? {},
+      dynamicSocialUsers: normalizeDynamicSocialUsers(state.dynamicSocialUsers),
+      socialConnectionsByCharacter: normalizeSocialConnectionsByCharacter(
+        state.socialConnectionsByCharacter,
+      ),
       onlyFriendsPurchasesByCharacter: state.onlyFriendsPurchasesByCharacter ?? {},
       phoneDividerAfterByConversation: state.phoneDividerAfterByConversation ?? {},
       recentlyUsedEmojis: state.recentlyUsedEmojis ?? [],
@@ -206,6 +220,27 @@ function chatMessageFromTimelineEntry(
       };
     })
     .filter((message): message is NonNullable<typeof message> => !!message);
+  const embeddedSocialMessages = entry.embeddedSocialMessageIds
+    ?.map((timelineId) => {
+      const linkedEntry = session.timeline.find(
+        (candidate): candidate is TimelineMessageEntry =>
+          candidate.kind === 'message' && candidate.id === timelineId,
+      );
+      const socialMessageId = messageIdsByTimelineId.get(timelineId);
+      const directMessage = linkedEntry?.socialDirectMessage;
+      if (!directMessage || socialMessageId === undefined) {
+        return undefined;
+      }
+      return {
+        socialMessageId,
+        app: directMessage.app,
+        from: directMessage.from,
+        to: directMessage.to,
+        message: directMessage.text,
+        translatedMessage: directMessage.displayText,
+      };
+    })
+    .filter((message): message is NonNullable<typeof message> => !!message);
   return {
     id: numericId,
     role: chatRoleFromTimeline(entry.role),
@@ -221,6 +256,7 @@ function chatMessageFromTimelineEntry(
     phoneTo: entry.phone?.to,
     phoneVoiceMessage: entry.phone?.voiceMessage,
     embeddedPhoneMessages: embeddedPhoneMessages?.length ? embeddedPhoneMessages : undefined,
+    embeddedSocialMessages: embeddedSocialMessages?.length ? embeddedSocialMessages : undefined,
     embeddedPhoneTextBefore: entry.embeddedPhoneText?.before,
     embeddedPhoneTextAfter: entry.embeddedPhoneText?.after,
     embeddedPhoneTranslatedTextBefore: entry.embeddedPhoneText?.translatedBefore,
@@ -334,6 +370,10 @@ export function appStateFromSessionV2(session: RpgraphSessionV2): SessionV2AppSt
     phoneAppSeenByCharacter: session.ui.phoneAppSeenByCharacter ?? {},
     bankingContactsByCharacter: session.ui.bankingContactsByCharacter,
     socialLikesByAccount: session.ui.socialLikesByAccount,
+    dynamicSocialUsers: normalizeDynamicSocialUsers(session.ui.dynamicSocialUsers),
+    socialConnectionsByCharacter: normalizeSocialConnectionsByCharacter(
+      session.ui.socialConnectionsByCharacter,
+    ),
     onlyFriendsPurchasesByCharacter: session.ui.onlyFriendsPurchasesByCharacter,
     phoneDividerAfterByConversation: session.ui.phoneDividerAfterByConversation,
     recentlyUsedEmojis: session.ui.recentlyUsedEmojis ?? [],

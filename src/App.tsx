@@ -7,6 +7,7 @@ import {
   useState,
 } from 'react';
 import { encode } from '@toon-format/toon';
+import packageMetadata from '../package.json';
 import {
   ImagePreviewDialog,
   CustomNodeAssistantDialog,
@@ -142,6 +143,7 @@ import { useDirectAppActions } from './app/useDirectAppActions';
 import {
   latestHistoryRpDateTime,
   phoneConversationKey,
+  phoneMessageShouldBeMarkedSeen,
   phoneSeenStateFromMessages,
 } from './data-management/selectors';
 import {
@@ -166,7 +168,9 @@ import {
   openingHistoryEventsFromNodes,
   openingHistoryChatGpdChatsFromNodes,
   openingHistoryCheckpointsFromNodes,
+  openingHistoryDynamicSocialUsersFromNodes,
   openingHistoryNotesFromNodes,
+  openingHistorySocialConnectionsFromNodes,
   openingHistorySocialLikesFromNodes,
   openingHistoryTurnsFromNodes,
   remapOpeningTurnMessageIds,
@@ -1222,11 +1226,20 @@ function App() {
     unreadPhoneSwitchName,
     openUnreadPhoneConversation,
     openEmbeddedPhoneMessage,
+    openEmbeddedSocialMessage,
     openSocialPost,
     socialPostOpenRequest,
+    socialDirectMessageOpenRequest,
     socialImageById,
     socialLikesByAccount,
     setSocialLikesByAccount,
+    socialDirectoryUsers,
+    fotogramContactsByCharacter,
+    dynamicSocialUsers,
+    setDynamicSocialUsers,
+    socialConnectionsByCharacter,
+    setSocialConnectionsByCharacter,
+    addSocialConnection,
     phoneNotesByCharacter,
     setPhoneNotesByCharacter,
     chatGpdChatsByCharacter,
@@ -1714,6 +1727,8 @@ function App() {
     notifySystem,
     usedStorybookImageIds,
     currentSocialLikesByAccount: () => socialLikesByAccount,
+    currentDynamicSocialUsers: () => dynamicSocialUsers,
+    currentSocialConnectionsByCharacter: () => socialConnectionsByCharacter,
     currentPhoneNotesByCharacter: () => phoneNotesByCharacter,
     currentChatGpdChatsByCharacter: () => chatGpdChatsByCharacter,
     clearCurrentSession: () => clearCurrentSession(),
@@ -2685,6 +2700,29 @@ function App() {
       return merged;
     });
 
+    const openingDynamicSocialUsers = openingHistoryDynamicSocialUsersFromNodes(nextNodes);
+    setDynamicSocialUsers((current) =>
+      replaceCurrentChat
+        ? openingDynamicSocialUsers
+        : { ...current, ...openingDynamicSocialUsers }
+    );
+    const openingSocialConnections = openingHistorySocialConnectionsFromNodes(nextNodes);
+    setSocialConnectionsByCharacter((current) => {
+      const merged = replaceCurrentChat ? {} : structuredClone(current);
+      Object.entries(openingSocialConnections).forEach(([characterId, apps]) => {
+        const existing = merged[characterId] ?? {};
+        const mergeApp = (app: 'fotogram' | 'onlyfriends') => {
+          const ids = existing[app] ?? [];
+          return [...ids, ...(apps[app] ?? []).filter((id) => !ids.includes(id))];
+        };
+        merged[characterId] = {
+          fotogram: mergeApp('fotogram'),
+          onlyfriends: mergeApp('onlyfriends'),
+        };
+      });
+      return merged;
+    });
+
     // Notes and ChatGPD chats follow the likes: replaced on a fresh import,
     // merged in (existing entries win) when the current chat is kept.
     const openingNotes = openingHistoryNotesFromNodes(nextNodes);
@@ -2745,6 +2783,8 @@ function App() {
       phoneAppSeenByCharacter,
       bankingContactsByCharacter,
       socialLikesByAccount,
+      dynamicSocialUsers,
+      socialConnectionsByCharacter,
       onlyFriendsPurchasesByCharacter,
       phoneDividerAfterByConversation,
       recentlyUsedEmojis,
@@ -2807,6 +2847,8 @@ function App() {
     setPhoneAppSeenByCharacter({});
     setBankingContactsByCharacter({});
     setSocialLikesByAccount({});
+    setDynamicSocialUsers({});
+    setSocialConnectionsByCharacter({});
     setOnlyFriendsPurchasesByCharacter({});
     setPhoneDividerAfterByConversation({});
     setOpenedPhoneConversationKey('');
@@ -2994,6 +3036,8 @@ function App() {
     setPhoneAppSeenByCharacter(sessionState.phoneAppSeenByCharacter);
     setBankingContactsByCharacter(sessionState.bankingContactsByCharacter);
     setSocialLikesByAccount(sessionState.socialLikesByAccount);
+    setDynamicSocialUsers(sessionState.dynamicSocialUsers);
+    setSocialConnectionsByCharacter(sessionState.socialConnectionsByCharacter);
     setOnlyFriendsPurchasesByCharacter(sessionState.onlyFriendsPurchasesByCharacter);
     setPhoneDividerAfterByConversation(sessionState.phoneDividerAfterByConversation);
     setRecentlyUsedEmojis(sessionState.recentlyUsedEmojis ?? []);
@@ -4270,7 +4314,7 @@ function App() {
     }
     updateRuntimeNode(storybookNode.id, {
       storybookJson: nextJson,
-      storybookStatus: `Phone contact added: ${fromCharacter.name} <-> ${toCharacter.name}`,
+      storybookStatus: `Phone + Fotogram contact added: ${fromCharacter.name} <-> ${toCharacter.name}`,
     });
   }
 
@@ -4707,7 +4751,9 @@ function App() {
       from: canonicalPhoneName(phoneCharacters, message.from),
       to: canonicalPhoneName(phoneCharacters, message.to),
     };
-    const storybookImage = storybookPhoneImageAttachment(canonicalMessage);
+    const storybookImage = canonicalMessage.imageAttachments?.length
+      ? undefined
+      : storybookPhoneImageAttachment(canonicalMessage);
     const sourceImageAttachments = canonicalMessage.imageAttachments?.length
       ? canonicalMessage.imageAttachments
       : storybookImage
@@ -4753,16 +4799,14 @@ function App() {
       playPhoneMessageSound(sound);
     }
     const conversationKey = phoneConversationKey(canonicalMessage.from, canonicalMessage.to);
-    const conversationIsVisible =
-      chatPanelView === 'chat' ||
-      (
-        chatPanelView === 'phone' &&
-        (
-          openedPhoneConversationKey === conversationKey ||
-          selectedPhoneContact?.conversationKey === conversationKey
-        )
-      );
-    if (conversationIsVisible) {
+    const messageShouldBeMarkedSeen = phoneMessageShouldBeMarkedSeen(
+      role,
+      chatPanelView,
+      conversationKey,
+      openedPhoneConversationKey,
+      selectedPhoneContact?.conversationKey,
+    );
+    if (messageShouldBeMarkedSeen) {
       setPhoneSeenByConversation((current) =>
         id > (current[conversationKey] ?? 0)
           ? { ...current, [conversationKey]: id }
@@ -6192,7 +6236,7 @@ function App() {
         <div className="brand">
           <h1>
             <span className="brand-name"><span className="brand-name-rp">RP</span>graph Studio</span>
-            <span className="app-version">v0.4.7 Beta</span>
+            <span className="app-version">v{packageMetadata.version} Beta</span>
           </h1>
           <div className="header-brand-actions">
             <button
@@ -6823,6 +6867,7 @@ function App() {
                 setDraftImages((current) => current.filter((entry) => entry.id !== imageId))
               }
               onOpenEmbeddedPhoneMessage={openEmbeddedPhoneMessage}
+              onOpenEmbeddedSocialMessage={openEmbeddedSocialMessage}
               onOpenSocialPost={openSocialPost}
               socialImageById={socialImageById}
               socialLikesByAccount={socialLikesByAccount}
@@ -6862,6 +6907,7 @@ function App() {
               phoneAppNotificationCounts={phoneAppNotificationCounts}
               phoneHomeRequestId={phoneHomeRequestId}
               socialPostOpenRequest={socialPostOpenRequest}
+              socialDirectMessageOpenRequest={socialDirectMessageOpenRequest}
               phoneImages={phoneImages}
               phoneGalleryImages={phoneGalleryImages}
               phoneDraft={phoneDraft}
@@ -6963,6 +7009,10 @@ function App() {
               onImportSocialPostImage={importSocialPostImage}
               socialImageById={socialImageById}
               socialLikesByAccount={socialLikesByAccount}
+              socialDirectoryUsers={socialDirectoryUsers}
+              fotogramContactsByCharacter={fotogramContactsByCharacter}
+              socialConnectionsByCharacter={socialConnectionsByCharacter}
+              onAddSocialConnection={addSocialConnection}
               onToggleSocialLike={toggleSocialLike}
               onlyFriendsPurchasesByCharacter={onlyFriendsPurchasesByCharacter}
               onUnlockOnlyFriendsPost={unlockOnlyFriendsPost}

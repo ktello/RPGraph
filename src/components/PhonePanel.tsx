@@ -22,6 +22,7 @@ import type {
   ImageCaptionChange,
   MessageRecord,
   SocialPostRecord,
+  SocialDirectMessageOpenRequest,
   SocialDirectMessageRecord,
   SocialReactionComment,
   SocialThreadActionRecord,
@@ -46,6 +47,10 @@ import type { ChatGpdChatRecord, PhoneNoteRecord } from '../chat/phoneAppsSessio
 import { PhoneSocialFeedScreen } from './phone-social/PhoneSocialFeedScreen';
 import { socialApps } from './phone-social/socialApps';
 import type { OnlyFriendsPurchasesByCharacter } from '../chat/onlyFriendsWallet';
+import type {
+  SocialConnectionsByCharacter,
+  SocialDirectoryUser,
+} from '../chat/socialDirectory';
 import { PhoneVoiceMessage } from './PhoneVoiceMessage';
 import { CharacterAvatar } from './CharacterAvatar';
 import { ImageContextControl } from './ImageContextControl';
@@ -148,6 +153,7 @@ type PhonePanelProps = {
     app: 'fotogram' | 'onlyfriends';
     postId: string;
   };
+  socialDirectMessageOpenRequest?: SocialDirectMessageOpenRequest;
   phoneImages: ChatImageAttachment[];
   phoneGalleryImages: ChatImageAttachment[];
   phoneDraft: string;
@@ -264,6 +270,14 @@ type PhonePanelProps = {
   }) => Promise<ChatImageAttachment | undefined>;
   socialImageById: (imageId: string) => ChatImageAttachment | undefined;
   socialLikesByAccount: Record<string, string[]>;
+  socialDirectoryUsers: SocialDirectoryUser[];
+  fotogramContactsByCharacter: Record<string, string[]>;
+  socialConnectionsByCharacter: SocialConnectionsByCharacter;
+  onAddSocialConnection: (
+    characterId: string,
+    app: 'fotogram' | 'onlyfriends',
+    socialUserId: string,
+  ) => void;
   onToggleSocialLike: (
     characterId: string,
     app: 'fotogram' | 'onlyfriends',
@@ -309,6 +323,7 @@ export function PhonePanel({
   phoneAppNotificationCounts,
   phoneHomeRequestId,
   socialPostOpenRequest,
+  socialDirectMessageOpenRequest,
   phoneImages,
   phoneGalleryImages,
   phoneDraft,
@@ -380,6 +395,10 @@ export function PhonePanel({
   onImportSocialPostImage,
   socialImageById,
   socialLikesByAccount,
+  socialDirectoryUsers,
+  fotogramContactsByCharacter,
+  socialConnectionsByCharacter,
+  onAddSocialConnection,
   onToggleSocialLike,
   onlyFriendsPurchasesByCharacter,
   onUnlockOnlyFriendsPost,
@@ -408,6 +427,7 @@ export function PhonePanel({
   // Start on the conversation when the panel opens through a chat message
   // link, or on a requested social post; otherwise start on the desktop.
   const [screen, setScreen] = useState<PhoneScreen>(() =>
+    socialDirectMessageOpenRequest?.app ??
     socialPostOpenRequest?.app ??
     (highlightedPhoneMessageId !== undefined ? 'whatsup' : 'desktop'));
   const [seenPhoneHomeRequestId, setSeenPhoneHomeRequestId] = useState(phoneHomeRequestId);
@@ -424,6 +444,8 @@ export function PhonePanel({
   // app from the desktop would jump back to the previously requested post.
   const [dismissedSocialPostOpenRequestId, setDismissedSocialPostOpenRequestId] =
     useState<number>();
+  const [dismissedSocialDirectMessageOpenRequestId, setDismissedSocialDirectMessageOpenRequestId] =
+    useState<number>();
   if (
     socialPostOpenRequest &&
     seenSocialPostOpenRequestId !== socialPostOpenRequest.requestId
@@ -431,6 +453,18 @@ export function PhonePanel({
     setSeenSocialPostOpenRequestId(socialPostOpenRequest.requestId);
     if (screen !== socialPostOpenRequest.app) {
       setScreen(socialPostOpenRequest.app);
+    }
+  }
+  const [seenSocialDirectMessageOpenRequestId, setSeenSocialDirectMessageOpenRequestId] = useState(
+    socialDirectMessageOpenRequest?.requestId ?? 0,
+  );
+  if (
+    socialDirectMessageOpenRequest &&
+    seenSocialDirectMessageOpenRequestId !== socialDirectMessageOpenRequest.requestId
+  ) {
+    setSeenSocialDirectMessageOpenRequestId(socialDirectMessageOpenRequest.requestId);
+    if (screen !== socialDirectMessageOpenRequest.app) {
+      setScreen(socialDirectMessageOpenRequest.app);
     }
   }
   const unreadWhatsUpCount = phoneContacts.reduce(
@@ -792,6 +826,12 @@ export function PhonePanel({
               }
             : undefined
         }
+        openDirectMessageRequest={
+          socialDirectMessageOpenRequest?.app === screen &&
+          socialDirectMessageOpenRequest.requestId !== dismissedSocialDirectMessageOpenRequestId
+            ? socialDirectMessageOpenRequest
+            : undefined
+        }
         isRunning={isRunning}
         onTransferOnlyFriendsWallet={onTransferOnlyFriendsWallet}
         onSubmitSocialPost={onSubmitSocialPost}
@@ -800,6 +840,10 @@ export function PhonePanel({
         onImportPostImage={onImportSocialPostImage}
         socialImageById={socialImageById}
         socialLikesByAccount={socialLikesByAccount}
+        socialDirectoryUsers={socialDirectoryUsers}
+        fotogramContactsByCharacter={fotogramContactsByCharacter}
+        socialConnectionsByCharacter={socialConnectionsByCharacter}
+        onAddSocialConnection={onAddSocialConnection}
         onlyFriendsPurchasesByCharacter={onlyFriendsPurchasesByCharacter}
         onUnlockOnlyFriendsPost={onUnlockOnlyFriendsPost}
         onToggleLike={(postId) => {
@@ -809,6 +853,7 @@ export function PhonePanel({
         }}
         onBack={() => {
           setDismissedSocialPostOpenRequestId(socialPostOpenRequest?.requestId);
+          setDismissedSocialDirectMessageOpenRequestId(socialDirectMessageOpenRequest?.requestId);
           setScreen('desktop');
         }}
         connections={connections}
