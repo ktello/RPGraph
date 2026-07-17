@@ -552,6 +552,8 @@ const coreNodeCreationDefinitions: Array<Omit<CoreNodeCreationDefinition, 'saveD
     ports: () => [
       input('default', 'text', 'Text Input'),
       input('image', 'image', 'Image Input'),
+      input('prompt-before', 'mixed', 'Prompt Before Override'),
+      input('prompt-after', 'mixed', 'Prompt After Override'),
       output('default', 'mixed', 'Text'),
     ],
     Component: LlmPromptNodeCard,

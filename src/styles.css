@@ -4491,6 +4491,26 @@ input[type="number"]::-webkit-outer-spin-button {
   min-height: 64px;
 }
 
+.llm-prompt-override-badge {
+  display: inline-block;
+  margin-left: 8px;
+  padding: 1px 7px;
+  border-radius: 999px;
+  background: var(--accent-light);
+  color: #0f141f;
+  font-size: 10px;
+  font-weight: 700;
+  letter-spacing: 0.02em;
+  text-transform: none;
+  vertical-align: middle;
+}
+
+/* Field is bypassed by a connected override at run time; dim it but keep it
+   editable so the authored fallback stays visible and changeable. */
+.llm-prompt-field-overridden .json-syntax-textarea {
+  opacity: 0.5;
+}
+
 .llm-prompt-switch-fields .node-select,
 .llm-prompt-switch-fields .node-text-input {
   flex: none;

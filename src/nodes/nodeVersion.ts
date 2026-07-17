@@ -23,7 +23,7 @@ export const currentCoreNodeVersions: Record<CoreNodeType, NodeVersion> = {
   'phone-message-router': '1.1.0',
   'text-selector': '1.1.0',
   'llm-prompt-switch': '1.3.0',
-  'llm-prompt': '1.2.0',
+  'llm-prompt': '1.2.1',
   combiner: '1.0.0',
   'text-replace': '1.0.0',
   'load-text': '1.0.1',
