@@ -185,6 +185,13 @@ export type NodeCreationDefinition = {
   label: string;
   description: string;
   menuDescription: string;
+  // Palette group title this node lists under; order sorts within the group
+  // (default 1000). Unknown group titles append as new palette groups.
+  paletteGroup: string;
+  paletteOrder?: number;
+  // Which data field the studio text dialog shows for this node's full-text
+  // view; unset falls back to the node's preview.
+  textDialogSource?: 'fullText' | 'loadedText' | 'generatedText';
   origin: 'core' | 'plugin';
   singleton?: boolean;
   usesLlm?: boolean;
@@ -207,6 +214,23 @@ export type NodeCreationDefinition = {
 export type CoreNodeCreationDefinition = NodeCreationDefinition & {
   type: CoreNodeType;
   origin: 'core';
+};
+
+export type CoreNodePersistence = {
+  saveData: (data: WorkflowNode['data']) => WorkflowNode['data'];
+  hydrateData: (data: WorkflowNode['data'], context: HydrateContext) => WorkflowNode['data'];
+};
+
+// The shape a node folder's definition.ts exports. The registration pipeline
+// (coreDefinitions.ts) stamps `layout`, decorates `create` with the layout's
+// creation styles, and wraps `persistence` with version stamping.
+export type CoreNodeFolderDefinition = Omit<
+  CoreNodeCreationDefinition,
+  'saveData' | 'hydrateData' | 'layout'
+> & {
+  type: CoreNodeType;
+  origin: 'core';
+  persistence: CoreNodePersistence;
 };
 
 export type MissingNodeData = SharedNodeData & {

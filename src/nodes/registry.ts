@@ -9,6 +9,7 @@ import type {
 } from './types';
 
 const nodeRegistry = new Map<NodeTypeId, NodeCreationDefinition>();
+let coreNodesRegistered = false;
 
 export function registerNode(definition: NodeCreationDefinition) {
   if (!isNodeVersion(definition.dataVersion)) {
@@ -23,27 +24,32 @@ export function registerNode(definition: NodeCreationDefinition) {
   nodeRegistry.set(definition.type, definition);
 }
 
+// Registration is lazy (first lookup) rather than a module-scope side effect, so
+// importing the registry during a definition import cycle never triggers reading
+// the folder definitions before they finish evaluating.
 export function registerCoreNodes() {
-  if (coreNodeDefinitions.every((definition) => nodeRegistry.has(definition.type))) {
+  if (coreNodesRegistered) {
     return;
   }
-  coreNodeDefinitions.forEach(registerNode);
+  coreNodesRegistered = true;
+  coreNodeDefinitions().forEach(registerNode);
 }
 
 export function getRegisteredNode(type: string) {
+  registerCoreNodes();
   return nodeRegistry.get(type);
 }
 
 export function getRegisteredCoreNode(type: string) {
+  registerCoreNodes();
   return nodeRegistry.get(type) as CoreNodeCreationDefinition | undefined;
 }
 
 export function getRegisteredCoreNodes() {
-  return coreNodeDefinitions.map((definition) => getRegisteredCoreNode(definition.type) ?? definition);
+  registerCoreNodes();
+  return coreNodeDefinitions().map((definition) => getRegisteredCoreNode(definition.type) ?? definition);
 }
 
 export function isRegisteredCoreNodeType(value: string): value is CoreNodeType {
-  return coreNodeDefinitions.some((definition) => definition.type === value);
+  return coreNodeDefinitions().some((definition) => definition.type === value);
 }
-
-registerCoreNodes();

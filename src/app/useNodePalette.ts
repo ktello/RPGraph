@@ -21,6 +21,7 @@ import { removeCompetingInputEdges } from '../graph/edges';
 import { validatePortConnection } from '../graph/portCompatibility';
 import { wireLinkLayout, wireLinkMode, wireLinkStyle } from '../nodes/memory-slot/model';
 import { getRegisteredCoreNode, getRegisteredCoreNodes } from '../nodes/registry';
+import { groupedPaletteDefinitions } from '../nodes/paletteGroups';
 import { isStorybookSourceNode } from '../storybook/runtime';
 import type {
   AddNodeType,
@@ -58,8 +59,9 @@ const addableNodeItems = getRegisteredCoreNodes().map((definition) => ({
   version: definition.dataVersion,
   label: definition.label,
   description: definition.menuDescription,
+  paletteGroup: definition.paletteGroup,
+  paletteOrder: definition.paletteOrder,
 }));
-type AddableNodeItem = (typeof addableNodeItems)[number];
 
 function loadFavoriteNodeTypes(): AddNodeType[] {
   try {
@@ -75,36 +77,9 @@ function loadFavoriteNodeTypes(): AddNodeType[] {
   }
 }
 
-const nodePaletteGroups: Array<{
-  title: string;
-  types: AddNodeType[];
-}> = [
-  {
-    title: 'Input & Output',
-    types: ['input', 'last-user-input', 'last-rp-output', 'history', 'output', 'text-preview', 'load-text'],
-  },
-  {
-    title: 'LLM & Logic',
-    types: ['custom', 'llm-prompt', 'llm-prompt-switch', 'llm-decision', 'context-compression', 'event-manager', 'character-stats', 'phone-apps'],
-  },
-  {
-    title: 'Text & Values',
-    types: ['note', 'group', 'combiner', 'text-replace', 'memory-slot', 'phone-message-router', 'text-selector', 'write-text', 'fixed-number', 'fixed-bool', 'settings-value'],
-  },
-  {
-    title: 'Story Context',
-    types: ['rp-storybook-v1', 'rp-storybook-editor', 'context-builder'],
-  },
-];
-
-const groupedNodePaletteItems = nodePaletteGroups
-  .map((group) => ({
-    ...group,
-    items: group.types
-      .map((type) => addableNodeItems.find((item) => item.type === type))
-      .filter((item): item is AddableNodeItem => !!item),
-  }))
-  .filter((group) => group.items.length > 0);
+// Groups and item order derive from each definition's paletteGroup/paletteOrder;
+// only the group display order is a presentation concern (paletteGroups.ts).
+const groupedNodePaletteItems = groupedPaletteDefinitions(addableNodeItems);
 
 export function useNodePalette({
   nodes,

@@ -22,6 +22,9 @@ Type: `NodeCreationDefinition` (`src/nodes/types.ts`). Core nodes use the narrow
 | `execute` | `(node, ctx) => Promise<string>` | Runtime behavior. |
 | `saveData` / `hydrateData` | `(data[, ctx]) => data` | Persistence normalizers. |
 | `layout` | `NodeLayout` | Boundary sizing authority (auto / resizable / manual). |
+| `paletteGroup` | `string` | Add-menu group title. |
+| `paletteOrder?` | `number` | Sort within the palette group (default 1000). |
+| `textDialogSource?` | `'fullText' \| 'loadedText' \| 'generatedText'` | Data field the generic text dialog shows. |
 | `hydrateStyle?` | `(node) => node.style` | Legacy/manual style override consulted by the layout normalizer. |
 | `singleton?` | `boolean` | Max one instance. |
 | `usesLlm?` | `boolean` | Node issues LLM calls. |
@@ -30,7 +33,7 @@ Type: `NodeCreationDefinition` (`src/nodes/types.ts`). Core nodes use the narrow
 | `requiresPreparedInputEdge?` | `boolean` | Prepared only with a qualifying input edge. |
 | `passiveRuntime?` | `boolean` | Not blocked by pending user input. |
 
-Core definitions are object literals in `coreNodeCreationDefinitions` (`src/nodes/coreDefinitions.ts`). `saveData`/`hydrateData` are attached from `corePersistence` (`src/nodes/corePersistence.ts`) to produce the exported `coreNodeDefinitions`.
+Each core node's complete definition — including its `persistence` pair (`CoreNodePersistence`) — lives in `src/nodes/<folder>/definition.ts` (type `CoreNodeFolderDefinition`). `coreDefinitions.ts` discovers them via `import.meta.glob('./*/definition.ts', { eager: true })`, sorts by the `coreNodeTypes` tuple, and stamps `layout` (`coreNodeLayouts`), creation styles (`styleForLayout`), and `nodeDataVersion` to produce the exported `coreNodeDefinitions`. Port literal helpers are in `src/nodes/portHelpers.ts`; persistence helpers (`baseData`/`connectionId`/`preservedData`) in `src/nodes/shared/persistenceHelpers.ts`.
 
 ## Registry
 
@@ -128,7 +131,7 @@ Containment: port handles intentionally overhang the card edge (−15/−16/−2
 ## Persistence
 
 - `create()` returns a full node with a `data` literal.
-- `saveData`/`hydrateData`: per-type normalizers in `corePersistence` (`src/nodes/corePersistence.ts`). `baseData`/`preservedData` rebuild `data` from `{nodeType, label, description, preview}` plus type-relevant fields; stamp `nodeDataVersion = definition.dataVersion`.
+- `saveData`/`hydrateData`: each folder definition's `persistence` pair. `baseData`/`preservedData` (`src/nodes/shared/persistenceHelpers.ts`) rebuild `data` from `{nodeType, label, description, preview}` plus type-relevant fields; the collector stamps `nodeDataVersion = definition.dataVersion`.
 - Routing — `persistentNodeData`/`hydrateNodeData` (`src/workflow/persistence.ts`): placeholder nodes clone `storedData`; core nodes dispatch to the definition.
 - Validation — `isWorkflowNodeData` (`src/workflow/validation.ts`), single guard. Order:
   1. Base fields (`label`/`description`/`preview`/`nodeType`/`nodeDataVersion`).
@@ -145,19 +148,27 @@ Containment: port handles intentionally overhang the card edge (−15/−16/−2
 
 ## Registration points (per new core node type)
 
+A new core node is a folder with a `definition.ts` (discovered automatically) plus these seams:
+
 Compile-enforced:
 - `coreNodeTypes` tuple (`src/nodes/coreNodeTypes.ts`).
 - `currentCoreNodeVersions` (`src/nodes/nodeVersion.ts`).
 - `coreNodeLayouts` entry (`src/nodes/nodeLayout.ts`).
-- `corePersistence` record (`src/nodes/corePersistence.ts`).
 - Data union variant in `ConcreteCoreWorkflowNodeData` (`src/types.ts`).
-- Creation definition in `coreNodeCreationDefinitions` (`src/nodes/coreDefinitions.ts`).
+- `src/nodes/<folder>/definition.ts` exporting a complete `CoreNodeFolderDefinition` (metadata, `paletteGroup`, ports, Component, execute, create, `persistence`).
 
-Not compile-enforced:
-- Palette entry (`src/app/useNodePalette.ts`).
-- `fullText` dialog whitelist, if the node opens one (`src/dialogs/StudioDialogs.tsx`).
-- CSS class (`src/styles.css`).
+Test-enforced (`src/nodes/registry.test.ts`):
+- Folder definitions ↔ registered types ↔ `coreNodeTypes` tuple must be a bijection, in tuple order.
+
+Derived from the definition (no separate edit):
+- Palette placement — `paletteGroup`/`paletteOrder` (`src/app/useNodePalette.ts` reads the registry; group display order in `src/nodes/paletteGroups.ts`).
+- Text dialog source — `textDialogSource` (`src/dialogs/StudioDialogs.tsx` reads the registry).
+
+Not enforced:
+- CSS class (`src/styles.css`), if the card needs bespoke styles.
 - New data fields in `isWorkflowNodeData` (`src/workflow/validation.ts`).
+
+Registry-derived data must be read at call time only: a module cycle (coreDefinitions → workflow barrel → persistence → typeIdPolicy) survives solely because reads happen inside functions, not at module evaluation.
 
 ## Invariants
 
@@ -176,7 +187,9 @@ Not compile-enforced:
 | Registry | `src/nodes/registry.ts` |
 | Core type ids | `src/nodes/coreNodeTypes.ts` |
 | Versions & compatibility | `src/nodes/nodeVersion.ts` |
-| Persistence table | `src/nodes/corePersistence.ts` |
+| Per-node definition + persistence | `src/nodes/<folder>/definition.ts` |
+| Definition collector | `src/nodes/coreDefinitions.ts` |
+| Persistence / port helpers | `src/nodes/shared/persistenceHelpers.ts`, `src/nodes/portHelpers.ts` |
 | Data union | `src/types.ts` |
 | Renderer & dispatch | `src/nodes/WorkflowNodeRenderer.tsx`, `src/App.tsx` |
 | Shared card behavior | `src/nodes/shared/CardView.tsx` |

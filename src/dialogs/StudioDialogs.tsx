@@ -36,6 +36,7 @@ import {
 import {
   normalizeEventAppointments,
 } from '../data-management/eventStore';
+import { getRegisteredNode } from '../nodes/registry';
 import { NodeCustomSelect } from '../nodes/shared/NodeCustomSelect';
 import { HighlightedPreviewText } from '../nodes/shared/HighlightedPreviewText';
 import { providerOption } from '../nodes/shared/providerHealthLabels';
@@ -753,6 +754,26 @@ const rpWeekdayLanguageOptions: Array<{ value: RpWeekdayLanguage; label: string 
   { value: 'vi-VN', label: 'Tiếng Việt' },
 ];
 
+// The generic text dialog shows whichever data field the node's definition
+// declares via `textDialogSource`, falling back to the node's preview.
+// Specialized dialog views (history, event manager, character stats) are
+// handled by the branches above this in the content ternary.
+function textDialogSourceContent(node: WorkflowNode | undefined): string {
+  if (!node) {
+    return '';
+  }
+  switch (getRegisteredNode(node.data.nodeType)?.textDialogSource) {
+    case 'loadedText':
+      return node.data.loadedText ?? '';
+    case 'generatedText':
+      return node.data.generatedText ?? '';
+    case 'fullText':
+      return node.data.fullText ?? '';
+    default:
+      return node.data.preview ?? '';
+  }
+}
+
 export function StudioDialogs({
   textDialogNode,
   nodes,
@@ -1300,21 +1321,7 @@ export function StudioDialogs({
         ? formattedAppointmentsText
       : isHistoryDialog
       ? [rawHistoryDisplayText, formattedHistoryText].join('\n\n')
-      : textDialogNode?.data.nodeType === 'combiner' ||
-          textDialogNode?.data.nodeType === 'text-replace' ||
-          textDialogNode?.data.nodeType === 'last-user-input' ||
-          textDialogNode?.data.nodeType === 'last-rp-output' ||
-          textDialogNode?.data.nodeType === 'load-text' ||
-          textDialogNode?.data.nodeType === 'context-builder' ||
-          textDialogNode?.data.nodeType === 'llm-decision' ||
-          textDialogNode?.data.nodeType === 'character-stats'
-        ? textDialogNode.data.nodeType === 'load-text'
-          ? textDialogNode.data.loadedText ?? ''
-          : textDialogNode.data.fullText ?? ''
-        : textDialogNode?.data.nodeType === 'llm-prompt' ||
-            textDialogNode?.data.nodeType === 'llm-prompt-switch'
-          ? textDialogNode.data.generatedText ?? ''
-          : textDialogNode?.data.preview ?? '';
+      : textDialogSourceContent(textDialogNode);
   const jsonDialogContent = JSON.stringify(sanitizeDataUrls(jsonDialogNode?.data ?? {}), null, 2);
   const roundedUiScalePercent = Math.round(uiScale * 100);
   const canDecreaseUiScale = uiScale > minUiScale + 0.0001;

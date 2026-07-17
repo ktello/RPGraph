@@ -1,5 +1,5 @@
 import type { WorkflowNodeData } from '../../types';
-import type { CorePersistence } from '../corePersistence';
+import type { CoreNodePersistence } from '../types';
 
 function lastUserInputData(data: WorkflowNodeData): WorkflowNodeData {
   return {
@@ -11,7 +11,7 @@ function lastUserInputData(data: WorkflowNodeData): WorkflowNodeData {
   } as WorkflowNodeData;
 }
 
-export const lastUserInputPersistence: CorePersistence = {
+export const lastUserInputPersistence: CoreNodePersistence = {
   saveData: lastUserInputData,
   hydrateData: lastUserInputData,
 };
