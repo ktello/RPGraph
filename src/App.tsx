@@ -6982,7 +6982,7 @@ function App() {
                   maxTokens: 1200,
                   temperature: 0.2,
                 });
-                return parseImageGenerationAssistantResult(completion.text);
+                return parseImageGenerationAssistantResult(completion.text, describeImage);
               }}
               onGenerateImageAssistantImages={generateImageAssistantImages}
               onSaveImageAssistantImage={async ({ characterId, dataUrl, description }) => {
