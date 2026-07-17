@@ -32,6 +32,8 @@ import { CharacterStatsNodeCard } from './character-stats/Card';
 import { runCharacterStatsNode } from './character-stats/run';
 import { CombinerNodeCard } from './combiner/Card';
 import { executeCombinerNode } from './combiner/execute';
+import { TextReplaceNodeCard } from './text-replace/Card';
+import { executeTextReplaceNode } from './text-replace/execute';
 import { ContextCompressionNodeCard } from './context-compression/Card';
 import { runContextCompressionNode } from './context-compression/run';
 import { ContextBuilderNodeCard } from './context-builder/Card';
@@ -112,6 +114,7 @@ export const coreNodeLayout = {
   contextCompressionWidth: 365,
   characterStatsWidth: 430,
   textCombinerWidth: 365,
+  textReplaceWidth: 430,
   llmPromptWidth: 548,
   llmPromptHeight: 1140,
   loadTextWidth: 380,
@@ -600,6 +603,34 @@ const coreNodeCreationDefinitions: Array<Omit<CoreNodeCreationDefinition, 'saveD
         combinerInputCount: minimumCombinerInputs,
         combinerPrefixes: ['', ''],
         combinerInputPreviews: ['', ''],
+      },
+    }),
+  },
+  {
+    type: 'text-replace',
+    dataVersion: currentCoreNodeVersions['text-replace'],
+    label: 'Text Replace',
+    description: 'Swap source text for replacements',
+    menuDescription: 'Find & replace text via a source/replacement map',
+    origin: 'core',
+    ports: () => [
+      input('default', 'mixed', 'Text / JSON Input'),
+      output('text', 'text', 'Text'),
+      output('json', 'json', 'JSON'),
+    ],
+    Component: TextReplaceNodeCard,
+    execute: executeTextReplaceNode,
+    create: ({ position, createId }) => ({
+      id: createId('text-replace'),
+      type: 'workflow',
+      position,
+      style: { width: coreNodeLayout.textReplaceWidth },
+      data: {
+        label: 'Text Replace',
+        description: 'Swap source text for replacements',
+        preview: 'No replacements configured',
+        nodeType: 'text-replace',
+        textReplaceEntries: [{ id: 'text-replace-0', source: '', replacement: '' }],
       },
     }),
   },

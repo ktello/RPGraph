@@ -3572,6 +3572,42 @@ input[type="number"]::-webkit-outer-spin-button {
   margin-bottom: 0;
 }
 
+.workflow-node.text-replace-node {
+  width: 430px;
+}
+
+.text-replace-entries {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  margin-top: 10px;
+}
+
+.text-replace-empty {
+  opacity: 0.7;
+}
+
+.text-replace-entry {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.text-replace-field {
+  flex: 1;
+  min-width: 0;
+  font-weight: 500;
+}
+
+.text-replace-arrow {
+  flex: none;
+  opacity: 0.7;
+}
+
+.text-replace-remove {
+  flex: none;
+}
+
 .llm-decision-input {
   margin-top: 10px;
 }
