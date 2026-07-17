@@ -21,7 +21,8 @@ Type: `NodeCreationDefinition` (`src/nodes/types.ts`). Core nodes use the narrow
 | `Component` | `ComponentType<NodeProps<WorkflowNode>>` | Per-type card. |
 | `execute` | `(node, ctx) => Promise<string>` | Runtime behavior. |
 | `saveData` / `hydrateData` | `(data[, ctx]) => data` | Persistence normalizers. |
-| `hydrateStyle?` | `(node) => node.style` | Layout normalization on load. |
+| `layout` | `NodeLayout` | Boundary sizing authority (auto / resizable / manual). |
+| `hydrateStyle?` | `(node) => node.style` | Legacy/manual style override consulted by the layout normalizer. |
 | `singleton?` | `boolean` | Max one instance. |
 | `usesLlm?` | `boolean` | Node issues LLM calls. |
 | `contributesToTokenCalibration?` | `boolean` | Feeds token metrics. |
@@ -105,20 +106,24 @@ Shared card behavior (composition): `useNodeLayoutSync`, `runStateClassName`, `L
 
 ## Sizing
 
+Authority: the definition's required `layout` descriptor (`NodeLayout`, `src/nodes/nodeLayout.ts`; values in `coreNodeLayouts`). Modes:
+- `auto { width }` — card painted at `width` via the `--node-card-width` CSS variable (injected by `WorkflowNodeRenderer` for live cards only; placeholders keep their own widths). Height hugs content. No persisted size; the interaction wrapper measures the card.
+- `resizable { width, height, minWidth, minHeight, maxWidth?, resizeDirection? }` — persisted `style` is the wrapper authority; the card fills it (`width:100%; height:100%` CSS). `NodeResizeControl` bounds read from the layout. `resizeDirection: 'vertical'` locks width.
+- `manual` — the definition's `create()`/`hydrateStyle` own the style (`memory-slot` wire links).
+
 Two boxes per node:
-- Painted card: `.workflow-node` and `.workflow-node.<type>-node` (`src/styles.css`). Base width 365px; per-type override by class.
-- Interaction wrapper (React Flow node element): sized by persisted `style.width/height` when present, else measured size.
+- Painted card: `.workflow-node` (`src/styles.css`), base `width: var(--node-card-width, 365px)`. No per-type pixel-width rules.
+- Interaction wrapper (React Flow node element): React Flow prefers top-level `node.width`/`node.height` over `style`; resize controls write top-level values.
 
-Size sources (independent):
-- `coreNodeLayout` constants (`src/nodes/coreDefinitions.ts`) — seeded into `style` at `create`; re-applied by `hydrateStyle`.
-- Per-type CSS rule (`src/styles.css`).
-- Persisted `node.style`.
-- Measured size (React Flow ResizeObserver via `useNodeLayoutSync` → `updateNodeInternals`).
+Pipeline:
+- Create: `create()` bodies carry no size styles; the definition-stamping pass in `coreDefinitions.ts` applies `styleForLayout(layout)` (auto → none; resizable → defaults; manual → pass-through).
+- Hydrate: `normalizeNodeLayout` (`src/app/workflowHydration.ts`) reconciles all three size carriers (`style`, top-level `width`/`height`, `measured`): auto → strip all; resizable → clamp the effective size (top-level preferred) to layout bounds, write to `style`, clear the rest. `style` is the single persisted authority after load.
+- `hydrateStyle` (optional) is a legacy/manual override consulted by the normalizer pre-clamp. Defined only for: `text-preview` (legacy 390×350 → defaults migration), `memory-slot` (wire-link mode styles).
+- Starter workflow seeds (`src/workflow/defaults.ts`) read `coreNodeLayouts`.
+- `useNodeLayoutSync` re-measures the card (`updateNodeInternals`); it never writes back to `style`.
+- Placeholder nodes: hydration strips saved `width`/`height`/`measured`; the wrapper re-measures to the placeholder card. The `--node-card-width` variable is never set for them.
 
-Reconciliation:
-- `hydrateStyle` (optional) re-derives `style` from constants on load. Defined for: `llm-prompt`, `llm-prompt-switch`, `load-text`, `text-preview`, `context-builder`, `context-compression`.
-- `useNodeLayoutSync` re-measures the card; does not write back to `style`.
-- Placeholder nodes: hydration strips saved `width`/`height`/`measured` (`src/app/workflowHydration.ts`); the wrapper re-measures to the card.
+Containment: port handles intentionally overhang the card edge (−15/−16/−28px offsets), so `.workflow-node` MUST NOT clip via `overflow: hidden`. Non-handle content stays within the card rect (regression-tested in `test/e2e/nodeSizing.spec.ts`).
 
 ## Persistence
 
@@ -143,6 +148,7 @@ Reconciliation:
 Compile-enforced:
 - `coreNodeTypes` tuple (`src/nodes/coreNodeTypes.ts`).
 - `currentCoreNodeVersions` (`src/nodes/nodeVersion.ts`).
+- `coreNodeLayouts` entry (`src/nodes/nodeLayout.ts`).
 - `corePersistence` record (`src/nodes/corePersistence.ts`).
 - Data union variant in `ConcreteCoreWorkflowNodeData` (`src/types.ts`).
 - Creation definition in `coreNodeCreationDefinitions` (`src/nodes/coreDefinitions.ts`).

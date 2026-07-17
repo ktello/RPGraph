@@ -6,6 +6,7 @@ import {
 import { normalizeEventAppointments } from '../data-management/eventStore';
 import { flattenTurnMessages } from '../chat/turns';
 import { getRegisteredNode } from '../nodes/registry';
+import { normalizeNodeLayout } from '../nodes/nodeLayout';
 import {
   openingHistoryEventsFromNodes,
   openingHistoryCheckpointsFromNodes,
@@ -18,10 +19,16 @@ import { hydrateNodeData, removeEdgesConnectedToIncompatibleNodes } from '../wor
 import { isWorkflowFile } from '../workflow/validation';
 import { migrateStoredWorkflow } from '../workflow/migrations';
 
-function hydratedNodeStyle(node: WorkflowNode, data: WorkflowNodeData) {
+function hydratedNodeLayout(node: WorkflowNode, data: WorkflowNodeData) {
   // Only compatible nodes reach here (placeholder nodes are handled inline below).
-  const hydratedNode = { ...node, data };
-  return getRegisteredNode(data.nodeType)?.hydrateStyle?.(hydratedNode) ?? node.style;
+  // The normalizer reconciles every size carrier a save can hold (style,
+  // top-level width/height, measured) against the definition's layout, so a
+  // drifted or resized save always reloads with style as the single authority.
+  const definition = getRegisteredNode(data.nodeType);
+  if (!definition) {
+    return { style: node.style };
+  }
+  return normalizeNodeLayout({ ...node, data }, definition);
 }
 
 export type HydratedWorkflow = {
@@ -72,7 +79,7 @@ export function hydrateLoadedWorkflow({
     }
     return {
       ...node,
-      style: hydratedNodeStyle(node, data),
+      ...hydratedNodeLayout(node, data),
       selected: false,
       data,
     };

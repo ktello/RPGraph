@@ -15,6 +15,7 @@ import {
   maximumLlmPromptSwitchEntries,
 } from '../../workflow';
 import { useNodeActions } from '../NodeActionsContext';
+import { coreNodeLayouts } from '../nodeLayout';
 import { ConnectionSelect } from '../shared/ConnectionSelect';
 import { LlmCallMetrics, runStateClassName, useNodeLayoutSync } from '../shared/CardView';
 import { NodeCustomSelect } from '../shared/NodeCustomSelect';
@@ -541,9 +542,9 @@ export function LlmPromptSwitchNodeCard({ id, data }: NodeProps<WorkflowNode>) {
         position="bottom"
         variant={ResizeControlVariant.Line}
         resizeDirection="vertical"
-        minHeight={1140}
-        minWidth={548}
-        maxWidth={548}
+        minHeight={coreNodeLayouts['llm-prompt-switch'].minHeight}
+        minWidth={coreNodeLayouts['llm-prompt-switch'].minWidth}
+        maxWidth={coreNodeLayouts['llm-prompt-switch'].maxWidth}
       />
       <div className="node-title-row">
         <span className="node-dot" />

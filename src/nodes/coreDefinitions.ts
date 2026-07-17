@@ -106,41 +106,9 @@ import { PhoneAppsNodeCard } from './phone-apps/Card';
 import { executePhoneAppsNode } from './phone-apps/execute';
 import type { CoreNodeCreationDefinition, PortDefinition } from './types';
 import { corePersistence } from './corePersistence';
+import { coreNodeLayouts, styleForLayout } from './nodeLayout';
 import { currentCoreNodeVersions } from './nodeVersion';
 
-export const coreNodeLayout = {
-  standardWidth: 365,
-  rpStorybookWidth: 365,
-  contextCompressionWidth: 365,
-  characterStatsWidth: 430,
-  textCombinerWidth: 365,
-  textReplaceWidth: 430,
-  llmPromptWidth: 548,
-  llmPromptHeight: 1140,
-  loadTextWidth: 380,
-  loadTextHeight: 390,
-  writeTextWidth: 365,
-  writeTextHeight: 390,
-  noteWidth: 320,
-  noteHeight: 220,
-  groupWidth: 560,
-  groupHeight: 260,
-  memorySlotWidth: 218,
-  memorySlotHeight: 72,
-  phoneMessageRouterWidth: 365,
-  llmPromptSwitchWidth: 548,
-  llmPromptSwitchHeight: 1140,
-  textPreviewWidth: 365,
-  textPreviewHeight: 455,
-  lastMessageWidth: 365,
-  eventManagerWidth: 365,
-  contextBuilderWidth: 430,
-  contextBuilderHeight: 620,
-  llmDecisionWidth: 390,
-  customNodeWidth: 365,
-} as const;
-
-const legacyPromptTokenSettingsNodeHeight = 660;
 const legacyTextPreviewNodeWidth = 390;
 const legacyTextPreviewNodeHeight = 350;
 
@@ -152,7 +120,7 @@ function output(id: string, valueType: PortDefinition['valueType'], label: strin
   return { id, direction: 'output', valueType, label };
 }
 
-const coreNodeCreationDefinitions: Array<Omit<CoreNodeCreationDefinition, 'saveData' | 'hydrateData'>> = [
+const coreNodeCreationDefinitions: Array<Omit<CoreNodeCreationDefinition, 'saveData' | 'hydrateData' | 'layout'>> = [
   {
     type: 'input',
     dataVersion: currentCoreNodeVersions['input'],
@@ -199,10 +167,6 @@ const coreNodeCreationDefinitions: Array<Omit<CoreNodeCreationDefinition, 'saveD
       id: createId('note'),
       type: 'workflow',
       position,
-      style: {
-        width: coreNodeLayout.noteWidth,
-        height: coreNodeLayout.noteHeight,
-      },
       data: {
         label: 'Infobox',
         description: 'Markdown info box',
@@ -227,10 +191,6 @@ const coreNodeCreationDefinitions: Array<Omit<CoreNodeCreationDefinition, 'saveD
       id: createId('group'),
       type: 'workflow',
       position,
-      style: {
-        width: coreNodeLayout.groupWidth,
-        height: coreNodeLayout.groupHeight,
-      },
       data: {
         label: 'Node Group',
         description: 'Visual workflow group',
@@ -259,7 +219,6 @@ const coreNodeCreationDefinitions: Array<Omit<CoreNodeCreationDefinition, 'saveD
       id: createId('custom-node'),
       type: 'workflow',
       position,
-      style: { width: coreNodeLayout.customNodeWidth },
       data: {
         label: 'Custom Node',
         description: 'Assistant-built modular node',
@@ -285,7 +244,6 @@ const coreNodeCreationDefinitions: Array<Omit<CoreNodeCreationDefinition, 'saveD
       id: createId('last-user-input'),
       type: 'workflow',
       position,
-      style: { width: coreNodeLayout.lastMessageWidth },
       data: {
         label: 'Last User Input',
         description: 'Latest user message',
@@ -310,7 +268,6 @@ const coreNodeCreationDefinitions: Array<Omit<CoreNodeCreationDefinition, 'saveD
       id: createId('last-rp-output'),
       type: 'workflow',
       position,
-      style: { width: coreNodeLayout.lastMessageWidth },
       data: {
         label: 'Last RP Output',
         description: 'Latest RP output',
@@ -342,7 +299,6 @@ const coreNodeCreationDefinitions: Array<Omit<CoreNodeCreationDefinition, 'saveD
       id: 'event-manager',
       type: 'workflow',
       position,
-      style: { width: coreNodeLayout.eventManagerWidth },
       data: {
         label: 'Event Manager',
         description: 'Scheduled event tracking and context',
@@ -422,7 +378,6 @@ const coreNodeCreationDefinitions: Array<Omit<CoreNodeCreationDefinition, 'saveD
       id: createId('phone-message-router'),
       type: 'workflow',
       position,
-      style: { width: coreNodeLayout.phoneMessageRouterWidth },
       data: {
         label: 'Text Router',
         description: 'Route text by bool or number',
@@ -461,7 +416,6 @@ const coreNodeCreationDefinitions: Array<Omit<CoreNodeCreationDefinition, 'saveD
       id: createId('text-selector'),
       type: 'workflow',
       position,
-      style: { width: coreNodeLayout.phoneMessageRouterWidth },
       data: {
         label: 'Text Selector',
         description: 'Select text by bool or number',
@@ -484,14 +438,6 @@ const coreNodeCreationDefinitions: Array<Omit<CoreNodeCreationDefinition, 'saveD
     contributesToTokenCalibration: true,
     requiresPostOutputPermission: true,
     requiresPreparedInputEdge: true,
-    hydrateStyle: (node) => ({
-      ...node.style,
-      width: coreNodeLayout.llmPromptSwitchWidth,
-      height:
-        typeof node.style?.height === 'number'
-          ? Math.max(node.style.height, coreNodeLayout.llmPromptSwitchHeight)
-          : coreNodeLayout.llmPromptSwitchHeight,
-    }),
     ports: (data) => [
       input(promptSwitchTextHandle, 'text', 'Text Input'),
       input('image', 'image', 'Image Input'),
@@ -507,7 +453,6 @@ const coreNodeCreationDefinitions: Array<Omit<CoreNodeCreationDefinition, 'saveD
       id: createId('llm-prompt-switch'),
       type: 'workflow',
       position,
-      style: { width: coreNodeLayout.llmPromptSwitchWidth, height: coreNodeLayout.llmPromptSwitchHeight },
       data: {
         label: 'LLM Prompt Switch',
         description: 'Select an LLM prompt by output channel and prompt slot',
@@ -539,16 +484,6 @@ const coreNodeCreationDefinitions: Array<Omit<CoreNodeCreationDefinition, 'saveD
     contributesToTokenCalibration: true,
     requiresPostOutputPermission: true,
     requiresPreparedInputEdge: true,
-    hydrateStyle: (node) => ({
-      ...node.style,
-      width: coreNodeLayout.llmPromptWidth,
-      height:
-        typeof node.style?.height === 'number'
-          ? node.style.height === legacyPromptTokenSettingsNodeHeight
-            ? coreNodeLayout.llmPromptHeight
-            : Math.max(node.style.height, coreNodeLayout.llmPromptHeight)
-          : coreNodeLayout.llmPromptHeight,
-    }),
     ports: () => [
       input('default', 'text', 'Text Input'),
       input('image', 'image', 'Image Input'),
@@ -562,7 +497,6 @@ const coreNodeCreationDefinitions: Array<Omit<CoreNodeCreationDefinition, 'saveD
       id: createId('llm-prompt'),
       type: 'workflow',
       position,
-      style: { width: coreNodeLayout.llmPromptWidth, height: coreNodeLayout.llmPromptHeight },
       data: {
         label: 'LLM Prompt',
         description: 'LLM provider call',
@@ -626,7 +560,6 @@ const coreNodeCreationDefinitions: Array<Omit<CoreNodeCreationDefinition, 'saveD
       id: createId('text-replace'),
       type: 'workflow',
       position,
-      style: { width: coreNodeLayout.textReplaceWidth },
       data: {
         label: 'Text Replace',
         description: 'Swap source text for replacements',
@@ -650,7 +583,6 @@ const coreNodeCreationDefinitions: Array<Omit<CoreNodeCreationDefinition, 'saveD
       id: createId('load-text'),
       type: 'workflow',
       position,
-      style: { width: coreNodeLayout.loadTextWidth, height: coreNodeLayout.loadTextHeight },
       data: {
         label: 'Load Text',
         description: 'Load a text-based file as workflow input',
@@ -675,7 +607,6 @@ const coreNodeCreationDefinitions: Array<Omit<CoreNodeCreationDefinition, 'saveD
       id: createId('write-text'),
       type: 'workflow',
       position,
-      style: { width: coreNodeLayout.writeTextWidth, height: coreNodeLayout.writeTextHeight },
       data: {
         label: 'Write Text',
         description: 'Write reusable text directly in the node',
@@ -740,13 +671,13 @@ const coreNodeCreationDefinitions: Array<Omit<CoreNodeCreationDefinition, 'saveD
         node.style?.width === undefined ||
         (node.style.width === legacyTextPreviewNodeWidth &&
           node.style?.height === legacyTextPreviewNodeHeight)
-          ? coreNodeLayout.textCombinerWidth
+          ? coreNodeLayouts['text-preview'].width
           : node.style.width,
       height:
         node.style?.height === undefined ||
         (node.style.width === legacyTextPreviewNodeWidth &&
           node.style.height === legacyTextPreviewNodeHeight)
-          ? coreNodeLayout.textPreviewHeight
+          ? coreNodeLayouts['text-preview'].height
           : node.style.height,
     }),
     ports: () => [input('default', 'mixed', 'Mixed Input'), output('default', 'mixed', 'Mixed')],
@@ -756,7 +687,6 @@ const coreNodeCreationDefinitions: Array<Omit<CoreNodeCreationDefinition, 'saveD
       id: createId('text-preview'),
       type: 'workflow',
       position,
-      style: { width: coreNodeLayout.textPreviewWidth, height: coreNodeLayout.textPreviewHeight },
       data: {
         label: 'Text Preview',
         description: 'Display passing text and estimated context size',
@@ -773,11 +703,6 @@ const coreNodeCreationDefinitions: Array<Omit<CoreNodeCreationDefinition, 'saveD
     description: 'Select and arrange structured context sections',
     menuDescription: 'Select and arrange structured context',
     origin: 'core',
-    hydrateStyle: (node) => ({
-      ...node.style,
-      width: node.style?.width ?? coreNodeLayout.contextBuilderWidth,
-      height: node.style?.height ?? coreNodeLayout.contextBuilderHeight,
-    }),
     ports: () => [
       ...Array.from({ length: contextBuilderInputCount }, (_, index) =>
         input(contextBuilderInputHandle(index), 'json', `JSON Input ${index + 1}`),
@@ -790,7 +715,6 @@ const coreNodeCreationDefinitions: Array<Omit<CoreNodeCreationDefinition, 'saveD
       id: createId('context-builder'),
       type: 'workflow',
       position,
-      style: { width: coreNodeLayout.contextBuilderWidth, height: coreNodeLayout.contextBuilderHeight },
       data: {
         label: 'Context Builder',
         description: 'Select and arrange structured context sections',
@@ -829,7 +753,6 @@ const coreNodeCreationDefinitions: Array<Omit<CoreNodeCreationDefinition, 'saveD
       id: createId('llm-decision'),
       type: 'workflow',
       position,
-      style: { width: coreNodeLayout.llmDecisionWidth },
       data: {
         label: 'LLM Decision',
         description: 'Ask LLM questions and output bool, text and number',
@@ -862,7 +785,6 @@ const coreNodeCreationDefinitions: Array<Omit<CoreNodeCreationDefinition, 'saveD
       id: createId('context-compression'),
       type: 'workflow',
       position,
-      style: { width: coreNodeLayout.contextCompressionWidth },
       data: {
         label: 'Context Compression',
         description: 'Summarize text when its context budget is reached',
@@ -887,11 +809,6 @@ const coreNodeCreationDefinitions: Array<Omit<CoreNodeCreationDefinition, 'saveD
     contributesToTokenCalibration: true,
     requiresPostOutputPermission: true,
     requiresPreparedInputEdge: true,
-    hydrateStyle: (node) => ({
-      ...node.style,
-      width: coreNodeLayout.characterStatsWidth,
-      height: undefined,
-    }),
     ports: () => [
       input('initial-context', 'text', 'Initial Context'),
       input('last-message', 'text', 'Last Message'),
@@ -904,7 +821,6 @@ const coreNodeCreationDefinitions: Array<Omit<CoreNodeCreationDefinition, 'saveD
       id: createId('character-stats'),
       type: 'workflow',
       position,
-      style: { width: coreNodeLayout.characterStatsWidth },
       data: {
         label: 'Character Stats Tracker',
         description: 'Track character stats',
@@ -1014,7 +930,6 @@ const coreNodeCreationDefinitions: Array<Omit<CoreNodeCreationDefinition, 'saveD
       id: createId('rp-storybook-v1'),
       type: 'workflow',
       position,
-      style: { width: coreNodeLayout.rpStorybookWidth },
       data: {
         label: 'RP Storybook V2',
         description: 'Complete roleplay storybook',
@@ -1048,7 +963,6 @@ const coreNodeCreationDefinitions: Array<Omit<CoreNodeCreationDefinition, 'saveD
       id: createId('rp-storybook-editor'),
       type: 'workflow',
       position,
-      style: { width: coreNodeLayout.rpStorybookWidth },
       data: {
         label: 'RP Storybook Editor',
         description: 'Edit storybook text and JSON',
@@ -1076,7 +990,6 @@ const coreNodeCreationDefinitions: Array<Omit<CoreNodeCreationDefinition, 'saveD
       id: 'phone-apps',
       type: 'workflow',
       position,
-      style: { width: coreNodeLayout.standardWidth },
       data: {
         label: 'Phone Apps',
         description: 'Providers for direct phone apps',
@@ -1130,6 +1043,16 @@ const coreNodeCreationDefinitions: Array<Omit<CoreNodeCreationDefinition, 'saveD
 export const coreNodeDefinitions: CoreNodeCreationDefinition[] =
   coreNodeCreationDefinitions.map((definition) => ({
     ...definition,
+    layout: coreNodeLayouts[definition.type],
+    // Creation styles come from the layout descriptor, never from create() bodies
+    // (manual-mode nodes keep the style their create() provides).
+    create: (context) => {
+      const node = definition.create(context);
+      return {
+        ...node,
+        style: styleForLayout(coreNodeLayouts[definition.type], node.style),
+      };
+    },
     saveData: (data) => ({
       ...corePersistence[definition.type].saveData(data),
       nodeDataVersion: definition.dataVersion,

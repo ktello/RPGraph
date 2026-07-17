@@ -2,6 +2,7 @@ import { useEffect, useRef, useState, type CSSProperties, type ReactNode } from 
 import { NodeResizeControl, type NodeProps } from '@xyflow/react';
 import type { WorkflowNode } from '../../types';
 import { useNodeActions } from '../NodeActionsContext';
+import { coreNodeLayouts } from '../nodeLayout';
 import { useNodeLayoutSync } from '../shared/CardView';
 
 const minNoteFontSize = 10;
@@ -291,7 +292,11 @@ export function NoteNodeCard({ id, data }: NodeProps<WorkflowNode>) {
 
   return (
     <div className="workflow-node note-node" ref={nodeBodyRef}>
-      <NodeResizeControl className="note-resize-control" minHeight={160} minWidth={260} />
+      <NodeResizeControl
+        className="note-resize-control"
+        minHeight={coreNodeLayouts.note.minHeight}
+        minWidth={coreNodeLayouts.note.minWidth}
+      />
       <div className="note-size-controls nodrag">
         <button type="button" aria-label="Decrease text size" onClick={() => changeFontSize(-1)}>
           -

@@ -1160,7 +1160,10 @@ input[type="radio"]:focus-visible {
 .workflow-node {
   --node-status-color: #7eb9c5;
   position: relative;
-  width: 365px;
+  /* Auto-mode cards are sized by the definition's layout descriptor via
+     WorkflowNodeRenderer; 365px is the fallback for cards with no layout
+     (placeholders keep their own widths — the variable is never set for them). */
+  width: var(--node-card-width, 365px);
   min-height: 157px;
   padding: 15px;
   border: 1px solid #343e53;
@@ -1270,28 +1273,23 @@ input[type="radio"]:focus-visible {
 
 .workflow-node.translator-node {
   position: relative;
-  width: 365px;
   min-height: 285px;
 }
 
 .workflow-node.history-node {
-  width: 365px;
   min-height: 250px;
 }
 
 .workflow-node.compression-node {
   position: relative;
-  width: 365px;
   min-height: 535px;
 }
 
 .workflow-node.fixed-number-node {
-  width: 365px;
   min-height: 170px;
 }
 
 .workflow-node.settings-value-node {
-  width: 365px;
   min-height: 185px;
 }
 
@@ -1521,12 +1519,10 @@ input[type="radio"]:focus-visible {
 }
 
 .workflow-node.llm-decision-node {
-  width: 390px;
   min-height: 360px;
 }
 
 .workflow-node.custom-node {
-  width: 365px;
   min-height: 300px;
 }
 
@@ -1804,18 +1800,11 @@ input[type="radio"]:focus-visible {
 }
 
 .workflow-node.last-message-node {
-  width: 365px;
   min-height: 170px;
 }
 
 .workflow-node.combiner-node {
-  width: 365px;
   min-height: 213px;
-}
-
-.workflow-node.dynamic-context-node {
-  width: 100%;
-  min-height: 370px;
 }
 
 .dynamic-context-config-button {
@@ -2143,7 +2132,6 @@ input[type="radio"]:focus-visible {
 .workflow-node.character-stats-node {
   display: flex;
   flex-direction: column;
-  width: 430px;
   padding: 16px;
   min-height: 420px;
 }
@@ -2151,7 +2139,6 @@ input[type="radio"]:focus-visible {
 .workflow-node.rp-storybook-node {
   display: flex;
   flex-direction: column;
-  width: 100%;
   padding: 16px;
   min-height: 300px;
 }
@@ -3570,10 +3557,6 @@ input[type="number"]::-webkit-outer-spin-button {
 
 .combiner-total {
   margin-bottom: 0;
-}
-
-.workflow-node.text-replace-node {
-  width: 430px;
 }
 
 .text-replace-entries {

@@ -1,6 +1,7 @@
 import { NodeResizeControl, type NodeProps } from '@xyflow/react';
 import type { WorkflowNode } from '../../types';
 import { useNodeActions } from '../NodeActionsContext';
+import { coreNodeLayouts } from '../nodeLayout';
 import { useNodeLayoutSync } from '../shared/CardView';
 
 export function GroupNodeCard({ id, data }: NodeProps<WorkflowNode>) {
@@ -10,7 +11,11 @@ export function GroupNodeCard({ id, data }: NodeProps<WorkflowNode>) {
 
   return (
     <div className="workflow-node group-node" ref={nodeBodyRef}>
-      <NodeResizeControl className="group-resize-control" minHeight={120} minWidth={260} />
+      <NodeResizeControl
+        className="group-resize-control"
+        minHeight={coreNodeLayouts.group.minHeight}
+        minWidth={coreNodeLayouts.group.minWidth}
+      />
       <div className="group-node-header">
         <input
           className="group-title-input nodrag"

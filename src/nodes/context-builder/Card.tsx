@@ -3,6 +3,7 @@ import { Handle, NodeResizeControl, Position, type NodeProps } from '@xyflow/rea
 import type { WorkflowNode } from '../../types';
 import { contextBuilderInputCount, contextBuilderInputHandle, contextBuilderText } from '../../workflow';
 import { useNodeActions } from '../NodeActionsContext';
+import { coreNodeLayouts } from '../nodeLayout';
 import { runStateClassName, useNodeLayoutSync } from '../shared/CardView';
 import { PortLabel } from '../shared/PortValue';
 
@@ -17,7 +18,11 @@ export function ContextBuilderNodeCard({ id, data }: NodeProps<WorkflowNode>) {
 
   return (
     <div className={`workflow-node context-builder-node${runStateClassName(data)}`} ref={nodeBodyRef}>
-      <NodeResizeControl className="context-builder-resize-control" minHeight={390} minWidth={350} />
+      <NodeResizeControl
+        className="context-builder-resize-control"
+        minHeight={coreNodeLayouts['context-builder'].minHeight}
+        minWidth={coreNodeLayouts['context-builder'].minWidth}
+      />
       <div className="node-title-row">
         <span className="node-dot" />
         <strong>{data.label}</strong>

@@ -1,6 +1,7 @@
 import { Handle, NodeResizeControl, Position, type NodeProps } from '@xyflow/react';
 import type { WorkflowNode } from '../../types';
 import { useNodeActions } from '../NodeActionsContext';
+import { coreNodeLayouts } from '../nodeLayout';
 import { runStateClassName, useNodeLayoutSync } from '../shared/CardView';
 import { JsonSyntaxTextarea } from '../shared/JsonSyntaxTextarea';
 import { PortLabel } from '../shared/PortValue';
@@ -11,7 +12,11 @@ export function LoadTextNodeCard({ id, data }: NodeProps<WorkflowNode>) {
   const wrapPreview = data.loadTextWrapPreview ?? true;
   return (
     <div className={`workflow-node load-text-node${wrapPreview ? ' load-text-wrap-preview' : ''}${runStateClassName(data)}`} ref={nodeBodyRef}>
-      <NodeResizeControl className="load-text-resize-control" minHeight={270} minWidth={300} />
+      <NodeResizeControl
+        className="load-text-resize-control"
+        minHeight={coreNodeLayouts['load-text'].minHeight}
+        minWidth={coreNodeLayouts['load-text'].minWidth}
+      />
       <div className="node-title-row">
         <span className="node-dot" />
         <strong>{data.label}</strong>

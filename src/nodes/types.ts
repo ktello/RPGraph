@@ -18,6 +18,7 @@ import type {
 } from '../types';
 import type { PromptActionConfig, PromptActionRuntimeSettings } from './shared/promptActions';
 import type { OutputFormatHelpKind } from './output/formatHelp';
+import type { NodeLayout } from './nodeLayout';
 import type { NodeVersion } from './nodeVersion';
 import type { EventEntity } from '../data-management/types';
 import type { WorkflowVariableSetCommand } from '../workflow/variables';
@@ -155,6 +156,10 @@ export type NodeDefinition<
   requiresPostOutputPermission?: boolean;
   passiveRuntime?: boolean;
   requiresPreparedInputEdge?: boolean;
+  layout: NodeLayout;
+  // Legacy/manual style override consulted by the layout normalizer before
+  // clamping (text-preview's legacy-dimension migration, memory-slot's
+  // wire-link mode styles). Most nodes must not define this.
   hydrateStyle?: (node: Node<TData>) => Node<TData>['style'];
   ports: (data: TData) => PortDefinition[];
   create: (context: CreateNodeContext) => Node<TData>;
@@ -187,6 +192,9 @@ export type NodeCreationDefinition = {
   requiresPostOutputPermission?: boolean;
   passiveRuntime?: boolean;
   requiresPreparedInputEdge?: boolean;
+  layout: NodeLayout;
+  // Legacy/manual style override consulted by the layout normalizer before
+  // clamping. Most nodes must not define this.
   hydrateStyle?: (node: WorkflowNode) => WorkflowNode['style'];
   ports: (data: WorkflowNode['data']) => PortDefinition[];
   create: (context: CreateNodeContext) => WorkflowNode;

@@ -3,6 +3,7 @@ import { Handle, NodeResizeControl, Position, ResizeControlVariant, type NodePro
 import type { WorkflowNode } from '../../types';
 import { useNodeActions } from '../NodeActionsContext';
 import { useNodeView } from '../NodeViewContext';
+import { coreNodeLayouts } from '../nodeLayout';
 import { ConnectionSelect } from '../shared/ConnectionSelect';
 import { LlmCallMetrics, runStateClassName, useNodeLayoutSync } from '../shared/CardView';
 import { PortLabel } from '../shared/PortValue';
@@ -338,9 +339,9 @@ export function LlmPromptNodeCard({ id, data }: NodeProps<WorkflowNode>) {
         position="bottom"
         variant={ResizeControlVariant.Line}
         resizeDirection="vertical"
-        minHeight={1140}
-        minWidth={548}
-        maxWidth={548}
+        minHeight={coreNodeLayouts['llm-prompt'].minHeight}
+        minWidth={coreNodeLayouts['llm-prompt'].minWidth}
+        maxWidth={coreNodeLayouts['llm-prompt'].maxWidth}
       />
       <div className="node-title-row">
         <span className="node-dot" />

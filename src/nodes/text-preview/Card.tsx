@@ -2,6 +2,7 @@ import { Handle, NodeResizeControl, Position, type NodeProps } from '@xyflow/rea
 import { StatLine } from '../../components/StatLine';
 import type { WorkflowNode } from '../../types';
 import { useNodeView } from '../NodeViewContext';
+import { coreNodeLayouts } from '../nodeLayout';
 import { runStateClassName, useNodeLayoutSync } from '../shared/CardView';
 import { HighlightedPreviewText } from '../shared/HighlightedPreviewText';
 import { PortLabel } from '../shared/PortValue';
@@ -12,7 +13,11 @@ export function TextPreviewNodeCard({ id, data }: NodeProps<WorkflowNode>) {
   const displayedText = data.fullText ?? '';
   return (
     <div className={`workflow-node text-preview-node${runStateClassName(data)}`} ref={nodeBodyRef}>
-      <NodeResizeControl className="text-preview-resize-control" minHeight={250} minWidth={300} />
+      <NodeResizeControl
+        className="text-preview-resize-control"
+        minHeight={coreNodeLayouts['text-preview'].minHeight}
+        minWidth={coreNodeLayouts['text-preview'].minWidth}
+      />
       <div className="node-title-row">
         <span className="node-dot" />
         <strong>{data.label}</strong>

@@ -8,9 +8,19 @@ import { MissingNodeCard } from './MissingNodeCard';
 function WorkflowNodeRendererComponent(props: NodeProps<WorkflowNode>) {
   const definition = getRegisteredNode(props.data.nodeType);
   const version = props.data.nodeDataVersion ?? definition?.dataVersion;
-  const style = version
-    ? { '--node-version-label': JSON.stringify(`v${version}`) } as CSSProperties
-    : undefined;
+  // Auto-mode cards paint at the definition's layout width. Placeholder cards
+  // (kind set) keep their own widths, so the variable is scoped to live cards.
+  const cardWidth =
+    definition && definition.layout.mode === 'auto' && props.data.kind === undefined
+      ? `${definition.layout.width}px`
+      : undefined;
+  const style =
+    version || cardWidth
+      ? {
+          ...(version ? { '--node-version-label': JSON.stringify(`v${version}`) } : {}),
+          ...(cardWidth ? { '--node-card-width': cardWidth } : {}),
+        } as CSSProperties
+      : undefined;
 
   let card;
   if (props.data.kind === 'incompatible-core-node') {

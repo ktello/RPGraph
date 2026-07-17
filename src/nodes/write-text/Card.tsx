@@ -2,6 +2,7 @@ import { Handle, NodeResizeControl, Position, type NodeProps } from '@xyflow/rea
 import type { WorkflowNode } from '../../types';
 import { useNodeActions } from '../NodeActionsContext';
 import { useNodeView } from '../NodeViewContext';
+import { coreNodeLayouts } from '../nodeLayout';
 import { runStateClassName, useNodeLayoutSync } from '../shared/CardView';
 import { JsonSyntaxTextarea, formatJsonTextSegments } from '../shared/JsonSyntaxTextarea';
 import { PortLabel } from '../shared/PortValue';
@@ -22,8 +23,8 @@ export function WriteTextNodeCard({ id, data }: NodeProps<WorkflowNode>) {
     <div className={`workflow-node write-text-node${runStateClassName(data)}`} ref={nodeBodyRef}>
       <NodeResizeControl
         className="write-text-resize-control"
-        minHeight={265}
-        minWidth={365}
+        minHeight={coreNodeLayouts['write-text'].minHeight}
+        minWidth={coreNodeLayouts['write-text'].minWidth}
       />
       <div className="node-title-row">
         <span className="node-dot" />

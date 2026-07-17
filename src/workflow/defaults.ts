@@ -1,6 +1,7 @@
 import { MarkerType, type Edge } from '@xyflow/react';
 import { defaultConnection } from '../settings';
 import { defaultAutoTurnInstructionSettings } from '../chat/instructions';
+import { coreNodeLayouts } from '../nodes/nodeLayout';
 import {
   defaultOutputSpeakerPromptSettings,
   defaultOutputSpeakerResponseFormat,
@@ -89,7 +90,10 @@ export function createInitialNodes(): WorkflowNode[] {
       id: 'llm-prompt-1',
       type: 'workflow',
       position: { x: 325, y: 170 },
-      style: { width: 548, height: 1140 },
+      style: {
+        width: coreNodeLayouts['llm-prompt'].width,
+        height: coreNodeLayouts['llm-prompt'].height,
+      },
       data: {
         label: 'LLM Prompt',
         description: 'LLM provider call',
