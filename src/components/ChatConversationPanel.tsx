@@ -180,6 +180,7 @@ type ChatConversationPanelProps = {
   contextualReferenceImageIds: ReadonlySet<string>;
   selectedReferenceImageIds: ReadonlySet<string>;
   canRunChat: boolean;
+  runChatDisabledReason?: string;
   autoplayEnabled: boolean;
   autoplayMode: AutoplayMode;
   autoplayReplayDisabled: boolean;
@@ -260,6 +261,7 @@ export function ChatConversationPanel({
   contextualReferenceImageIds,
   selectedReferenceImageIds,
   canRunChat,
+  runChatDisabledReason,
   autoplayEnabled,
   autoplayMode,
   autoplayReplayDisabled,
@@ -1992,7 +1994,8 @@ export function ChatConversationPanel({
               title={
                 canRunChat || isRunning
                   ? undefined
-                  : 'Add a Storybook with one player and at least one actor to run the chat.'
+                  : runChatDisabledReason ??
+                    'Add a Storybook with one player and at least one actor to run the chat.'
               }
             >
               {isRunning ? 'Cancel' : 'Run Chat'}
