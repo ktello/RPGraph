@@ -83,6 +83,21 @@ export function textReplaceEntries(data: WorkflowNodeData): TextReplaceEntry[] {
   }));
 }
 
+// Per-entry override input handle: a connection here overrides that entry's
+// replacement value at run time. Keyed by the entry's stable id so overrides
+// survive add/remove/edit.
+const textReplaceReplacementHandlePrefix = 'replacement:';
+
+export function textReplaceReplacementHandle(entryId: string) {
+  return `${textReplaceReplacementHandlePrefix}${entryId}`;
+}
+
+export function textReplaceReplacementEntryId(handle: string | null | undefined): string | null {
+  return handle && handle.startsWith(textReplaceReplacementHandlePrefix)
+    ? handle.slice(textReplaceReplacementHandlePrefix.length)
+    : null;
+}
+
 function escapeRegExpLiteral(value: string) {
   return value.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
 }

@@ -29,6 +29,7 @@ import {
   normalizeCharacterStatsState,
   settingsValueEntries,
   textReplaceEntries,
+  textReplaceReplacementHandle,
   textSelectorInputCount,
   textSelectorTextInputHandle,
   textRouterNumberOutputCount,
@@ -492,6 +493,14 @@ export function useNodeActionsController({
           },
         };
       }),
+    );
+    // Prune any override edge targeting the removed entry's handle so it can't
+    // linger invisibly and keep executing its upstream chain.
+    setEdges((currentEdges) =>
+      currentEdges.filter(
+        (edge) =>
+          !(edge.target === nodeId && edge.targetHandle === textReplaceReplacementHandle(entryId)),
+      ),
     );
   }
 

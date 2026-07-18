@@ -1,5 +1,10 @@
 import { describe, it, expect } from 'vitest';
-import { applyTextReplacements, textReplaceEntries } from './nodeHelpers';
+import {
+  applyTextReplacements,
+  textReplaceEntries,
+  textReplaceReplacementEntryId,
+  textReplaceReplacementHandle,
+} from './nodeHelpers';
 import type { TextReplaceEntry } from '../types';
 
 const entry = (source: string, replacement: string, id = source): TextReplaceEntry => ({
@@ -56,5 +61,20 @@ describe('textReplaceEntries', () => {
       { id: 'text-replace-0', source: 'a', replacement: '' },
       { id: 'kept', source: 'b', replacement: 'c' },
     ]);
+  });
+});
+
+describe('textReplace replacement-override handles', () => {
+  it('round-trips an entry id through the handle helpers', () => {
+    const handle = textReplaceReplacementHandle('text-replace-7');
+    expect(handle).toBe('replacement:text-replace-7');
+    expect(textReplaceReplacementEntryId(handle)).toBe('text-replace-7');
+  });
+
+  it('returns null for the default input handle and any non-replacement handle', () => {
+    expect(textReplaceReplacementEntryId(null)).toBeNull();
+    expect(textReplaceReplacementEntryId(undefined)).toBeNull();
+    expect(textReplaceReplacementEntryId('default')).toBeNull();
+    expect(textReplaceReplacementEntryId('text')).toBeNull();
   });
 });

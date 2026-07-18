@@ -1,7 +1,7 @@
 import type { CoreNodeFolderDefinition } from '../types';
 import { currentCoreNodeVersions } from '../nodeVersion';
 import { input, output } from '../portHelpers';
-import { textReplaceEntries } from '../../workflow/nodeHelpers';
+import { textReplaceEntries, textReplaceReplacementHandle } from '../../workflow/nodeHelpers';
 import { preservedData } from '../shared/persistenceHelpers';
 import { TextReplaceNodeCard } from './Card';
 import { executeTextReplaceNode } from './execute';
@@ -16,8 +16,11 @@ export const definition: CoreNodeFolderDefinition = {
   paletteOrder: 3,
   textDialogSource: 'fullText',
   origin: 'core',
-  ports: () => [
+  ports: (data) => [
     input('default', 'mixed', 'Text / JSON Input'),
+    ...textReplaceEntries(data).map((entry, index) =>
+      input(textReplaceReplacementHandle(entry.id), 'mixed', `Replacement ${index + 1} Override`),
+    ),
     output('text', 'text', 'Text'),
     output('json', 'json', 'JSON'),
   ],
