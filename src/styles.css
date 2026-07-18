@@ -3383,7 +3383,10 @@ input[type="number"]::-webkit-outer-spin-button {
 
 .text-preview-preview {
   flex: 1;
-  min-height: 72px;
+  /* min-height:0 lets the text area shrink to the node's available height so
+     overflow scrolls instead of the content pushing past the node boundary. */
+  min-height: 0;
+  overflow-y: auto;
   white-space: pre-wrap;
   font-family: "SFMono-Regular", Consolas, "Liberation Mono", monospace;
   cursor: text;
