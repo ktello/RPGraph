@@ -244,7 +244,7 @@ export function phoneContactsForViewer<TCharacter extends PhoneCharacterLike>(
         : undefined;
       const latestText = latestPhoneMessage
         ? phoneMessageVisibleText(latestPhoneMessage, options.englishProcessingEnabled)
-        : 'New';
+        : 'No messages yet';
       return {
         character,
         color: options.characterColors.get(character.name) ?? options.fallbackColor,

@@ -842,7 +842,7 @@ export function PromptCommandModal({
         <div className="dialog-header">
           <div>
             <h2 id={`${id}-command-dialog-title`}>Prompt Command</h2>
-            <p>Optional reply command. The prompt only lists it; the LLM requests it with a final [commands: ...] line, then receives these instructions in a follow-up pass.</p>
+            <p>Optional reply command. The prompt only lists it; the LLM requests it with an inline [command_name: rough plan] marker in the reply, then receives these instructions plus the plan in a follow-up pass.</p>
           </div>
           <div className="prompt-action-header-actions">
             <button className="close-button" type="button" onClick={onClose}>Close</button>

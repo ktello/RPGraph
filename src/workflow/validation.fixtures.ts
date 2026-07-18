@@ -96,7 +96,7 @@ import { parseRpOutput } from '../chat/rpOutput';
 import { formatPhoneInput } from '../chat/phoneReplies';
 import {
   autoplayStreamPreviewText,
-  stripAutoplayPlanBlocksFromStream,
+  stripPlanBlocksFromStream,
 } from '../chat/messageFormats';
 import { nextRpPictureName, rpPicturePhoneAttachment } from '../chat/rpPictures';
 import {
@@ -189,6 +189,7 @@ import {
   defaultPromptCommandInstructionTemplate,
   formatPromptCommandTokens,
   knownPromptCommandId,
+  parsePromptCommandRequest,
   replacePromptCommandTokensWithHints,
 } from '../nodes/shared/promptCommands';
 import { runActionAwarePrompt } from '../nodes/shared/promptRun';
@@ -3317,13 +3318,29 @@ export function verifyWorkflowValidationFixtures() {
       formatPromptCommandTokens('@command:bank_transfer\n@COMMAND:simulate_chatgpd') ===
         '@command: Bank_transfer\n@command: Simulate_ChatGPD' &&
       replacePromptCommandTokensWithHints('@command: Simulate_ChatGPD') ===
-        '[commands: simulate_ai_chat]' &&
+        '[simulate_ai_chat: rough plan — who chats with ChatGPD and about what]' &&
       formatPromptCommandTokens('@command:messenger_conversation') === '@command: Messenger_conversation' &&
       replacePromptCommandTokensWithHints('@command: Messenger_conversation') ===
-        '[commands: messenger_conversation]' &&
+        '[messenger_conversation: rough plan — app, both people, and what the exchange covers]' &&
       formatPromptCommandTokens('@command:create_note') === '@command: Create_Note' &&
-      replacePromptCommandTokensWithHints('@command: Create_Note') === '[commands: create_note]',
+      replacePromptCommandTokensWithHints('@command: Create_Note') ===
+        '[create_note: rough plan — whose note and what it will contain]',
     'prompt commands must accept flexible casing and spacing while preserving their internal command requests',
+  );
+  const inlineCommandRequest = parsePromptCommandRequest(
+    'Mia nods. [bank_transfer: Mia sends 40 dollars to Ryan] She taps her phone. [sighs]\n[commands: create_note]',
+  );
+  assertFixture(
+    inlineCommandRequest?.reply === 'Mia nods. She taps her phone. [sighs]' &&
+      inlineCommandRequest.requests.length === 2 &&
+      inlineCommandRequest.requests.some((request) =>
+        request.name === 'bank_transfer' && request.plan === 'Mia sends 40 dollars to Ryan',
+      ) &&
+      inlineCommandRequest.requests.some((request) =>
+        request.name === 'create_note' && request.plan === '',
+      ) &&
+      parsePromptCommandRequest('No commands here, only [bracketed: prose].') === undefined,
+    'inline command markers must be stripped with their plans while unknown brackets stay untouched',
   );
   const createdPhoneNoteOutput = parseEmbeddedPhoneMessagesFromRpOutput([
     'Sarah saves the plan in her Notes app.',
@@ -5154,7 +5171,7 @@ async function verifyPromptRunFixtures() {
     embeddedPhoneMessagesLivePreview(chunk)
   );
   assertFixture(
-    stripAutoplayPlanBlocksFromStream('[[Ryan checks whether Espen') === '' &&
+    stripPlanBlocksFromStream('[[Ryan checks whether Espen') === '' &&
       autoplayStreamPreviewText('[[Ryan checks whether Espen') === undefined &&
       autoplayStreamPreviewText('{"bankTransfers":[') === undefined &&
       autoplayStreamPreviewText('Ryan gets dressed and checks the time.') ===
@@ -5162,7 +5179,9 @@ async function verifyPromptRunFixtures() {
       streamableCommandChunks.every((chunk) => !chunk.includes('[[Ryan')) &&
       streamedCommandPreviews.some((preview) => preview.phoneMessages.length === 1) &&
       streamedCommandPreviews.some((preview) => preview.phoneMessages.length === 2) &&
-      commandStreamResult.generatedText.includes('"whatsUpApp"'),
+      commandStreamResult.generatedText.includes('"whatsUpApp"') &&
+      !commandStreamResult.generatedText.includes('[[') &&
+      commandChunks.every((chunk) => !chunk.includes('[[')),
     'a requested messenger command must stream standalone conversation messages one by one',
   );
 }

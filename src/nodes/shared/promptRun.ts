@@ -35,10 +35,13 @@ import {
   knownPromptCommandId,
   parsePromptCommandRequest,
   parsePromptCommandTokens,
+  promptCommandIds,
   promptCommandPassInstruction,
   replacePromptCommandTokensWithHints,
+  stripPromptCommandMarkers,
   type PromptCommandConfig,
   type PromptCommandId,
+  type PromptCommandPassRequest,
 } from './promptCommands';
 import { promptImagePass } from './promptImagePass';
 import {
@@ -49,6 +52,7 @@ import {
   socialMessageCorrectionContext,
   validateSocialMessengerAccounts,
 } from '../../chat/socialMessageValidation';
+import { stripPlanBlocks, stripPlanBlocksFromStream } from '../../chat/messageFormats';
 
 export type PromptPreviewPart = {
   text: string;
@@ -376,23 +380,33 @@ export async function runActionAwarePrompt({
   // action call or the visible reply. Hold streamed chunks back until the output
   // clearly starts as prose; JSON/fenced starts stay hidden so action calls never
   // flash into the chat.
-  // Commands are requested with a final "[commands: ...]" line that is stripped
-  // from the visible output later; hold a trailing line back from the stream while
-  // it still looks like such a request so it never flashes into the chat.
+  // Private "[[plan]]" blocks and command requests — inline "[command_name:
+  // plan]" markers or a final "[commands: ...]" line — are stripped from the
+  // visible output later; remove completed blocks and markers from the stream
+  // and hold back a trailing "[" while it still looks like the start of such a
+  // marker so control text never flashes into the chat.
+  const streamedCommandMarkerNames = ['command', 'commands', 'simulate_chatgpd', ...promptCommandIds];
   const holdTrailingCommandRequest = (value: string) => {
+    const withoutPlanBlocks = stripPlanBlocksFromStream(value);
     if (!availableCommandIds.length) {
-      return value;
+      return withoutPlanBlocks;
     }
-    const lineStart = value.lastIndexOf('\n') + 1;
-    const line = value.slice(lineStart).trimStart();
-    if (!line.startsWith('[')) {
-      return value;
+    const visible = stripPromptCommandMarkers(withoutPlanBlocks);
+    const openIndex = visible.lastIndexOf('[');
+    if (openIndex < 0 || visible.slice(openIndex).includes(']')) {
+      return visible;
     }
-    const inner = line.slice(1).trimStart().toLocaleLowerCase();
-    if (/^commands?\s*:/.test(inner) || 'commands:'.startsWith(inner)) {
-      return value.slice(0, lineStart).replace(/\s+$/, '');
+    const tail = visible.slice(openIndex + 1);
+    const tailMatch = tail.match(/^\s*([A-Za-z0-9_]*)([\s\S]*)$/);
+    const word = (tailMatch?.[1] ?? '').toLocaleLowerCase();
+    const rest = tailMatch?.[2] ?? '';
+    const looksLikeMarkerStart = rest
+      ? /^\s*:/.test(rest) && streamedCommandMarkerNames.includes(word)
+      : streamedCommandMarkerNames.some((name) => name.startsWith(word));
+    if (looksLikeMarkerStart) {
+      return visible.slice(0, openIndex).replace(/\s+$/, '');
     }
-    return value;
+    return visible;
   };
   const streamVisible = context.streamOutput
     ? (value: string) => context.streamOutput?.(holdTrailingCommandRequest(value))
@@ -538,23 +552,29 @@ export async function runActionAwarePrompt({
       // ("[commands: create_image]") instead of the action JSON. Recover by
       // treating it as an action request; the drafted reply becomes the plan
       // and is rewritten in the replay pass with the action result available.
-      const commandStyleRequest = parsePromptCommandRequest(output.text);
-      const requestedActionId = commandStyleRequest?.names
-        .map((name) => knownPromptActionId(name))
-        .find((actionId): actionId is 'getImageId' | 'createImage' =>
-          (actionId === 'getImageId' || actionId === 'createImage') &&
+      const commandStyleRequest = parsePromptCommandRequest(
+        output.text,
+        (name) => !!knownPromptCommandId(name) || !!knownPromptActionId(name),
+      );
+      const requestedAction = commandStyleRequest?.requests
+        .map((request) => ({ plan: request.plan, actionId: knownPromptActionId(request.name) }))
+        .find((entry): entry is { plan: string; actionId: 'getImageId' | 'createImage' } =>
+          (entry.actionId === 'getImageId' || entry.actionId === 'createImage') &&
           preReplyActionConfigs.some(
             (candidate) =>
-              candidate.actionId === actionId &&
+              candidate.actionId === entry.actionId &&
               !actionResults.has(promptActionKey(candidate.title)),
           ),
         );
-      if (commandStyleRequest && requestedActionId) {
+      if (commandStyleRequest && requestedAction) {
         actionRequest = {
-          action: requestedActionId,
-          plan: commandStyleRequest.reply
-            ? `Draft reply from the first pass (it is discarded and rewritten once the action result is available):\n${commandStyleRequest.reply}`
-            : '',
+          action: requestedAction.actionId,
+          plan: [
+            requestedAction.plan,
+            commandStyleRequest.reply
+              ? `Draft reply from the first pass (it is discarded and rewritten once the action result is available):\n${commandStyleRequest.reply}`
+              : '',
+          ].filter(Boolean).join('\n\n'),
         };
       }
     }
@@ -703,20 +723,29 @@ export async function runActionAwarePrompt({
     : undefined;
   if (commandRequest) {
     visibleReply = commandRequest.reply;
-    const requestedConfigs = commandRequest.names.flatMap((name) => {
-      const commandId = knownPromptCommandId(name);
+    const requestedEntries = commandRequest.requests.flatMap((request) => {
+      const commandId = knownPromptCommandId(request.name);
       if (!commandId || !availableCommandIds.includes(commandId)) {
-        context.reportWarning(`${node.data.label}: LLM requested unavailable command ${name}.`);
+        context.reportWarning(`${node.data.label}: LLM requested unavailable command ${request.name}.`);
         return [];
       }
-      return [configForPromptCommandToken(commandConfigs, commandId)];
+      return [{ commandId, plan: request.plan }];
     });
-    const uniqueRequestedConfigs = Array.from(
-      new Map(requestedConfigs.map((config) => [config.commandId, config])).values(),
+    const uniqueRequests = Array.from(
+      requestedEntries.reduce((byId, entry) => {
+        const existing = byId.get(entry.commandId);
+        return byId.set(entry.commandId, {
+          config: configForPromptCommandToken(commandConfigs, entry.commandId),
+          plan: [existing?.plan, entry.plan].filter(Boolean).join('\n'),
+        });
+      }, new Map<PromptCommandId, PromptCommandPassRequest>()).values(),
     );
-    if (uniqueRequestedConfigs.length && visibleReply) {
-      const commandNames = uniqueRequestedConfigs.map((config) => config.commandId).join(', ');
-      const instruction = promptCommandPassInstruction(visibleReply, uniqueRequestedConfigs, actionResultTexts);
+    if (uniqueRequests.length && visibleReply) {
+      const commandNames = uniqueRequests.map((request) => request.config.commandId).join(', ');
+      const instruction = promptCommandPassInstruction(visibleReply, uniqueRequests, actionResultTexts);
+      // The command pass prompts still see the full reply including [[plan]]
+      // blocks; everything streamed to the chat hides them.
+      const streamedVisibleReply = stripPlanBlocks(visibleReply);
       const streamCommandOutput = streamsVisibleOutput && context.streamOutput
         ? (value: string) => {
             const trimmed = value.trimStart();
@@ -726,7 +755,7 @@ export async function runActionAwarePrompt({
               trimmed.startsWith('```') ||
               '```'.startsWith(trimmed);
             if (trimmed && couldBeJson) {
-              context.streamOutput?.([visibleReply, value].filter(Boolean).join('\n'));
+              context.streamOutput?.([streamedVisibleReply, value].filter(Boolean).join('\n'));
             }
           }
         : undefined;
@@ -792,7 +821,7 @@ export async function runActionAwarePrompt({
           preview: 'Invalid command social account blocked; replaying command pass ...',
         });
         if (streamsVisibleOutput) {
-          context.streamOutput?.(visibleReply);
+          context.streamOutput?.(streamedVisibleReply);
         }
         output = await context.llm.complete({
           connectionId: node.data.connectionId,
@@ -840,11 +869,11 @@ export async function runActionAwarePrompt({
       if (commandJson.startsWith('{') || commandJson.startsWith('[')) {
         commandOutputText = commandJson;
         if (streamsVisibleOutput) {
-          context.streamOutput?.([visibleReply, commandOutputText].filter(Boolean).join('\n'));
+          context.streamOutput?.([streamedVisibleReply, commandOutputText].filter(Boolean).join('\n'));
         }
       } else {
         if (streamsVisibleOutput) {
-          context.streamOutput?.(visibleReply);
+          context.streamOutput?.(streamedVisibleReply);
         }
         context.reportWarning(
           `${node.data.label}: Command pass for ${commandNames} returned no JSON output.`,
@@ -921,9 +950,12 @@ export async function runActionAwarePrompt({
       finalOutputActionTexts.push(actionResult.finalOutputText);
     }
   }
-  if (commandRequest) {
-    generatedText = [visibleReply, commandOutputText].filter(Boolean).join('\n');
-  }
+  // [[plan]] blocks stay in visibleReply until here so the command and
+  // after-reply passes see the full plan; only the returned output hides them.
+  const visibleReplyForOutput = stripPlanBlocks(visibleReply);
+  generatedText = commandRequest
+    ? [visibleReplyForOutput, commandOutputText].filter(Boolean).join('\n')
+    : visibleReplyForOutput;
   if (generatedText.trim() && finalOutputActionTexts.length) {
     generatedText = [
       generatedText.trim(),
