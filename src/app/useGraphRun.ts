@@ -1021,6 +1021,14 @@ export function useGraphRun(options: UseGraphRunOptions) {
       }
     }
 
+    // Keep image-only submissions empty until input translation has been
+    // skipped. Downstream history and graph formatting still use the existing
+    // marker, without treating it as user-written text.
+    if (!displayText.trim() && inputImages.length > 0) {
+      inputText = 'Attached image.';
+      displayInputText = 'Attached image.';
+    }
+
     const inputCharacterName = existingInputMessage?.speakerName ??
       (isAutoplayRun || isNarratorTurn || (isAutoTurn && !inputCharacter)
         ? narratorSpeakerName

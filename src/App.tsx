@@ -5342,7 +5342,7 @@ function App() {
       rememberChatCharacter(selectedCharacter.id);
     }
     void runGraph(
-      message || 'Attached image.',
+      message,
       draftImages,
       undefined,
       messagesRef.current,
@@ -5643,7 +5643,7 @@ function App() {
     clearPhoneReply();
     setShowPhoneEmojiPicker(false);
     void runGraph(
-      message || 'Attached image.',
+      message,
       images,
       undefined,
       messagesRef.current,
