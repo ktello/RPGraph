@@ -616,6 +616,7 @@ export async function runActionAwarePrompt({
         actionConfig,
         actionAvailabilityOptions,
         actionRequest.plan,
+        stepImagePass.inputImageOffset + 1,
       );
       promptPasses.push({
         label: `Step ${step.name} action follow-up: ${actionConfig.title}`,
@@ -667,6 +668,7 @@ export async function runActionAwarePrompt({
       const actionResult = await executePromptAction(context, actionConfig, actionCall, {
         ...actionAvailabilityOptions,
         llmConnectionId: node.data.connectionId,
+        llmNodeId: node.id,
       });
       actionResults.set(promptActionKey(actionConfig.title), actionResult.text);
       actionResultTexts.push(actionResult.text);
@@ -889,12 +891,13 @@ export async function runActionAwarePrompt({
         break;
       }
 
+      const followUpImagePass = currentImagePass();
       const followUpInstruction = promptActionInstructionText(
         actionConfig,
         actionAvailabilityOptions,
         actionRequest.plan,
+        followUpImagePass.inputImageOffset + 1,
       );
-      const followUpImagePass = currentImagePass();
       const followUpTextInput = textInputForImagePass(inputValue, followUpImagePass);
       const promptBeforeForFollowUp = promptSectionValue(promptBefore);
       const followUpHistorySegments = cachedHistorySegments(followUpTextInput);
@@ -983,6 +986,7 @@ export async function runActionAwarePrompt({
     const actionResult = await executePromptAction(context, actionConfig, actionCall, {
       ...actionAvailabilityOptions,
       llmConnectionId: node.data.connectionId,
+      llmNodeId: node.id,
     });
     actionResults.set(actionKey, actionResult.text);
     actionResultTexts.push(actionResult.text);
@@ -1190,7 +1194,12 @@ export async function runActionAwarePrompt({
           textInputForPass,
         )
       : undefined;
-    const instruction = promptActionAfterReplyText(actionConfig, visibleReply, captionState);
+    const instruction = promptActionAfterReplyText(
+      actionConfig,
+      visibleReply,
+      captionState,
+      afterReplyImagePass.inputImageOffset + 1,
+    );
     const passLabel = `After-reply action: ${actionConfig.title}`;
     const historySegments = cachedHistorySegments(textInputForPass);
     promptPasses.push({
@@ -1324,6 +1333,7 @@ export async function runActionAwarePrompt({
     const actionResult = await executePromptAction(context, actionConfig, actionCall, {
       ...actionAvailabilityOptions,
       llmConnectionId: node.data.connectionId,
+      llmNodeId: node.id,
     });
     const recordedResult = actionResult.finalOutputText
       ? `After-reply action ${actionConfig.title} recorded:\n\n${actionResult.finalOutputText}`

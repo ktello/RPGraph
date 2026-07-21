@@ -27,7 +27,10 @@ import type {
 } from '../types';
 import type { StorybookCharacter } from '../storybook/runtime';
 import { chatAttachmentFromStorybookImage, findChatEndpoints } from '../storybook/runtime';
-import { storybookImageForAttachment } from '../storybook/imageLibrary';
+import {
+  storybookImageForAttachment,
+  storybookImageSourceByIdFromNodes,
+} from '../storybook/imageLibrary';
 import type { RpStorybook } from '../nodes/rp-storybook/model';
 import type { ExecuteTraceFormatResult, ExecuteTraceNodeInfo } from '../nodes/types';
 import type { RunLlmReport, LlmRunHistoryEntry } from '../components/AppDialogs';
@@ -342,6 +345,14 @@ function storybookImageAttachmentById(
     }
   }
   return undefined;
+}
+
+function currentStorybookImageAttachmentById(
+  nodes: readonly WorkflowNode[],
+  imageId: string | undefined,
+) {
+  const source = storybookImageSourceByIdFromNodes(nodes, imageId);
+  return source ? chatAttachmentFromStorybookImage(source.image) : undefined;
 }
 
 export function useGraphRun(options: UseGraphRunOptions) {
@@ -1110,6 +1121,7 @@ export function useGraphRun(options: UseGraphRunOptions) {
           ? preview.phoneMessages.map((phoneMessage, index) => {
               const previewImage =
                 rpPicturePhoneAttachment(messagesForRpPictureLookup, phoneMessage.imageId) ??
+                currentStorybookImageAttachmentById(nodesRef.current, phoneMessage.imageId) ??
                 storybookImageAttachmentById(storybooksByNodeId, phoneMessage.imageId);
               return {
                 phoneMessageId: -(index + 1),
@@ -1523,7 +1535,8 @@ export function useGraphRun(options: UseGraphRunOptions) {
       }
       const rpDisplayImageAttachment =
         !isPhoneMessage
-          ? storybookImageAttachmentById(storybooksByNodeId, parsedRpOutput.displayImageId) ??
+          ? currentStorybookImageAttachmentById(nodesRef.current, parsedRpOutput.displayImageId) ??
+            storybookImageAttachmentById(storybooksByNodeId, parsedRpOutput.displayImageId) ??
             rpPicturePhoneAttachment(
               [...messagesRef.current, ...(activeTurnCollectorRef.current?.inputMessages ?? [])],
               parsedRpOutput.displayImageId,

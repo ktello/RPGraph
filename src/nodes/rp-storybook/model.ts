@@ -351,6 +351,8 @@ function normalizedStorybookCharacterImageId(
   ownerBase: string,
   ownerImages: Array<Pick<RpStorybookCharacterImage, 'id'>>,
   usedIds: Set<string>,
+  usedImageDataUrls: ReadonlyMap<string, string>,
+  dataUrl: string,
   allowExternalId = false,
 ) {
   const id = stringValue(value);
@@ -358,7 +360,8 @@ function normalizedStorybookCharacterImageId(
   if (
     allowExternalId &&
     /^[a-z0-9][a-z0-9_]*_image_\d+$/i.test(id) &&
-    !ownerImages.some((image) => image.id === id)
+    !ownerImages.some((image) => image.id === id) &&
+    (!usedIds.has(id) || usedImageDataUrls.get(id) === dataUrl)
   ) {
     return id;
   }
@@ -368,7 +371,12 @@ function normalizedStorybookCharacterImageId(
   return nextStorybookCharacterImageId(ownerBase, ownerImages, usedIds);
 }
 
-function normalizeCharacterImages(value: unknown, ownerBase: string, usedIds: Set<string>): RpStorybookCharacterImage[] {
+function normalizeCharacterImages(
+  value: unknown,
+  ownerBase: string,
+  usedIds: Set<string>,
+  usedImageDataUrls: Map<string, string>,
+): RpStorybookCharacterImage[] {
   if (!Array.isArray(value)) {
     return [];
   }
@@ -383,10 +391,17 @@ function normalizeCharacterImages(value: unknown, ownerBase: string, usedIds: Se
     const receivedFrom = stringValue(image.receivedFrom);
     const imageAccess = image.imageAccess === true;
     const externalImage = !!receivedFrom || imageAccess;
-    const id = normalizedStorybookCharacterImageId(image.id, ownerBase, normalized, usedIds, externalImage);
-    if (!externalImage) {
-      usedIds.add(id);
-    }
+    const id = normalizedStorybookCharacterImageId(
+      image.id,
+      ownerBase,
+      normalized,
+      usedIds,
+      usedImageDataUrls,
+      dataUrl,
+      externalImage,
+    );
+    usedIds.add(id);
+    usedImageDataUrls.set(id, dataUrl);
     normalized.push({
       id,
       name: stringValue(image.name) || id,
@@ -528,13 +543,23 @@ export function rpStorybookCharacterVoiceConfig(value: unknown): RpStorybookChar
   };
 }
 
-function normalizeCharacter(value: unknown, index: number, usedImageIds: Set<string>): RpStorybookCharacter {
+function normalizeCharacter(
+  value: unknown,
+  index: number,
+  usedImageIds: Set<string>,
+  usedImageDataUrls: Map<string, string>,
+): RpStorybookCharacter {
   const character = recordValue(value);
   const name = stringValue(character.name);
   const id = stringValue(character.id) ||
     (name ? name.toLowerCase().replace(/[^a-z0-9]+/g, '-') : `character-${index + 1}`);
   const imageOwnerBase = storybookCharacterImageOwnerIdBase(name, id);
-  const images = normalizeCharacterImages(character.images, imageOwnerBase, usedImageIds);
+  const images = normalizeCharacterImages(
+    character.images,
+    imageOwnerBase,
+    usedImageIds,
+    usedImageDataUrls,
+  );
   const profileImage = normalizeCharacterProfileImage(character.profileImage, images);
   return {
     id,
@@ -562,7 +587,12 @@ export function normalizeRpStorybookCharacter(
   index: number,
   usedImageIds: Set<string>,
 ): RpStorybookCharacter {
-  return normalizeCharacter(value, index, usedImageIds);
+  return normalizeCharacter(
+    value,
+    index,
+    usedImageIds,
+    new Map([...usedImageIds].map((imageId) => [imageId, ''])),
+  );
 }
 
 function phoneContactRef(value: string) {
@@ -726,8 +756,9 @@ export function normalizeRpStorybook(value: unknown): RpStorybook {
   const scenario = recordValue(storybook.scenario);
   const characters = Array.isArray(storybook.characters) ? storybook.characters : [];
   const usedImageIds = new Set<string>();
+  const usedImageDataUrls = new Map<string, string>();
   const normalizedCharacters = characters.map((character, index) =>
-    normalizeCharacter(character, index, usedImageIds)
+    normalizeCharacter(character, index, usedImageIds, usedImageDataUrls)
   );
   const validPhoneContactRefs = new Set(normalizedCharacters.map((character) => character.id));
   const openingHistory = recordValue(storybook.openingHistory);

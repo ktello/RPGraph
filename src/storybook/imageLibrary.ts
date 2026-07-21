@@ -1,7 +1,8 @@
-import type { ChatImageAttachment, MessageRecord } from '../types';
+import type { ChatImageAttachment, MessageRecord, WorkflowNode } from '../types';
 import { isRpPictureGalleryId } from '../chat/rpPictures';
 import {
   nextStorybookCharacterImageId,
+  parseRpStorybookJson,
   storybookCharacterImageOwnerIdBase,
   type RpStorybookCharacterImage,
   type RpStorybook,
@@ -46,6 +47,28 @@ export function storybookImageSourceById(
 
 export function storybookImageById(storybooks: Iterable<RpStorybook>, imageId: string) {
   return storybookImageSourceById(storybooks, imageId)?.image;
+}
+
+export function storybookImageSourceByIdFromNodes(
+  nodes: readonly WorkflowNode[],
+  imageId: string | undefined,
+) {
+  const normalizedImageId = imageId?.trim();
+  if (!normalizedImageId) {
+    return undefined;
+  }
+  const storybooks: RpStorybook[] = [];
+  for (const node of nodes) {
+    if (node.data.kind !== undefined || node.data.nodeType !== 'rp-storybook' || !node.data.storybookJson) {
+      continue;
+    }
+    try {
+      storybooks.push(parseRpStorybookJson(node.data.storybookJson));
+    } catch {
+      // Storybook validation reports invalid JSON through its normal UI path.
+    }
+  }
+  return storybookImageSourceById(storybooks, normalizedImageId);
 }
 
 export function storybookImageForAttachment(
@@ -230,13 +253,15 @@ function storybookImageFromAttachment(
 
 function receivedImageIdentity(
   image: ChatImageAttachment,
-  currentImages: RpStorybookCharacterImage[],
+  allImages: RpStorybookCharacterImage[],
 ) {
   const preferredId = image.id.trim();
   if (!preferredId) {
     return undefined;
   }
-  const conflictingImage = currentImages.find((entry) => entry.id === preferredId && entry.dataUrl !== image.dataUrl);
+  const conflictingImage = allImages.find(
+    (entry) => entry.id === preferredId && entry.dataUrl !== image.dataUrl,
+  );
   if (conflictingImage) {
     return undefined;
   }
@@ -275,10 +300,11 @@ export function withImagesEnsuredForStorybookCharacter(
     if (!isStorybookCompatibleImage(image)) {
       return;
     }
+    const imageDescription = trimmedDescription || image.description?.trim() || '';
     const existingImage = existingImageByDataUrl.get(image.dataUrl);
     if (existingImage) {
-      const nextDescription = trimmedDescription && !existingImage.description.trim()
-        ? trimmedDescription
+      const nextDescription = imageDescription && !existingImage.description.trim()
+        ? imageDescription
         : existingImage.description;
       const receivedImageAccess = !!receivedFrom && existingImage.imageAccess === true;
       const nextReceivedFrom = existingImage.receivedFrom || receivedImageAccess
@@ -314,16 +340,15 @@ export function withImagesEnsuredForStorybookCharacter(
       (entry) => entry.id === image.id.trim() && entry.dataUrl !== image.dataUrl,
     );
     const receivedIdentity = receivedFrom || imageAccess || rpPictureIdentityAvailable
-      ? receivedImageIdentity(image, nextImages)
+      ? receivedImageIdentity(image, allImages)
       : undefined;
     const id = receivedIdentity?.id ?? nextStorybookCharacterImageId(ownerBase, nextImages, usedImageIds);
     const name = receivedIdentity?.name ?? id;
-    if (!receivedIdentity) {
-      usedImageIds.add(id);
-    }
-    const nextImage = storybookImageFromAttachment(image, id, name, trimmedDescription, options);
+    usedImageIds.add(id);
+    const nextImage = storybookImageFromAttachment(image, id, name, imageDescription, options);
     existingImageByDataUrl.set(image.dataUrl, nextImage);
     nextImages.push(nextImage);
+    allImages.push(nextImage);
     ensuredImages.push(nextImage);
     imageIds.push(id);
   });

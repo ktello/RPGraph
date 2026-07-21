@@ -58,6 +58,7 @@ import {
   type CreateComfyImageForCharacterRunner,
 } from '../nodes/runScratch';
 import { encodedDataUrlBytes, normalizeImageAttachment } from '../utils/imageNormalization';
+import { withGeneratedImageDescriptions } from './generatedImageDescriptions';
 
 type ExecuteGraphOptions = {
   outputNodeId: string;
@@ -495,6 +496,15 @@ export async function executeGraph({
         }, () => `generated_comfy_${Date.now()}_${index + 1}`),
       ),
     );
+    const describedImages = await withGeneratedImageDescriptions({
+      images: normalizedImages,
+      generationPrompt,
+      llm: graphLlm,
+      connectionId: request.llmConnectionId,
+      nodeId: request.llmNodeId,
+      signal,
+      warn,
+    });
 
     const storybookNodeCandidate = nodeById.get(phoneOwner.storybookNodeId);
     const storybookNode = storybookNodeCandidate?.data.nodeType === 'rp-storybook'
@@ -510,8 +520,8 @@ export async function executeGraph({
     const ensureResult = withImagesEnsuredForStorybookCharacter(
       storybook,
       phoneOwner.sourceId,
-      normalizedImages,
-      generationPrompt,
+      describedImages,
+      '',
     );
     if (ensureResult.addedCount + ensureResult.updatedCount > 0) {
       const nextStorybookJson = rpStorybookJsonText(ensureResult.storybook);

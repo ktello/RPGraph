@@ -1,6 +1,13 @@
 import { captureTurnRuntime } from '../chat/turns';
 import { currentSessionFormatVersion } from '../session/version';
-import type { MessageRecord, TurnRecord, WorkflowFile, WorkflowNode, WorkflowNodeData } from '../types';
+import type {
+  ChatImageAttachment,
+  MessageRecord,
+  TurnRecord,
+  WorkflowFile,
+  WorkflowNode,
+  WorkflowNodeData,
+} from '../types';
 import { getRegisteredCoreNode, registerNode } from '../nodes/registry';
 import { currentCoreNodeVersions } from '../nodes/nodeVersion';
 import type { ExecuteContext, NodeCreationDefinition } from '../nodes/types';
@@ -18,6 +25,7 @@ import {
   storybookImageById,
   storybookImageDescriptions,
   storybookImageSourceById,
+  storybookImageSourceByIdFromNodes,
   withChangedStorybookImageDescriptionsSynchronized,
   withImagesEnsuredForStorybookCharacter,
   withStorybookImageDescriptionUpdated,
@@ -195,6 +203,7 @@ import {
 import { runActionAwarePrompt } from '../nodes/shared/promptRun';
 import { applyTurnCheckpointToNodes } from '../data-management/checkpointStore';
 import { executeGraph, resolveCreateImageCharacterByName } from '../graph/executeGraph';
+import { withGeneratedImageDescriptions } from '../graph/generatedImageDescriptions';
 import { NodeLlmApi } from '../llm/NodeLlmApi';
 import { TextMetricsApi } from '../llm/tokenMetrics';
 import { llmCallStageLabel, promptSwitchRouteLabel } from '../llm/callDisplay';
@@ -4136,6 +4145,77 @@ export function verifyWorkflowValidationFixtures() {
       (normalizedDuplicateIds.characters[0]?.images.length ?? 0),
     'storybook image normalization must avoid duplicate ids inside one character library',
   );
+  const normalizedGlobalImageIds = parseRpStorybookJson(JSON.stringify({
+    ...emptyRpStorybook,
+    characters: [
+      {
+        id: 'lara_miller',
+        name: 'Lara Miller',
+        description: '',
+        personality: '',
+        speechStyle: '',
+        role: '',
+        images: [{
+          id: 'lara_miller_image_01',
+          name: 'own.jpg',
+          mimeType: 'image/jpeg',
+          size: 1,
+          dataUrl: 'data:image/jpeg;base64,own',
+          description: 'Lara owns this image.',
+        }],
+      },
+      {
+        id: 'robert_miller',
+        name: 'Robert Miller',
+        description: '',
+        personality: '',
+        speechStyle: '',
+        role: '',
+        images: [
+          {
+            id: 'lara_miller_image_01',
+            name: 'different.jpg',
+            mimeType: 'image/jpeg',
+            size: 1,
+            dataUrl: 'data:image/jpeg;base64,different',
+            description: 'A different received image.',
+            receivedFrom: 'Lara Miller',
+          },
+          {
+            id: 'lara_miller_image_01',
+            name: 'shared.jpg',
+            mimeType: 'image/jpeg',
+            size: 1,
+            dataUrl: 'data:image/jpeg;base64,own',
+            description: 'The same received image.',
+            receivedFrom: 'Lara Miller',
+          },
+        ],
+      },
+    ],
+  }));
+  const globalOwnImage = normalizedGlobalImageIds.characters[0]?.images[0];
+  const globalDifferentImage = normalizedGlobalImageIds.characters[1]?.images[0];
+  const globalSharedImage = normalizedGlobalImageIds.characters[1]?.images[1];
+  assertFixture(
+    globalOwnImage?.id === 'lara_miller_image_01' &&
+      globalDifferentImage?.id !== globalOwnImage.id &&
+      globalSharedImage?.id === globalOwnImage.id,
+    'storybook normalization must rename global image-id collisions while preserving deliberate copies of the same image',
+  );
+  const currentNodeImageSource = storybookImageSourceByIdFromNodes([{
+    id: 'current-storybook-image-fixture',
+    type: 'workflow',
+    position: { x: 0, y: 0 },
+    data: {
+      nodeType: 'rp-storybook',
+      storybookJson: rpStorybookJsonText(normalizedGlobalImageIds),
+    },
+  } as WorkflowNode], globalDifferentImage?.id);
+  assertFixture(
+    currentNodeImageSource?.image.dataUrl === 'data:image/jpeg;base64,different',
+    'current workflow nodes must resolve newly stored Storybook images without waiting for a render-time Storybook map refresh',
+  );
   const storybookWithFormattedTextImage = {
     ...emptyRpStorybook,
     characters: [{
@@ -4959,6 +5039,162 @@ async function verifyPromptRunFixtures() {
       ) &&
       !hiddenImageTextResult.text.includes('Sarah takes a smiling mirror selfie'),
     'image list action results must identify prior phone recipients with visible or hidden image text and warn against resending',
+  );
+
+  const combinedCaptionImageId = 'helga_harper_image_06';
+  const combinedCaptionDescription = 'Helga poses in a mirror wearing a black top and grey sweatpants while getting ready for the party.';
+  const combinedCaptionImage = {
+    id: combinedCaptionImageId,
+    name: combinedCaptionImageId,
+    mimeType: 'image/jpeg',
+    size: 1,
+    dataUrl: 'data:image/jpeg;base64,combined-caption-input',
+  } as ChatImageAttachment;
+  const combinedCaptionRequests: Array<{
+    prompt: string;
+    images?: ChatImageAttachment[];
+  }> = [];
+  const combinedCaptionOutputs = [
+    '{"action":"get_image_id","plan":"Find Sarah Miller\'s party selfie before replying."}',
+    '{"action":"get_image_id","characters":"Sarah Miller","tags":"mirror, selfie, party, outfit, smiling, indoor, portrait, evening, phone, bedroom"}',
+    '{"whatsUpApp":[{"from":"Espen Harper","to":"Helga Harper","message":"I found the picture."}]}',
+    `{"action":"update_phone_image_caption","imageId":"${combinedCaptionImageId}","imageAction":"no_change"}`,
+  ];
+  const combinedCaptionWarnings: string[] = [];
+  const combinedCaptionContext = {
+    ...imageListContext,
+    edges: [],
+    comfyProviderIds: [],
+    providerHealthById: {},
+    retryFormatErrorsEnabled: true,
+    llm: {
+      supportsVision: async () => true,
+      complete: async ({ prompt, images }: {
+        prompt: string;
+        images?: ChatImageAttachment[];
+      }) => {
+        combinedCaptionRequests.push({ prompt, images });
+        return {
+          text: combinedCaptionOutputs.shift() ?? '',
+          connection: { label: 'Fixture LLM' },
+        };
+      },
+    },
+    reportWarning: (message: string) => combinedCaptionWarnings.push(message),
+    reportFormatResult: () => {},
+    updateRuntimeData: () => {},
+  } as unknown as ExecuteContext;
+  const combinedCaptionResult = await runActionAwarePrompt({
+    node: {
+      id: 'fixture-combined-image-actions',
+      data: { label: 'Combined image actions', connectionId: 'fixture-connection' },
+    } as WorkflowNode,
+    context: combinedCaptionContext,
+    inputValue: `Helga Harper sends an image to Espen Harper: [${combinedCaptionImageId}: ${combinedCaptionDescription}] Do you still have Sarah's picture?`,
+    images: [combinedCaptionImage],
+    referenceImages: [],
+    promptBefore: '',
+    promptAfter: [
+      'Reply with one phone message.',
+      '@action:Get character phone image list',
+      '@action:Update phone image caption (After Reply Action)',
+    ].join('\n\n'),
+    actionConfigs: [
+      defaultPromptActionConfig('Get character phone image list', 'getImageId'),
+      defaultPromptActionConfig('Update phone image caption', 'updatePhoneImageCaption'),
+    ],
+    streamsVisibleOutput: false,
+    contributesToTokenCalibration: false,
+    callLabel: () => 'Combined image fixture',
+  });
+  const combinedReplayImages = combinedCaptionRequests[2]?.images ?? [];
+  const combinedAfterReplyImages = combinedCaptionRequests[3]?.images ?? [];
+  assertFixture(
+    combinedCaptionRequests.length === 4 &&
+      combinedReplayImages[0]?.id === sentImageId &&
+      combinedReplayImages[1]?.id === combinedCaptionImageId &&
+      combinedAfterReplyImages[0]?.id === sentImageId &&
+      combinedAfterReplyImages[1]?.id === combinedCaptionImageId &&
+      combinedCaptionRequests[2]?.prompt.includes(`Attached input image Nr2: ${combinedCaptionImageId}`) &&
+      combinedCaptionRequests[3]?.prompt.includes('Caption only the latest incoming phone input image: Attached input image Nr2.') &&
+      !combinedCaptionRequests[3]?.prompt.includes('this is normally Attached input image Nr1') &&
+      combinedCaptionWarnings.length === 0 &&
+      combinedCaptionResult.generatedText.includes('"imageAction": "no_change"'),
+    'combined image lookup and after-reply caption passes must keep action images first while labeling the real input image with its shifted number',
+  );
+
+  const generatedImage = {
+    id: 'generated_comfy_fixture_1',
+    name: 'generated.png',
+    mimeType: 'image/jpeg',
+    size: 1,
+    dataUrl: 'data:image/jpeg;base64,generated',
+  } as ChatImageAttachment;
+  const generatedCaptionRequests: Array<Parameters<NodeLlmApi['complete']>[0]> = [];
+  const generatedCaptionWarnings: string[] = [];
+  const generatedDescription = 'Sarah stands beside a rain-streaked window in a blue coat, looking outside under soft evening light.';
+  const describedGeneratedImages = await withGeneratedImageDescriptions({
+    images: [generatedImage],
+    generationPrompt: 'Sarah at a sunny beach wearing a red dress.',
+    llm: {
+      supportsVision: async () => true,
+      complete: async (request: Parameters<NodeLlmApi['complete']>[0]) => {
+        generatedCaptionRequests.push(request);
+        return {
+          text: generatedDescription,
+          connection: { label: 'Fixture LLM' },
+        };
+      },
+    } as unknown as Pick<NodeLlmApi, 'supportsVision' | 'complete'>,
+    connectionId: 'fixture-connection',
+    nodeId: 'fixture-prompt',
+    warn: (message) => generatedCaptionWarnings.push(message),
+  });
+  assertFixture(
+    describedGeneratedImages[0]?.description === generatedDescription &&
+      generatedCaptionRequests[0]?.images?.[0]?.dataUrl === generatedImage.dataUrl &&
+      generatedCaptionRequests[0]?.prompt.includes('Generation request: Sarah at a sunny beach wearing a red dress.') &&
+      generatedCaptionWarnings.length === 0,
+    'generated images must be described from their actual pixels instead of storing the generation request as their caption',
+  );
+  const generatedStorageStorybook = parseRpStorybookJson(JSON.stringify({
+    ...emptyRpStorybook,
+    characters: [{
+      id: 'lara_miller',
+      name: 'Lara Miller',
+      description: '',
+      personality: '',
+      speechStyle: '',
+      role: '',
+      images: [],
+    }],
+  }));
+  const storedGeneratedImage = withImagesEnsuredForStorybookCharacter(
+    generatedStorageStorybook,
+    'lara_miller',
+    describedGeneratedImages,
+    '',
+  ).images[0];
+  assertFixture(
+    storedGeneratedImage?.description === generatedDescription,
+    'generated image descriptions must survive Storybook storage when no shared fallback description is supplied',
+  );
+  let nonVisionCaptionCalls = 0;
+  const undescribedGeneratedImages = await withGeneratedImageDescriptions({
+    images: [generatedImage],
+    generationPrompt: 'An unverified generation request.',
+    llm: {
+      supportsVision: async () => false,
+      complete: async () => {
+        nonVisionCaptionCalls += 1;
+        throw new Error('A non-vision LLM must not receive image pixels.');
+      },
+    } as unknown as Pick<NodeLlmApi, 'supportsVision' | 'complete'>,
+    warn: () => {},
+  });
+  assertFixture(
+    nonVisionCaptionCalls === 0 && undescribedGeneratedImages[0]?.description === undefined,
+    'generated images must remain undescribed when the selected LLM cannot inspect their pixels',
   );
 
   const warnings: string[] = [];

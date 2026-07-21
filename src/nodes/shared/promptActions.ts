@@ -1283,14 +1283,16 @@ export function promptActionInstructionText(
   config: PromptActionConfig,
   options: PromptActionAvailabilityOptions,
   plan = '',
+  imageNumber = 1,
 ) {
-  const template = config.instructionTemplate;
+  const template = config.instructionTemplate
+    .split('{{imageNumber}}').join(String(imageNumber));
   const planText = plan.trim() || '(no plan provided)';
   const withPlan = template.includes('{{plan}}')
     ? template.split('{{plan}}').join(planText)
     : `${template.trim()}\n\nFirst-pass plan:\n${planText}`;
   if (config.actionId !== 'createImage') {
-    return withPlan;
+    return withInputImageTargetInstruction(withPlan, config.actionId, imageNumber);
   }
   const availableCharacters = createImageAvailableCharactersText(options);
   const rendered = withPlan
@@ -1303,10 +1305,32 @@ export function promptActionInstructionText(
     : rendered;
 }
 
+function withInputImageTargetInstruction(
+  rendered: string,
+  actionId: PromptActionId,
+  imageNumber: number,
+) {
+  const previousTargetInstruction = actionId === 'updatePhoneImageCaption'
+    ? 'Caption only the latest incoming phone input image. When image labels are present, this is normally Attached input image Nr1. Do not caption older attached/reference images such as Attached input image Nr2, Nr3, or images sent by the other character earlier.'
+    : actionId === 'describeInputImage'
+      ? 'Caption only the latest attached input image. When image labels are present, this is normally Attached input image Nr1. Do not caption older attached/reference images.'
+      : '';
+  if (!previousTargetInstruction) {
+    return rendered;
+  }
+  const targetInstruction = actionId === 'updatePhoneImageCaption'
+    ? `Caption only the latest incoming phone input image: Attached input image Nr${imageNumber}. Do not caption any other attached action/reference image or an image sent by the other character earlier.`
+    : `Caption only the latest attached input image: Attached input image Nr${imageNumber}. Do not caption any other attached action/reference image.`;
+  return rendered.includes(previousTargetInstruction)
+    ? rendered.replace(previousTargetInstruction, targetInstruction)
+    : `${rendered.trim()}\n\n${targetInstruction}`;
+}
+
 export function promptActionAfterReplyText(
   config: PromptActionConfig,
   reply: string,
   imageState?: PhoneImageCaptionPromptState,
+  imageNumber = 1,
 ) {
   const imageId = imageState?.imageId || 'new_image';
   const currentCaption = imageState?.currentCaption || '(none)';
@@ -1319,11 +1343,13 @@ export function promptActionAfterReplyText(
     currentCaption,
     captionStatus,
     requiredImageAction,
+    imageNumber: String(imageNumber),
   };
-  return config.afterReplyTemplate.replace(
-    /\{\{(reply|response|imageId|currentCaption|captionStatus|requiredImageAction)\}\}/g,
+  const rendered = config.afterReplyTemplate.replace(
+    /\{\{(reply|response|imageId|currentCaption|captionStatus|requiredImageAction|imageNumber)\}\}/g,
     (_match, name: string) => values[name] ?? '',
   );
+  return withInputImageTargetInstruction(rendered, config.actionId, imageNumber);
 }
 
 export type PhoneImageCaptionPromptState = {
@@ -1960,7 +1986,7 @@ export async function executePromptAction(
   context: ExecuteContext,
   config: PromptActionConfig,
   call: ParsedPromptActionCall,
-  options: PromptActionAvailabilityOptions & { llmConnectionId?: string } = {},
+  options: PromptActionAvailabilityOptions & { llmConnectionId?: string; llmNodeId?: string } = {},
 ) {
   if (!promptActionAvailable(config, options)) {
     return { text: '', images: [] };
@@ -2001,6 +2027,7 @@ export async function executePromptAction(
       loraCharacterName: call.loraCharacter || undefined,
       prompt: call.prompt ?? '',
       llmConnectionId: options.llmConnectionId,
+      llmNodeId: options.llmNodeId,
       comfyProviderId: config.comfyProviderId,
       manageModelMemory: config.manageModelMemoryForComfy,
     });
