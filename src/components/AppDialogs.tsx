@@ -90,6 +90,7 @@ import { CharacterAvatar } from './CharacterAvatar';
 import { TurnTraceDialog } from './TurnTraceDialog';
 import { useBackdropDismiss } from './useBackdropDismiss';
 import type { TurnTrace } from '../app/turnTrace';
+import type { DebugSnapshot } from '../app/debugSnapshot';
 import {
   llmPromptSwitchPromptAftersByOutput,
   llmPromptSwitchPromptBeforesByOutput,
@@ -3952,42 +3953,40 @@ type SystemLogDialogProps = {
   onCreateDebugSnapshot?: () => DebugSnapshot;
 };
 
-type DebugSnapshot = {
-  schema: 'rpgraph-debug-snapshot';
-  version: number;
-  createdAt: string;
-  compression?: {
-    mode: 'compact-debug-copy';
-    textPreviewCharacters: number;
-  };
-  selectedSections: string[];
-  appState: Record<string, unknown>;
-  lastRun: Record<string, unknown>;
-  recentTurns: unknown[];
-  promptSwitch: Record<string, unknown>;
-  eventManager: Record<string, unknown>;
-  nodes: unknown[];
-  edges: unknown[];
-  systemLog: unknown[];
-};
+type DebugSnapshotSectionKey = keyof Pick<
+  DebugSnapshot,
+  | 'appState'
+  | 'lastRun'
+  | 'recentTurns'
+  | 'promptSwitch'
+  | 'eventManager'
+  | 'nodes'
+  | 'edges'
+  | 'systemLog'
+>;
 
-type DebugSnapshotSection = {
+type DebugSnapshotSectionDef = {
   id: string;
   label: string;
-  snapshotKey: keyof Pick<
-    DebugSnapshot,
-    | 'appState'
-    | 'lastRun'
-    | 'recentTurns'
-    | 'promptSwitch'
-    | 'eventManager'
-    | 'nodes'
-    | 'edges'
-    | 'systemLog'
-  >;
-  tokenEstimate: number;
+  snapshotKey: DebugSnapshotSectionKey;
   defaultSelected: boolean;
 };
+
+type DebugSnapshotSection = DebugSnapshotSectionDef & {
+  copyValue: unknown;
+  tokenEstimate: number;
+};
+
+const debugSnapshotSectionDefs: DebugSnapshotSectionDef[] = [
+  { id: 'app-state', label: 'App State', snapshotKey: 'appState', defaultSelected: true },
+  { id: 'workflow-nodes', label: 'Workflow Nodes (Compact Runtime, includes RP Time prompt/response)', snapshotKey: 'nodes', defaultSelected: false },
+  { id: 'workflow-edges', label: 'Workflow Connections', snapshotKey: 'edges', defaultSelected: false },
+  { id: 'last-run-debug', label: 'Last Run Debug', snapshotKey: 'lastRun', defaultSelected: true },
+  { id: 'recent-turns', label: 'Recent Turns (last two turns)', snapshotKey: 'recentTurns', defaultSelected: true },
+  { id: 'prompt-switch-debug', label: 'Prompt Debug (Switch + Multistep)', snapshotKey: 'promptSwitch', defaultSelected: true },
+  { id: 'event-manager-debug', label: 'Event Manager Debug', snapshotKey: 'eventManager', defaultSelected: true },
+  { id: 'system-log', label: 'System Log', snapshotKey: 'systemLog', defaultSelected: true },
+];
 
 const compactSnapshotTextPreviewCharacters = 360;
 
@@ -4014,7 +4013,6 @@ function compactSnapshotCopyValue(value: unknown, textMetrics: TextMetricsApi, k
       'generatedText',
       'graphText',
       'inputValue',
-      'lastRpOutput',
       'originalHistory',
       'promptAfter',
       'translatedHistory',
@@ -4058,18 +4056,23 @@ export function SystemLogDialog({
     [estimatedTokenBytesPerToken],
   );
   const backdropDismiss = useBackdropDismiss<HTMLDivElement>(onClose);
-  const debugSections = debugSnapshot ? debugSnapshotSections(debugSnapshot, textMetrics) : [];
-  const snapshotSectionCopyValue = (section: DebugSnapshotSection) =>
-    debugSnapshotCompressed && debugSnapshot
-      ? compactSnapshotCopyValue(debugSnapshot[section.snapshotKey], textMetrics)
-      : debugSnapshot?.[section.snapshotKey];
+  const debugSections = useMemo<DebugSnapshotSection[]>(() => {
+    if (!debugSnapshot) {
+      return [];
+    }
+    return debugSnapshotSectionDefs.map((def) => {
+      const copyValue = debugSnapshotCompressed
+        ? compactSnapshotCopyValue(debugSnapshot[def.snapshotKey], textMetrics)
+        : debugSnapshot[def.snapshotKey];
+      return {
+        ...def,
+        copyValue,
+        tokenEstimate: estimateSnapshotTokens(copyValue, debugSnapshotToonEnabled, textMetrics),
+      };
+    });
+  }, [debugSnapshot, debugSnapshotCompressed, debugSnapshotToonEnabled, textMetrics]);
   const selectedTokenTotal = debugSections.reduce(
-    (total, section) =>
-      total + (
-        selectedDebugSections[section.id]
-          ? estimateSnapshotTokens(snapshotSectionCopyValue(section), debugSnapshotToonEnabled, textMetrics)
-          : 0
-      ),
+    (total, section) => total + (selectedDebugSections[section.id] ? section.tokenEstimate : 0),
     0,
   );
   const selectedSnapshotSections = () =>
@@ -4100,31 +4103,35 @@ export function SystemLogDialog({
       systemLog: [],
     };
     selectedSections.forEach((section) => {
-      (payload as Record<string, unknown>)[section.snapshotKey] = snapshotSectionCopyValue(section);
+      (payload as Record<string, unknown>)[section.snapshotKey] = section.copyValue;
     });
     return payload;
   };
-  const selectedSnapshotPreviewSections = () =>
-    selectedSnapshotSections().map((section) => {
-      const value = snapshotSectionCopyValue(section);
-      return {
+  const snapshotPreviewSections = useMemo(() => {
+    if (!debugSnapshotPreviewOpen) {
+      return [];
+    }
+    return debugSections
+      .filter((section) => selectedDebugSections[section.id])
+      .map((section) => ({
         id: section.id,
         label: section.label,
-        tokenEstimate: estimateSnapshotTokens(value, debugSnapshotToonEnabled, textMetrics),
+        tokenEstimate: section.tokenEstimate,
         text: debugSnapshotToonEnabled
-          ? formatContextValue(value, 'toon')
-          : JSON.stringify(value ?? null, null, 2),
-      };
-    });
+          ? formatContextValue(section.copyValue, 'toon')
+          : JSON.stringify(section.copyValue ?? null, null, 2),
+      }));
+  }, [debugSections, debugSnapshotPreviewOpen, debugSnapshotToonEnabled, selectedDebugSections]);
 
   const openDebugSnapshot = () => {
     if (!onCreateDebugSnapshot) {
       return;
     }
     const snapshot = onCreateDebugSnapshot();
-    const sections = debugSnapshotSections(snapshot, textMetrics);
     setDebugSnapshot(snapshot);
-    setSelectedDebugSections(Object.fromEntries(sections.map((section) => [section.id, section.defaultSelected])));
+    setSelectedDebugSections(
+      Object.fromEntries(debugSnapshotSectionDefs.map((def) => [def.id, def.defaultSelected])),
+    );
     setDebugSnapshotPreviewOpen(false);
     setSnapshotCopied(false);
     setSnapshotCopyError('');
@@ -4302,7 +4309,7 @@ export function SystemLogDialog({
                       }}
                     />
                     <span>{section.label}</span>
-                    <em>~{estimateSnapshotTokens(snapshotSectionCopyValue(section), debugSnapshotToonEnabled, textMetrics).toLocaleString()} tokens</em>
+                    <em>~{section.tokenEstimate.toLocaleString()} tokens</em>
                   </label>
                 ))}
               </div>
@@ -4344,10 +4351,10 @@ export function SystemLogDialog({
                   </button>
                 </div>
                 <div className="debug-snapshot-viewer-body">
-                  {selectedSnapshotPreviewSections().length === 0 ? (
+                  {snapshotPreviewSections.length === 0 ? (
                     <p className="debug-snapshot-viewer-empty">No debug sections selected.</p>
                   ) : (
-                    selectedSnapshotPreviewSections().map((section) => (
+                    snapshotPreviewSections.map((section) => (
                       <article className="debug-snapshot-view-section" key={section.id}>
                         <header>
                           <strong>{section.label}</strong>
@@ -4372,19 +4379,6 @@ export function SystemLogDialog({
       </section>
     </div>
   );
-}
-
-function debugSnapshotSections(snapshot: DebugSnapshot, textMetrics: TextMetricsApi): DebugSnapshotSection[] {
-  return [
-    { id: 'app-state', label: 'App State', snapshotKey: 'appState', tokenEstimate: estimateSnapshotTokens(snapshot.appState, false, textMetrics), defaultSelected: true },
-    { id: 'workflow-nodes', label: 'Workflow Nodes (Compact Runtime, includes RP Time prompt/response)', snapshotKey: 'nodes', tokenEstimate: estimateSnapshotTokens(snapshot.nodes, false, textMetrics), defaultSelected: false },
-    { id: 'workflow-edges', label: 'Workflow Connections', snapshotKey: 'edges', tokenEstimate: estimateSnapshotTokens(snapshot.edges, false, textMetrics), defaultSelected: false },
-    { id: 'last-run-debug', label: 'Last Run Debug', snapshotKey: 'lastRun', tokenEstimate: estimateSnapshotTokens(snapshot.lastRun, false, textMetrics), defaultSelected: true },
-    { id: 'recent-turns', label: 'Recent Turns (last two turns)', snapshotKey: 'recentTurns', tokenEstimate: estimateSnapshotTokens(snapshot.recentTurns, false, textMetrics), defaultSelected: true },
-    { id: 'prompt-switch-debug', label: 'Prompt Switch Debug', snapshotKey: 'promptSwitch', tokenEstimate: estimateSnapshotTokens(snapshot.promptSwitch, false, textMetrics), defaultSelected: true },
-    { id: 'event-manager-debug', label: 'Event Manager Debug', snapshotKey: 'eventManager', tokenEstimate: estimateSnapshotTokens(snapshot.eventManager, false, textMetrics), defaultSelected: true },
-    { id: 'system-log', label: 'System Log', snapshotKey: 'systemLog', tokenEstimate: estimateSnapshotTokens(snapshot.systemLog, false, textMetrics), defaultSelected: true },
-  ];
 }
 
 function estimateSnapshotTokens(value: unknown, useToon: boolean, textMetrics: TextMetricsApi) {

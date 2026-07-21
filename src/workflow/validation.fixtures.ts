@@ -2772,7 +2772,6 @@ export function verifyWorkflowValidationFixtures() {
   );
   const debugTurnSummary = debugTurnSummaryFromTurnRecord(
     roundtripChat.turns[0]!,
-    roundtripRuntimeNodes,
     sessionV2.runtime.undo[0],
   );
   assertFixture(

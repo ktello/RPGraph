@@ -156,7 +156,14 @@ export function useRuntimeNodePatching({
           durationMs: stats.durationMs,
           startedAtMs: metadata?.startedAtMs,
         },
-      ].sort((left, right) => (left.startedAtMs ?? 0) - (right.startedAtMs ?? 0));
+      ].sort(
+        // Calls without a start time keep their append position at the end; a
+        // 0 fallback would jump them ahead of every timed call and misalign
+        // the per-occurrence prompt passes in the turn trace.
+        (left, right) =>
+          (left.startedAtMs ?? Number.MAX_SAFE_INTEGER) -
+          (right.startedAtMs ?? Number.MAX_SAFE_INTEGER),
+      );
       const nextReport: RunLlmReport = {
         ...report,
         calls: calls.map((call, index) => ({ ...call, order: index + 1 })),

@@ -115,6 +115,7 @@ import {
 } from './data-management/formatters';
 import {
   compactDebugNode,
+  type DebugSnapshot,
   compactDebugValue,
   recentTurnDebugSummaries,
   sanitizeDebugSnapshotValue,
@@ -1190,7 +1191,6 @@ function App() {
     selectChatPanelView,
     selectPhonePanelView,
     cyclePhoneNotificationOwner,
-    selectedCharacterId,
     setSelectedCharacterId,
     selectedCharacter,
     narratorSelected,
@@ -4007,16 +4007,20 @@ function App() {
       (node) => node.data.kind === undefined && node.data.nodeType === 'event-manager',
     );
     const currentEventEntities = eventEntitiesFromNodes(currentNodes);
-    const promptSwitchNodes = currentNodes.filter(
-      (node) => node.data.kind === undefined && node.data.nodeType === 'llm-prompt-switch',
+    const promptDebugNodes = currentNodes.filter(
+      (node) =>
+        node.data.kind === undefined &&
+        (node.data.nodeType === 'llm-prompt-switch' || node.data.nodeType === 'llm-prompt'),
     );
     const textMetrics = new TextMetricsApi(activeTokenEstimateBytesPerToken);
-    const promptSwitchDebug = promptSwitchNodes.map((node) => ({
+    const promptSwitchDebug = promptDebugNodes.map((node) => ({
       id: node.id,
+      nodeType: node.data.nodeType,
       label: node.data.label,
       selectedOutputChannel: node.data.llmPromptSwitchSelectedOutputChannel,
       selectedPromptSlot: node.data.llmPromptSwitchSelectedPromptSlot,
-      runtimeDebug: node.data.llmPromptSwitchDebug,
+      runtimeDebug:
+        node.data.nodeType === 'llm-prompt' ? node.data.llmPromptDebug : node.data.llmPromptSwitchDebug,
       preview: node.data.preview,
       fullText: compactDebugValue(node.data.fullText, textMetrics),
       generatedText: node.data.generatedText,
@@ -4030,7 +4034,6 @@ function App() {
           label: currentEventManagerNode.data.label,
           events: appointmentsFromEventEntities(currentEventEntities),
           eventEntities: currentEventEntities,
-          selectedEvent,
           preview: currentEventManagerNode.data.preview,
           fullText: compactDebugValue(currentEventManagerNode.data.fullText, textMetrics),
           status: currentEventManagerNode.data.eventStatus,
@@ -4052,7 +4055,6 @@ function App() {
         selectedCharacter: selectedCharacter
           ? { id: selectedCharacter.id, name: selectedCharacter.name }
           : undefined,
-        selectedCharacterId,
         narratorSelected,
         narratorSelectedName: narratorSelected ? narratorSpeakerName : undefined,
         selectedEvent,
@@ -4087,11 +4089,17 @@ function App() {
         englishProcessingEnabled,
         inputTranslationOnlyEnabled,
         displayLanguage,
+        workflowVariables: workflowSettingsValuesRef.current,
       },
-      lastRun: lastRunDebugRef.current ?? {},
+      lastRun: lastRunDebugRef.current
+        ? {
+            ...lastRunDebugRef.current,
+            originalHistory: compactDebugValue(lastRunDebugRef.current.originalHistory, textMetrics),
+            translatedHistory: compactDebugValue(lastRunDebugRef.current.translatedHistory, textMetrics),
+          }
+        : {},
       recentTurns: recentTurnDebugSummaries(
         turnsRef.current,
-        nodesRef.current,
         turnCheckpointsRef.current,
         textMetrics,
         2,
@@ -4103,20 +4111,7 @@ function App() {
       nodes: currentNodes.map((node) => compactDebugNode(node, textMetrics)),
       edges: currentEdges,
       systemLog,
-    }) as {
-      schema: 'rpgraph-debug-snapshot';
-      version: number;
-      createdAt: string;
-      selectedSections: string[];
-      appState: Record<string, unknown>;
-      lastRun: Record<string, unknown>;
-      recentTurns: unknown[];
-      promptSwitch: Record<string, unknown>;
-      eventManager: Record<string, unknown>;
-      nodes: unknown[];
-      edges: unknown[];
-      systemLog: unknown[];
-    };
+    }) as DebugSnapshot;
   }
 
   function createAssistantDebugSnapshotSections(): DebugSnapshotAssistantSection[] {
@@ -4179,7 +4174,7 @@ function App() {
       {
         id: 'app-state',
         label: 'App State',
-        description: 'Current tab, selected character/event/phone state, running state, settings, and turn number.',
+        description: 'Current tab, selected character/event/phone state, running state, settings, workflow variables, and turn number.',
         value: snapshot.appState,
       },
       {
@@ -4197,7 +4192,7 @@ function App() {
       {
         id: 'last-run-debug',
         label: 'Last Run Debug',
-        description: 'Last run mode, prompt slot, original/visible input, history strings, phone/event flags, and last RP output.',
+        description: 'Last run mode, prompt slot, original input, compact history summaries, and phone/event flags.',
         value: snapshot.lastRun,
       },
       {
@@ -4208,14 +4203,14 @@ function App() {
       },
       {
         id: 'prompt-switch-debug',
-        label: 'Prompt Switch Debug',
-        description: 'LLM Prompt Switch input values, selected output/prompt slot, prompt pieces, combined prompt, and generated text.',
+        label: 'Prompt Debug (Switch + Multistep)',
+        description: 'LLM Prompt Switch and multistep LLM Prompt node input values, selected output/prompt slot, prompt pieces, combined prompt, and generated text.',
         value: snapshot.promptSwitch,
       },
       {
         id: 'event-manager-debug',
         label: 'Event Manager Debug',
-        description: 'Event list, selected event, Event Manager status, compact context, prompt, and response data.',
+        description: 'Event list, Event Manager status, compact context, prompt, and response data; the selected event lives in App State.',
         value: snapshot.eventManager,
       },
       {
