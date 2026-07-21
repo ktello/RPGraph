@@ -6323,7 +6323,15 @@ function App() {
                 setPromptTextCustomPresets={setPromptTextCustomPresets}
                 updateNodeData={updateRuntimeNode}
               />
-              <button className="graph-reset" type="button" onClick={() => void resetWorkflow()}>
+              <button
+                className="graph-reset"
+                type="button"
+                onClick={() => void resetWorkflow()}
+                disabled={!!activeSessionFileName}
+                title={activeSessionFileName
+                  ? 'Workflow reset is unavailable while an RP save is active.'
+                  : 'Reset workflow'}
+              >
                 Reset Workflow
               </button>
               <button className="graph-reset" type="button" onClick={() => void saveCurrentWorkflow()}>

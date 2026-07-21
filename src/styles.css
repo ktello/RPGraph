@@ -1106,7 +1106,8 @@ input[type="radio"]:focus-visible {
   gap: 4px;
 }
 
-.runtime-summary-button:disabled {
+.runtime-summary-button:disabled,
+.graph-reset:disabled {
   opacity: 0.55;
   cursor: default;
 }
@@ -1130,7 +1131,7 @@ input[type="radio"]:focus-visible {
   transition: all 0.2s ease;
 }
 
-.graph-reset:hover {
+.graph-reset:not(:disabled):hover {
   border-color: var(--accent);
   color: var(--soft-white);
   background: rgba(138, 115, 201, 0.12);
