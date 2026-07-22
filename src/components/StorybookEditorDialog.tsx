@@ -60,7 +60,7 @@ function StorybookReadonlyPreview({ storybook }: { storybook: RpStorybook }) {
 
       <section className="storybook-section actors-section">
         <div className="section-header">
-          <h4>Charakter</h4>
+          <h4>Characters</h4>
         </div>
         {storybook.characters.length ? (
           <div className="storybook-actor-grid">
@@ -347,7 +347,7 @@ export function StorybookEditorDialog({ node, onCommit, onClose }: StorybookEdit
               This node&rsquo;s stored JSON is invalid; editing is disabled to avoid overwriting it.
             </span>
           )}
-          <div className="storybook-main-workspace">
+          <div className="storybook-main-workspace storybook-editor-workspace">
             <div className="storybook-document-panel">
               <div className="storybook-panel-header">
                 <span className="panel-title">Storybook Document</span>
