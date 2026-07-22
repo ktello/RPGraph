@@ -63,7 +63,7 @@ export const coreNodeLayouts = {
   'fixed-number': { mode: 'auto', width: 365 },
   'fixed-bool': { mode: 'auto', width: 365 },
   'settings-value': { mode: 'auto', width: 365 },
-  'rp-storybook-v1': { mode: 'auto', width: 365 },
+  'rp-storybook': { mode: 'auto', width: 365 },
   'rp-storybook-editor': { mode: 'auto', width: 365 },
   output: { mode: 'auto', width: 365 },
   'phone-apps': { mode: 'auto', width: 365 },

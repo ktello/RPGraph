@@ -2,15 +2,15 @@ import type { CoreNodeFolderDefinition } from '../types';
 import { currentCoreNodeVersions } from '../nodeVersion';
 import { output } from '../portHelpers';
 import { RpStorybookEditorNodeCard } from './Card';
-import { executeRpStorybookV1Node } from '../rp-storybook-v1/execute';
+import { executeRpStorybookNode } from '../rp-storybook/execute';
 import {
   defaultRpStorybookFormattedTextSettings,
-  emptyRpStorybookV1,
+  emptyRpStorybook,
   parseRpStorybookJson,
   rpStorybookFormattedTextSettings,
   rpStorybookJsonText,
-  starterRpStorybookV1,
-} from '../rp-storybook-v1/model';
+  starterRpStorybook,
+} from '../rp-storybook/model';
 import { preservedData } from '../shared/persistenceHelpers';
 
 export const definition: CoreNodeFolderDefinition = {
@@ -31,7 +31,7 @@ export const definition: CoreNodeFolderDefinition = {
   ],
   Component: RpStorybookEditorNodeCard,
   // Reuses the RP Storybook node's execute — identical output resolution.
-  execute: executeRpStorybookV1Node,
+  execute: executeRpStorybookNode,
   create: ({ position, createId }) => ({
     id: createId('rp-storybook-editor'),
     type: 'workflow',
@@ -41,7 +41,7 @@ export const definition: CoreNodeFolderDefinition = {
       description: 'Edit storybook text and JSON',
       preview: 'Starter story',
       nodeType: 'rp-storybook-editor',
-      storybookJson: rpStorybookJsonText(starterRpStorybookV1),
+      storybookJson: rpStorybookJsonText(starterRpStorybook),
       storybookStatus: 'Ready',
       storybookFormattedTextSettings: defaultRpStorybookFormattedTextSettings,
     },
@@ -50,7 +50,7 @@ export const definition: CoreNodeFolderDefinition = {
     saveData: (data) => {
       const storybook = data.storybookJson
         ? parseRpStorybookJson(data.storybookJson)
-        : emptyRpStorybookV1;
+        : emptyRpStorybook;
       return preservedData(data, 'No storybook loaded', {
         storybookJson: rpStorybookJsonText(storybook),
         storybookStatus: storybook.title ? 'Embedded storybook' : 'Ready',
@@ -60,7 +60,7 @@ export const definition: CoreNodeFolderDefinition = {
     hydrateData: (data) => {
       const storybook = data.storybookJson
         ? parseRpStorybookJson(data.storybookJson)
-        : emptyRpStorybookV1;
+        : emptyRpStorybook;
       return preservedData(data, 'No storybook loaded', {
         storybookJson: rpStorybookJsonText(storybook),
         storybookStatus: storybook.title ? 'Loaded embedded storybook' : 'Ready',

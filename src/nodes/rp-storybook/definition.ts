@@ -1,21 +1,21 @@
 import type { CoreNodeFolderDefinition } from '../types';
 import { currentCoreNodeVersions } from '../nodeVersion';
 import { output } from '../portHelpers';
-import { RpStorybookV1NodeCard } from './Card';
-import { executeRpStorybookV1Node } from './execute';
+import { RpStorybookNodeCard } from './Card';
+import { executeRpStorybookNode } from './execute';
 import {
   defaultRpStorybookFormattedTextSettings,
-  emptyRpStorybookV1,
+  emptyRpStorybook,
   parseRpStorybookJson,
   rpStorybookFormattedTextSettings,
   rpStorybookJsonText,
-  starterRpStorybookV1,
+  starterRpStorybook,
 } from './model';
 import { connectionId, preservedData } from '../shared/persistenceHelpers';
 
 export const definition: CoreNodeFolderDefinition = {
-  type: 'rp-storybook-v1',
-  dataVersion: currentCoreNodeVersions['rp-storybook-v1'],
+  type: 'rp-storybook',
+  dataVersion: currentCoreNodeVersions['rp-storybook'],
   label: 'RP Storybook V2',
   description: 'Complete roleplay storybook',
   menuDescription: 'Load or create complete roleplay story data',
@@ -30,19 +30,19 @@ export const definition: CoreNodeFolderDefinition = {
     output('formatted-text', 'text', 'Formatted Text'),
     output('character-info', 'text', 'Character Info'),
   ],
-  Component: RpStorybookV1NodeCard,
-  execute: executeRpStorybookV1Node,
+  Component: RpStorybookNodeCard,
+  execute: executeRpStorybookNode,
   create: ({ defaultConnectionId, position, createId }) => ({
-    id: createId('rp-storybook-v1'),
+    id: createId('rp-storybook'),
     type: 'workflow',
     position,
     data: {
       label: 'RP Storybook V2',
       description: 'Complete roleplay storybook',
       preview: 'Starter story',
-      nodeType: 'rp-storybook-v1',
+      nodeType: 'rp-storybook',
       connectionId: defaultConnectionId,
-      storybookJson: rpStorybookJsonText(starterRpStorybookV1),
+      storybookJson: rpStorybookJsonText(starterRpStorybook),
       storybookStatus: 'Ready',
       storybookFormattedTextSettings: defaultRpStorybookFormattedTextSettings,
     },
@@ -51,7 +51,7 @@ export const definition: CoreNodeFolderDefinition = {
     saveData: (data) => {
       const storybook = data.storybookJson
         ? parseRpStorybookJson(data.storybookJson)
-        : emptyRpStorybookV1;
+        : emptyRpStorybook;
       return preservedData(data, 'No storybook loaded', {
         connectionId: data.connectionId,
         storybookJson: rpStorybookJsonText(storybook),
@@ -62,7 +62,7 @@ export const definition: CoreNodeFolderDefinition = {
     hydrateData: (data, context) => {
       const storybook = data.storybookJson
         ? parseRpStorybookJson(data.storybookJson)
-        : emptyRpStorybookV1;
+        : emptyRpStorybook;
       return preservedData(data, 'No storybook loaded', {
         connectionId: connectionId(data, context),
         storybookJson: rpStorybookJsonText(storybook),

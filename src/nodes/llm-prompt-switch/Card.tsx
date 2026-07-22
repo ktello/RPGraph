@@ -638,6 +638,7 @@ export function LlmPromptSwitchNodeCard({ id, data }: NodeProps<WorkflowNode>) {
             ref={promptBeforeRef}
             rows={3}
             value={promptBefores[selectedPromptSlot] ?? ''}
+            highlightPlainText
             onChange={(value) => updatePromptBefore(value)}
             onFocus={formatCurrentPrompts}
             onBlur={formatCurrentPrompts}
@@ -660,6 +661,7 @@ export function LlmPromptSwitchNodeCard({ id, data }: NodeProps<WorkflowNode>) {
             ref={promptAfterRef}
             rows={3}
             value={promptAfters[selectedPromptSlot] ?? ''}
+            highlightPlainText
             onChange={(value) => updatePromptAfter(value)}
             onFocus={formatCurrentPrompts}
             onBlur={formatCurrentPrompts}
