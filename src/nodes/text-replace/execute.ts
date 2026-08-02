@@ -15,22 +15,31 @@ export async function executeTextReplaceNode(node: WorkflowNode, context: Execut
   const inputEdge = context.edges.find(
     (edge) => edge.target === node.id && textReplaceReplacementEntryId(edge.targetHandle) === null,
   );
-  const input = inputEdge
-    ? await context.executeInput(inputEdge.source, inputEdge.sourceHandle)
-    : '';
 
-  // Resolve each connected override, but only for entries that still exist — a
-  // dangling replacement:<removedId> edge must never execute its upstream chain.
-  const overrides = new Map<string, string>();
-  for (const edge of context.edges) {
+  // Only overrides for entries that still exist may run — a dangling
+  // replacement:<removedId> edge must never execute its upstream chain.
+  const overrideEdges = context.edges.filter((edge) => {
     if (edge.target !== node.id) {
-      continue;
+      return false;
     }
     const entryId = textReplaceReplacementEntryId(edge.targetHandle);
-    if (entryId !== null && entryIds.has(entryId)) {
-      overrides.set(entryId, await context.executeInput(edge.source, edge.sourceHandle));
-    }
-  }
+    return entryId !== null && entryIds.has(entryId);
+  });
+
+  // The main input and each override are independent — resolve them concurrently.
+  const [input, ...overrideValues] = await Promise.all([
+    inputEdge ? context.executeInput(inputEdge.source, inputEdge.sourceHandle) : Promise.resolve(''),
+    ...overrideEdges.map((edge) => context.executeInput(edge.source, edge.sourceHandle)),
+  ]);
+
+  // Build the map in edge order so duplicate edges on one entry keep last-edge-wins semantics.
+  const overrides = new Map<string, string>();
+  overrideEdges.forEach((edge, index) => {
+    overrides.set(
+      textReplaceReplacementEntryId(edge.targetHandle) as string,
+      overrideValues[index] as string,
+    );
+  });
   const effectiveEntries = entries.map((entry) =>
     overrides.has(entry.id) ? { ...entry, replacement: overrides.get(entry.id) as string } : entry,
   );

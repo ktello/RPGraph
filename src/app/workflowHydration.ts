@@ -26,7 +26,10 @@ function hydratedNodeLayout(node: WorkflowNode, data: WorkflowNodeData) {
   // drifted or resized save always reloads with style as the single authority.
   const definition = getRegisteredNode(data.nodeType);
   if (!definition) {
-    return { style: node.style };
+    // hydrateNodeData has already resolved a definition for every kind-less
+    // data (unknown types throw or become kind-tagged placeholders), so this
+    // throw documents the invariant rather than a reachable path.
+    throw new Error(`No registered definition for live node type: ${data.nodeType}`);
   }
   return normalizeNodeLayout({ ...node, data }, definition);
 }
@@ -65,10 +68,20 @@ export function hydrateLoadedWorkflow({
   };
   let loadedNodes: WorkflowNode[] = migratedWorkflow.nodes.map((node): WorkflowNode => {
     const data = hydrateNodeData(node.data, hydrateContext);
+    if (data.kind === 'disabled-core-node') {
+      // Disabled placeholders keep every size carrier (style width/height,
+      // top-level width/height, measured) verbatim: workflowSnapshotFromGraph
+      // saves nodes as-is, so preserving them is what keeps the Node Manager's
+      // disable → placeholder → re-enable round trip lossless — on re-enable
+      // the carriers flow into normalizeNodeLayout as usual. The trade-off is
+      // a wrapper-sized drag target while the type stays disabled.
+      return { ...node, selected: false, data };
+    }
     if (data.kind !== undefined) {
-      // Placeholder nodes (incompatible core / missing plugin) render a small card.
-      // Drop the saved dimensions so React Flow re-measures to the card instead of
-      // leaving a large, empty-but-draggable wrapper at the old saved size.
+      // Rebuilt placeholders (incompatible core / missing plugin) render a small
+      // card. Drop the saved dimensions so React Flow re-measures to the card
+      // instead of leaving a large, empty-but-draggable wrapper at the old saved
+      // size.
       const { width: _width, height: _height, ...restStyle } = node.style ?? {};
       return {
         ...node,

@@ -3,7 +3,6 @@ import { isNamespacedPluginTypeId } from './extensions/typeIdPolicy';
 import { isNodeVersion } from './nodeVersion';
 import type {
   CoreNodeCreationDefinition,
-  CoreNodeType,
   NodeCreationDefinition,
   NodeTypeId,
 } from './types';
@@ -26,13 +25,27 @@ export function registerNode(definition: NodeCreationDefinition) {
 
 // Registration is lazy (first lookup) rather than a module-scope side effect, so
 // importing the registry during a definition import cycle never triggers reading
-// the folder definitions before they finish evaluating.
+// the folder definitions before they finish evaluating. The latch is set only
+// after the whole batch registers; a failing definition rolls back this call's
+// insertions and leaves the latch unset, so every subsequent lookup rethrows the
+// root cause instead of silently reading a half-populated map. Rollback deletes
+// only types inserted by this call, never a pre-registered plugin id that caused
+// the duplicate.
 export function registerCoreNodes() {
   if (coreNodesRegistered) {
     return;
   }
+  const inserted: NodeTypeId[] = [];
+  try {
+    for (const definition of coreNodeDefinitions()) {
+      registerNode(definition);
+      inserted.push(definition.type);
+    }
+  } catch (error) {
+    inserted.forEach((type) => nodeRegistry.delete(type));
+    throw error;
+  }
   coreNodesRegistered = true;
-  coreNodeDefinitions().forEach(registerNode);
 }
 
 export function getRegisteredNode(type: string) {
@@ -48,8 +61,4 @@ export function getRegisteredCoreNode(type: string) {
 export function getRegisteredCoreNodes() {
   registerCoreNodes();
   return coreNodeDefinitions().map((definition) => getRegisteredCoreNode(definition.type) ?? definition);
-}
-
-export function isRegisteredCoreNodeType(value: string): value is CoreNodeType {
-  return coreNodeDefinitions().some((definition) => definition.type === value);
 }

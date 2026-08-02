@@ -90,6 +90,40 @@ describe('executeTextReplaceNode replacement overrides', () => {
     expect(resolved).not.toContain('gone-src');
   });
 
+  it('resolves the main input and all overrides concurrently', async () => {
+    const n = node([
+      { id: 'e1', source: 'a', replacement: '1' },
+      { id: 'e2', source: 'b', replacement: '2' },
+    ]);
+    const started: string[] = [];
+    let release!: () => void;
+    const gate = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    const values: Record<string, string> = { 'input-src': 'a b', 'ovr-1': 'X', 'ovr-2': 'Y' };
+    const context = {
+      edges: [
+        edge('m', 'input-src', null),
+        edge('o1', 'ovr-1', 'replacement:e1'),
+        edge('o2', 'ovr-2', 'replacement:e2'),
+      ],
+      executeInput: async (nodeId: string) => {
+        started.push(nodeId);
+        await gate;
+        return values[nodeId] ?? '';
+      },
+      updateRuntimeData: () => {},
+      textMetrics: { bytesPerToken: 4 },
+    } as unknown as ExecuteContext;
+
+    const pending = executeTextReplaceNode(n, context);
+    await Promise.resolve();
+    // All three upstream resolutions must be issued before any of them settles.
+    expect([...started].sort()).toEqual(['input-src', 'ovr-1', 'ovr-2']);
+    release();
+    expect(await pending).toBe('X Y');
+  });
+
   it('does not mutate the node entries', async () => {
     const entries: TextReplaceEntry[] = [{ id: 'e1', source: 'Hero', replacement: 'Zed' }];
     const n = node(entries);

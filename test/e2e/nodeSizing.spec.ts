@@ -94,7 +94,22 @@ test('no non-handle content extends past the card boundary under long content', 
   const { page } = app;
   const wrapper = page.locator('.react-flow__node[data-id="drifted-replace"]');
   await wrapper.locator('.text-replace-node').waitFor();
-  await page.waitForTimeout(400);
+  // Wait until React Flow's post-mount re-measure has converged (inline width
+  // cleared, wrapper re-measured to the 430px card) instead of a wall-clock guess.
+  await expect
+    .poll(
+      async () =>
+        wrapper.evaluate((wrapperEl) => {
+          const card = wrapperEl.querySelector('.text-replace-node') as HTMLElement;
+          return {
+            inline: (wrapperEl as HTMLElement).style.width,
+            card: Math.round(card.getBoundingClientRect().width),
+            wrapper: Math.round(wrapperEl.getBoundingClientRect().width),
+          };
+        }),
+      { timeout: 5000 },
+    )
+    .toEqual({ inline: '', card: 430, wrapper: 430 });
 
   const offenders = await wrapper.evaluate((wrapperEl) => {
     const card = wrapperEl.querySelector('.text-replace-node') as HTMLElement;

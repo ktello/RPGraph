@@ -28,6 +28,29 @@ export function isStorybookSourceNode(node: WorkflowNode): boolean {
   );
 }
 
+/**
+ * Whether a node type names a storybook source, independent of whether an
+ * instance is live or a placeholder.
+ */
+export function isStorybookSourceType(nodeType: string): boolean {
+  return nodeType === 'rp-storybook' || nodeType === 'rp-storybook-editor';
+}
+
+/**
+ * Whether a node occupies the graph's single storybook-source slot when
+ * adding/pasting/restoring another source. Disabled placeholders count:
+ * re-enabling the type and reloading makes them live again, and
+ * hydrateLoadedWorkflow would then reject the file ('more than one storybook
+ * source'). Incompatible placeholders do NOT count — the upgrade path guards
+ * that conflict (nodeUpgrade.storybookOrSingletonUpgradeConflict).
+ */
+export function blocksSecondStorybookSource(node: WorkflowNode): boolean {
+  return (
+    isStorybookSourceNode(node) ||
+    (node.data.kind === 'disabled-core-node' && isStorybookSourceType(node.data.nodeType))
+  );
+}
+
 type StorybookCharacterKind = 'character';
 
 type StorybookCharacterProfile = {

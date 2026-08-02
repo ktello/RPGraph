@@ -1,6 +1,5 @@
-import type { Dispatch, SetStateAction } from 'react';
-import { getRegisteredCoreNodes } from '../nodes/registry';
-import { groupedPaletteDefinitions } from '../nodes/paletteGroups';
+import { useMemo, type Dispatch, type SetStateAction } from 'react';
+import { groupedCorePaletteItems } from '../nodes/paletteGroups';
 
 type NodeManagerDialogProps = {
   disabledNodeTypes: string[];
@@ -14,15 +13,7 @@ export function NodeManagerDialog({
   onClose,
 }: NodeManagerDialogProps) {
   const disabled = new Set(disabledNodeTypes);
-  const groups = groupedPaletteDefinitions(
-    getRegisteredCoreNodes().map((definition) => ({
-      type: definition.type,
-      label: definition.label,
-      paletteGroup: definition.paletteGroup,
-      paletteOrder: definition.paletteOrder,
-      disableable: definition.disableable !== false,
-    })),
-  );
+  const groups = useMemo(() => groupedCorePaletteItems(), []);
 
   const setEnabled = (type: string, enabled: boolean) => {
     setDisabledNodeTypes((current) => {

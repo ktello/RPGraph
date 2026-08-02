@@ -93,4 +93,80 @@ describe('node manager: disabled type degradation', () => {
     expect(getRegisteredCoreNode('output')?.disableable).toBe(false);
     expect(getRegisteredCoreNode('text-replace')?.disableable).not.toBe(false);
   });
+
+  it('ignores the disabled set for disableable:false types so mandatory singletons hydrate live', () => {
+    const input = hydrateNodeData(
+      {
+        nodeType: 'input',
+        nodeDataVersion: currentCoreNodeVersions['input'],
+        label: 'User Input',
+        description: 'Entry point',
+        preview: 'Waiting for input ...',
+      },
+      context(['input']),
+    );
+    expect(input.kind).toBeUndefined();
+    expect(input.nodeType).toBe('input');
+
+    const output = hydrateNodeData(
+      {
+        nodeType: 'output',
+        nodeDataVersion: currentCoreNodeVersions['output'],
+        label: 'RP Output',
+        description: 'Final output',
+        preview: 'No output yet',
+      },
+      context(['output']),
+    );
+    expect(output.kind).toBeUndefined();
+    expect(output.nodeType).toBe('output');
+
+    // Regression guard: a disableable type still degrades.
+    const disabled = hydrateNodeData(textReplaceSaved(), context(['text-replace']));
+    expect(disabled.kind).toBe('disabled-core-node');
+  });
+
+  it('degrades a disabled type without running the full hydrate normalization', () => {
+    // rp-storybook's hydrateData parses storybookJson; unparseable JSON proves
+    // the disabled branch computes ports from the raw data instead.
+    const data = hydrateNodeData(
+      {
+        nodeType: 'rp-storybook',
+        nodeDataVersion: currentCoreNodeVersions['rp-storybook'],
+        label: 'RP Storybook V2',
+        description: 'Complete roleplay storybook',
+        preview: 'Starter story',
+        storybookJson: 'this is not json',
+      },
+      context(['rp-storybook']),
+    );
+    expect(data.kind).toBe('disabled-core-node');
+    const placeholder = data as Disabled;
+    expect(placeholder.portsSnapshot).toHaveLength(3);
+    expect(placeholder.portsSnapshot.every((port) => port.direction === 'output')).toBe(true);
+    expect(placeholder.portsSnapshot.map((port) => port.id)).toEqual([
+      'json',
+      'formatted-text',
+      'character-info',
+    ]);
+    expect(placeholder.storedData.storybookJson).toBe('this is not json');
+  });
+
+  it('round-trips a disabled placeholder without touching its raw storybook JSON', () => {
+    const placeholder = hydrateNodeData(
+      {
+        nodeType: 'rp-storybook',
+        nodeDataVersion: currentCoreNodeVersions['rp-storybook'],
+        label: 'RP Storybook V2',
+        description: 'Complete roleplay storybook',
+        preview: 'Starter story',
+        storybookJson: 'this is not json',
+      },
+      context(['rp-storybook']),
+    );
+    const persisted = persistentNodeData(placeholder);
+    expect(persisted.kind).toBeUndefined();
+    expect(persisted.nodeType).toBe('rp-storybook');
+    expect(persisted.storybookJson).toBe('this is not json');
+  });
 });

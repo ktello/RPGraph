@@ -20,6 +20,7 @@ import {
   type PromptActionRuntimeSettings,
 } from './nodes/shared/promptActions';
 import { inferredProviderKind, validLlmProviderKind } from './llm/providerKind';
+import { getRegisteredCoreNode } from './nodes/registry';
 import { chatGpdModels, type ChatGpdModel } from './chat/useChatGpdPhoneApp';
 
 const defaultDisplayLanguage = 'German';
@@ -257,6 +258,17 @@ function validMaxReferenceImages(value?: number) {
   return typeof value === 'number' && Number.isFinite(value)
     ? Math.min(9, Math.max(2, Math.round(value)))
     : defaultMaxReferenceImages;
+}
+
+// isAppSettings already guarantees string[] | undefined, so no shape re-validation
+// here; this filter's job is different — drop types whose definition is locked on
+// (disableable: false, e.g. 'input'/'output') so a hand-edited/synced settings.json
+// cannot leave a mandatory singleton disabled with the Node Manager checkbox
+// rendered unchecked AND locked (no UI path to recovery). Unknown type strings are
+// kept (forward compatibility with plugin/future types; they are harmless because
+// hydration only degrades registered, disableable types).
+export function loadableDisabledNodeTypes(types: readonly string[] | undefined): string[] {
+  return (types ?? []).filter((type) => getRegisteredCoreNode(type)?.disableable !== false);
 }
 
 const connectionStorageKey = 'rpgraph.connections';
@@ -1003,13 +1015,7 @@ export function useAppSettings(): AppSettingsState {
         setPromptActionCustomPresets(promptActionConfigs(result.settings.options.promptActionCustomPresets));
         setPromptActionSettings(promptActionRuntimeSettings(result.settings.options.promptActionSettings));
         setPromptTextCustomPresets(workflowVariableRecord(result.settings.options.promptTextCustomPresets));
-        setDisabledNodeTypes(
-          Array.isArray(result.settings.options.disabledNodeTypes)
-            ? result.settings.options.disabledNodeTypes.filter(
-                (value): value is string => typeof value === 'string',
-              )
-            : [],
-        );
+        setDisabledNodeTypes(loadableDisabledNodeTypes(result.settings.options.disabledNodeTypes));
         setChatTextSize(validChatTextSize(result.settings.options.chatTextSize));
         setPhoneChatTextSize(validPhoneChatTextSize(result.settings.options.phoneChatTextSize));
         setPhoneDesktopLayout(validPhoneDesktopLayout(result.settings.options.phoneDesktopLayout));

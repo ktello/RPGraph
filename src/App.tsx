@@ -84,6 +84,7 @@ import {
 } from './chat/imageGenerationAssistant';
 import { lastTurnMessages } from './data-management/historyStore';
 import {
+  blocksSecondStorybookSource,
   chatAttachmentFromStorybookImage,
   findChatEndpoints,
   isStorybookSourceNode,
@@ -381,6 +382,13 @@ function storedNarratorInputText(graphText: string) {
 
 function normalizedEventAppointments(appointments: WorkflowNodeData['eventAppointments']) {
   return normalizeEventAppointments(appointments ?? []);
+}
+
+// A live RP Storybook V2 node — placeholders (disabled/incompatible) share the
+// nodeType but carry no usable storybookJson, so storybook save/load/import
+// must not treat them as the storybook source.
+function isLiveRpStorybookNode(node: WorkflowNode) {
+  return node.data.kind === undefined && node.data.nodeType === 'rp-storybook';
 }
 
 function phoneSeenStateForLoadedMessages(messages: MessageRecord[]) {
@@ -1915,7 +1923,20 @@ function App() {
     return () => window.removeEventListener('keydown', closePreview);
   }, [previewImage]);
 
+  // Clipboard/undo copies keep placeholder data verbatim (kind intact) so a
+  // pasted or restored placeholder stays a placeholder — the card renders as a
+  // placeholder and executeGraph keeps refusing it. persistentNodeData stays a
+  // save-only projection (it unwraps placeholders to their storedData).
+  function clipboardNodeData(data: WorkflowNodeData): WorkflowNodeData {
+    return data.kind !== undefined
+      ? structuredClone(data)
+      : structuredClone(persistentNodeData(data));
+  }
+
   function persistentDeletedNodeData(data: WorkflowNodeData) {
+    if (data.kind !== undefined) {
+      return structuredClone(data);
+    }
     try {
       return persistentNodeData(data);
     } catch {
@@ -2028,14 +2049,15 @@ function App() {
           .map((node) => node.data.nodeType),
       );
       // Storybook sources are mutually exclusive (v1 XOR editor): keep at most one
-      // across existing + restored nodes.
-      const storybookSourceExists = nodesRef.current.some(isStorybookSourceNode);
+      // across existing + restored nodes. Disabled placeholders occupy the slot
+      // too — they go live again once the type is re-enabled and reloaded.
+      const storybookSourceExists = nodesRef.current.some(blocksSecondStorybookSource);
       let storybookSourceRestored = false;
       const restoredNodes = deletedAction.nodes.filter((node) => {
         if (existingNodeIds.has(node.id)) {
           return false;
         }
-        if (isStorybookSourceNode(node)) {
+        if (blocksSecondStorybookSource(node)) {
           if (storybookSourceExists || storybookSourceRestored) {
             return false;
           }
@@ -2118,7 +2140,7 @@ function App() {
           nodes: selectedNodes.map((node) => ({
             ...node,
             selected: false,
-            data: structuredClone(persistentNodeData(node.data)),
+            data: clipboardNodeData(node.data),
           })),
           edges: edgesRef.current
             .filter((edge) => selectedIds.has(edge.source) && selectedIds.has(edge.target))
@@ -2140,11 +2162,12 @@ function App() {
           .map((node) => node.data.nodeType),
       );
       // Storybook sources are mutually exclusive (v1 XOR editor): keep at most one
-      // across existing + pasted nodes.
-      const storybookSourceExists = nodesRef.current.some(isStorybookSourceNode);
+      // across existing + pasted nodes. Disabled placeholders occupy the slot
+      // too — they go live again once the type is re-enabled and reloaded.
+      const storybookSourceExists = nodesRef.current.some(blocksSecondStorybookSource);
       let storybookSourcePasted = false;
       const pasteableNodes = copied.nodes.filter((node) => {
-        if (isStorybookSourceNode(node)) {
+        if (blocksSecondStorybookSource(node)) {
           if (storybookSourceExists || storybookSourcePasted) {
             return false;
           }
@@ -2170,9 +2193,7 @@ function App() {
         ]),
       );
       const pastedNodes = pasteableNodes.map((node) => {
-        const data = node.data.kind === 'incompatible-core-node'
-          ? structuredClone(node.data)
-          : structuredClone(persistentNodeData(node.data));
+        const data = clipboardNodeData(node.data);
         return {
           ...node,
           id: idMap.get(node.id)!,
@@ -2470,9 +2491,9 @@ function App() {
 
   function currentStorybookForSave() {
     const storybookNode =
-      nodesRef.current.find((node) => node.id === storybookCreatorNodeId && node.data.nodeType === 'rp-storybook') ??
-      nodesRef.current.find((node) => node.data.nodeType === 'rp-storybook');
-    if (!storybookNode || storybookNode.data.nodeType !== 'rp-storybook') {
+      nodesRef.current.find((node) => node.id === storybookCreatorNodeId && isLiveRpStorybookNode(node)) ??
+      nodesRef.current.find(isLiveRpStorybookNode);
+    if (!storybookNode || !isLiveRpStorybookNode(storybookNode)) {
       throw new Error('Add an RP Storybook V2 node before saving a storybook file.');
     }
     const storybook = storybookNode.data.storybookJson
@@ -2568,8 +2589,8 @@ function App() {
     }
     if (result.type === 'storybook') {
       const storybookNode =
-        nodesRef.current.find((node) => node.id === storybookCreatorNodeId && node.data.nodeType === 'rp-storybook') ??
-        nodesRef.current.find((node) => node.data.nodeType === 'rp-storybook');
+        nodesRef.current.find((node) => node.id === storybookCreatorNodeId && isLiveRpStorybookNode(node)) ??
+        nodesRef.current.find(isLiveRpStorybookNode);
       if (!storybookNode) {
         throw new Error('Add an RP Storybook V2 node before opening a storybook file.');
       }
@@ -2594,8 +2615,8 @@ function App() {
     }
     if (result.type === 'character-card') {
       const storybookNode =
-        nodesRef.current.find((node) => node.id === storybookCreatorNodeId && node.data.nodeType === 'rp-storybook') ??
-        nodesRef.current.find((node) => node.data.nodeType === 'rp-storybook');
+        nodesRef.current.find((node) => node.id === storybookCreatorNodeId && isLiveRpStorybookNode(node)) ??
+        nodesRef.current.find(isLiveRpStorybookNode);
       if (!storybookNode) {
         throw new Error('Add an RP Storybook V2 node before importing a character card.');
       }
@@ -5797,7 +5818,7 @@ function App() {
       )}
 
 
-      {storybookCreatorNode && storybookCreatorNode.data.nodeType === 'rp-storybook' && (
+      {storybookCreatorNode && isLiveRpStorybookNode(storybookCreatorNode) && (
         <StorybookCreatorDialog
           node={storybookCreatorNode}
           workflowNodes={nodeViewNodes}

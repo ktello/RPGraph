@@ -63,12 +63,27 @@ export function hydrateNodeData(
       storedData: structuredClone(data as Record<string, unknown>),
     } as WorkflowNodeData;
   }
-  if (context.disabledNodeTypes.has(data.nodeType)) {
+  // disableable:false definitions ignore the disabled set — this is the
+  // authoritative guard, not the Node Manager UI lock. Settings validation
+  // accepts any string array, so a settings file listing 'input'/'output'
+  // must never degrade the mandatory singletons into unrecoverable
+  // placeholders; they hydrate live instead.
+  if (context.disabledNodeTypes.has(data.nodeType) && definition.disableable !== false) {
     // Degrade a disabled type to an inert placeholder that preserves the
     // original data (for restore on re-enable) and its ports (so its edges
-    // stay attached). Ports are computed from the hydrated data because some
-    // node types derive ports from their data.
-    const hydrated = definition.hydrateData(data as WorkflowNodeData, context);
+    // stay attached). Ports are computed from the raw saved data: every core
+    // ports() either ignores its data (e.g. rp-storybook's fixed outputs) or
+    // reads it through defaulting model helpers that accept saved-shape data
+    // (combinerInputCount, llmDecisionEntries, wireLinkMode, customNodeDefinition),
+    // so a full hydrate — which for rp-storybook parses and re-stringifies a
+    // potentially multi-megabyte embedded storybook — is unnecessary. The
+    // hydrate fallback covers any future ports() that assumes normalized fields.
+    let portsSnapshot;
+    try {
+      portsSnapshot = definition.ports(data as WorkflowNodeData);
+    } catch {
+      portsSnapshot = definition.ports(definition.hydrateData(data as WorkflowNodeData, context));
+    }
     return {
       nodeType: data.nodeType,
       nodeDataVersion: data.nodeDataVersion,
@@ -77,7 +92,7 @@ export function hydrateNodeData(
       preview: data.preview,
       kind: 'disabled-core-node',
       storedData: structuredClone(data as Record<string, unknown>),
-      portsSnapshot: definition.ports(hydrated),
+      portsSnapshot,
     } as WorkflowNodeData;
   }
   return definition.hydrateData(data as WorkflowNodeData, context);

@@ -43,8 +43,8 @@ Each core node's complete definition — including its `persistence` pair (`Core
   - `dataVersion` not `MAJOR.MINOR.PATCH`.
   - `origin: 'plugin'` without a namespaced `owner/name` type id.
   - Duplicate `type` id.
-- `registerCoreNodes()` is idempotent; registers `coreNodeDefinitions` at module load.
-- Lookups: `getRegisteredNode`, `getRegisteredCoreNode`, `getRegisteredCoreNodes`, `isRegisteredCoreNodeType`.
+- `registerCoreNodes()` is a lazy idempotent latch: core definitions register on the first registry lookup, never at module load. The latch is set only after the whole batch registers; if any registration throws, this call's insertions are rolled back and the latch stays unset, so every subsequent lookup rethrows the root cause instead of reading a half-populated map.
+- Lookups: `getRegisteredNode`, `getRegisteredCoreNode`, `getRegisteredCoreNodes`.
 
 ## Instance
 
@@ -105,7 +105,9 @@ Dispatch — `WorkflowNodeRenderer` (`src/nodes/WorkflowNodeRenderer.tsx`):
 1. `kind: 'incompatible-core-node'` → `IncompatibleCoreNodeCard`.
 2. `kind: 'disabled-core-node'` → `DisabledCoreNodeCard`.
 3. `kind: 'missing-plugin-node'` or unregistered type → `MissingNodeCard`.
-3. Otherwise → `definition.Component`.
+4. Otherwise → `definition.Component`.
+
+`DisabledCoreNodeCard` and `MissingNodeCard` render through a shared `PlaceholderNodeCard` (`src/nodes/PlaceholderNodeCard.tsx`), parameterized by class names, note, and hint.
 
 Shared card behavior (composition): `useNodeLayoutSync`, `runStateClassName`, `LlmCallMetrics` (`src/nodes/shared/CardView.tsx`); contexts `useNodeActions`, `useNodeView`.
 
@@ -126,7 +128,7 @@ Pipeline:
 - `hydrateStyle` (optional) is a legacy/manual override consulted by the normalizer pre-clamp. Defined only for: `text-preview` (legacy 390×350 → defaults migration), `memory-slot` (wire-link mode styles).
 - Starter workflow seeds (`src/workflow/defaults.ts`) read `coreNodeLayouts`.
 - `useNodeLayoutSync` re-measures the card (`updateNodeInternals`); it never writes back to `style`.
-- Placeholder nodes: hydration strips saved `width`/`height`/`measured`; the wrapper re-measures to the placeholder card. The `--node-card-width` variable is never set for them.
+- Placeholder nodes: hydration strips saved `width`/`height`/`measured` for `incompatible-core-node` and `missing-plugin-node` placeholders so the wrapper re-measures to the small card. `disabled-core-node` placeholders keep every saved size carrier verbatim, so a save made while the type is disabled round-trips the node's size losslessly. The `--node-card-width` variable is never set for placeholders.
 
 Containment: port handles intentionally overhang the card edge (−15/−16/−28px offsets), so `.workflow-node` MUST NOT clip via `overflow: hidden`. Non-handle content stays within the card rect (regression-tested in `test/e2e/nodeSizing.spec.ts`).
 
@@ -151,8 +153,10 @@ Containment: port handles intentionally overhang the card edge (−15/−16/−2
 
 - Users disable node types via the Node Manager dialog; the set persists app-wide in `settings.options.disabledNodeTypes` (never in a workflow).
 - Disabled types are hidden from the add-node palette (`useNodePalette` filters by the set).
-- On load, an instance of a disabled type hydrates as a `disabled-core-node` placeholder: original data kept in `storedData`, ports synthesized via `definition.ports(hydrated)` into `portsSnapshot` (edges preserved — not deleted like incompatible nodes), execution refused. `persistentNodeData` unwraps it back to the original data, so saves round-trip and re-enabling + reload restores the node. Reload-required: the disabled set is read only at load (`HydrateContext.disabledNodeTypes`).
-- `disableable: false` on a definition (e.g. `input`, `output`) locks the type on.
+- On load, an instance of a disabled type hydrates as a `disabled-core-node` placeholder: original data kept in `storedData`, ports computed as `definition.ports(storedData)` on the raw saved data (falling back to hydrated data only if that throws — full `hydrateData` is not run, so a disabled `rp-storybook` never parses its embedded JSON) into `portsSnapshot` (edges preserved — not deleted like incompatible nodes), execution refused, and saved dimensions preserved (see Sizing). `persistentNodeData` unwraps it back to the original data, so saves round-trip and re-enabling + reload restores the node. Reload-required: the disabled set is read only at load (`HydrateContext.disabledNodeTypes`).
+- Clipboard and delete-undo preserve placeholder data verbatim (`kind` intact): copy/paste or undo of a disabled placeholder re-materializes a placeholder, never a live node. Only the save path unwraps `storedData`.
+- `disableable: false` on a definition (e.g. `input`, `output`) locks the type on. Enforcement is layered: `hydrateNodeData` ignores the disabled set for `disableable: false` definitions (a hand-edited settings file can never degrade them), and the settings load drops non-disableable types from `options.disabledNodeTypes`.
+- A disabled `rp-storybook` / `rp-storybook-editor` placeholder counts as the graph's storybook source for the add/paste/restore mutual-exclusion guards (`blocksSecondStorybookSource`, `src/storybook/runtime.ts`) because re-enabling makes it live again; it does not count for `isStorybookSourceNode` (live data readers) or the load-time XOR check.
 - Core type ids: `coreNodeTypes` tuple (`src/nodes/coreNodeTypes.ts`).
 
 ## Registration points (per new core node type)
@@ -170,7 +174,7 @@ Test-enforced (`src/nodes/registry.test.ts`):
 - Folder definitions ↔ registered types ↔ `coreNodeTypes` tuple must be a bijection, in tuple order.
 
 Derived from the definition (no separate edit):
-- Palette placement — `paletteGroup`/`paletteOrder` (`src/app/useNodePalette.ts` reads the registry; group display order in `src/nodes/paletteGroups.ts`).
+- Palette placement — `paletteGroup`/`paletteOrder`, projected once via the lazy call-time helpers in `src/nodes/paletteGroups.ts` (`corePaletteItems()` / `groupedCorePaletteItems()`), consumed by `src/app/useNodePalette.ts` and `src/dialogs/NodeManagerDialog.tsx`; group display order in `src/nodes/paletteGroups.ts`.
 - Text dialog source — `textDialogSource` (`src/dialogs/StudioDialogs.tsx` reads the registry).
 
 Not enforced:

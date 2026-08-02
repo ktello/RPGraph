@@ -20,9 +20,9 @@ import { formatChatHistory, workflowPendingColor } from '../workflow';
 import { removeCompetingInputEdges } from '../graph/edges';
 import { validatePortConnection } from '../graph/portCompatibility';
 import { wireLinkLayout, wireLinkMode, wireLinkStyle } from '../nodes/memory-slot/model';
-import { getRegisteredCoreNode, getRegisteredCoreNodes } from '../nodes/registry';
-import { groupedPaletteDefinitions } from '../nodes/paletteGroups';
-import { isStorybookSourceNode } from '../storybook/runtime';
+import { getRegisteredCoreNode } from '../nodes/registry';
+import { corePaletteItems, groupedCorePaletteItems, type CorePaletteItem } from '../nodes/paletteGroups';
+import { blocksSecondStorybookSource } from '../storybook/runtime';
 import type {
   AddNodeType,
   MessageRecord,
@@ -55,32 +55,19 @@ const nodeDragDataType = 'application/x-rpgraph-node';
 const defaultFavoriteNodeTypes: AddNodeType[] = ['memory-slot', 'text-preview'];
 const favoriteNodeTypesStorageKey = 'rpgraph.favoriteNodeTypes';
 
-const addableNodeItems = getRegisteredCoreNodes().map((definition) => ({
-  type: definition.type,
-  version: definition.dataVersion,
-  label: definition.label,
-  description: definition.menuDescription,
-  paletteGroup: definition.paletteGroup,
-  paletteOrder: definition.paletteOrder,
-}));
-
 function loadFavoriteNodeTypes(): AddNodeType[] {
   try {
     const parsed = JSON.parse(window.localStorage.getItem(favoriteNodeTypesStorageKey) ?? 'null');
     if (!Array.isArray(parsed)) {
       return defaultFavoriteNodeTypes;
     }
-    const validTypes = new Set(addableNodeItems.map((item) => item.type));
+    const validTypes = new Set(corePaletteItems().map((item) => item.type));
     const favorites = parsed.filter((value): value is AddNodeType => validTypes.has(value));
     return favorites.length ? favorites : defaultFavoriteNodeTypes;
   } catch {
     return defaultFavoriteNodeTypes;
   }
 }
-
-// Groups and item order derive from each definition's paletteGroup/paletteOrder;
-// only the group display order is a presentation concern (paletteGroups.ts).
-const groupedNodePaletteItems = groupedPaletteDefinitions(addableNodeItems);
 
 export function useNodePalette({
   nodes,
@@ -106,7 +93,7 @@ export function useNodePalette({
   const disabledNodeTypeSet = useMemo(() => new Set(disabledNodeTypes), [disabledNodeTypes]);
   const enabledGroupedPaletteItems = useMemo(
     () =>
-      groupedNodePaletteItems
+      groupedCorePaletteItems()
         .map((group) => ({
           ...group,
           items: group.items.filter((item) => !disabledNodeTypeSet.has(item.type)),
@@ -114,7 +101,7 @@ export function useNodePalette({
         .filter((group) => group.items.length > 0),
     [disabledNodeTypeSet],
   );
-  const favoriteNodeItems = addableNodeItems.filter(
+  const favoriteNodeItems: CorePaletteItem[] = corePaletteItems().filter(
     (item) => favoriteNodeTypeSet.has(item.type) && !disabledNodeTypeSet.has(item.type),
   );
 
@@ -271,9 +258,10 @@ export function useNodePalette({
   function nodeTypeUnavailable(nodeType: AddNodeType) {
     const definition = getRegisteredCoreNode(nodeType);
     // Storybook sources are mutually exclusive: a graph holds at most one, be it
-    // `rp-storybook` or `rp-storybook-editor` (never both, never two).
+    // `rp-storybook` or `rp-storybook-editor` (never both, never two). Disabled
+    // placeholders occupy the slot too — they go live again on re-enable+reload.
     if (nodeType === 'rp-storybook' || nodeType === 'rp-storybook-editor') {
-      return nodes.some(isStorybookSourceNode);
+      return nodes.some(blocksSecondStorybookSource);
     }
     return (
       definition?.singleton === true &&
@@ -334,7 +322,7 @@ export function useNodePalette({
     }
 
     const nodeType = event.dataTransfer.getData(nodeDragDataType) as AddNodeType;
-    if (!addableNodeItems.some((item) => item.type === nodeType)) {
+    if (!corePaletteItems().some((item) => item.type === nodeType)) {
       return;
     }
 

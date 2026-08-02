@@ -118,6 +118,136 @@ describe('hydrateLoadedWorkflow node sizing', () => {
     expect(writer.height).toBeUndefined();
   });
 
+  it('keeps every saved size carrier on a disabled-core-node placeholder', () => {
+    const workflow = workflowWith([
+      {
+        id: 'disabled-writer',
+        type: 'workflow',
+        position: { x: 5, y: 5 },
+        style: { width: 400, height: 500 },
+        width: 400,
+        height: 500,
+        measured: { width: 400, height: 500 },
+        data: {
+          nodeType: 'write-text',
+          nodeDataVersion: currentCoreNodeVersions['write-text'],
+          label: 'Writer',
+          description: 'current',
+          preview: 'Text ready',
+          writeTextValue: 'keep me',
+        },
+      },
+    ]);
+
+    const { nodes } = hydrateLoadedWorkflow({
+      workflow,
+      defaultConnectionId: 'default',
+      connectionIds: new Set(['default']),
+      disabledNodeTypes: new Set(['write-text']),
+    });
+
+    const node = nodes[0];
+    expect(node.data.kind).toBe('disabled-core-node');
+    expect(node.style).toEqual({ width: 400, height: 500 });
+    expect(node.width).toBe(400);
+    expect(node.height).toBe(500);
+    expect(node.measured).toEqual({ width: 400, height: 500 });
+    expect(node.selected).toBe(false);
+  });
+
+  it('round trip: disabled placeholder size survives re-enable', () => {
+    const workflow = workflowWith([
+      {
+        id: 'disabled-writer',
+        type: 'workflow',
+        position: { x: 5, y: 5 },
+        style: { width: 400, height: 500 },
+        width: 400,
+        height: 500,
+        measured: { width: 400, height: 500 },
+        data: {
+          nodeType: 'write-text',
+          nodeDataVersion: currentCoreNodeVersions['write-text'],
+          label: 'Writer',
+          description: 'current',
+          preview: 'Text ready',
+          writeTextValue: 'keep me',
+        },
+      },
+    ]);
+
+    const { nodes: disabledNodes } = hydrateLoadedWorkflow({
+      workflow,
+      defaultConnectionId: 'default',
+      connectionIds: new Set(['default']),
+      disabledNodeTypes: new Set(['write-text']),
+    });
+    const placeholder = disabledNodes[0];
+    const placeholderData = placeholder.data;
+    if (placeholderData.kind !== 'disabled-core-node') {
+      throw new Error('expected a disabled-core-node placeholder');
+    }
+
+    // A save while disabled keeps the node's carriers as-is and persists the
+    // placeholder's storedData (persistentNodeData behavior).
+    const savedWhileDisabled = workflowWith([
+      { ...placeholder, data: placeholderData.storedData },
+    ]);
+
+    const { nodes } = hydrateLoadedWorkflow({
+      workflow: savedWhileDisabled,
+      defaultConnectionId: 'default',
+      connectionIds: new Set(['default']),
+    });
+
+    const writer = nodes[0];
+    expect(writer.data.kind).toBeUndefined();
+    expect(writer.style).toEqual({ width: 400, height: 500 });
+    expect(writer.width).toBeUndefined();
+    expect(writer.height).toBeUndefined();
+    expect(writer.measured).toBeUndefined();
+    expect(writer.data.writeTextValue).toBe('keep me');
+  });
+
+  it('still strips a missing-plugin placeholder', () => {
+    const workflow = workflowWith([
+      {
+        id: 'missing-plugin',
+        type: 'workflow',
+        position: { x: 5, y: 5 },
+        style: { width: 600, height: 400 },
+        width: 600,
+        height: 400,
+        measured: { width: 600, height: 400 },
+        data: {
+          nodeType: 'com.example/x',
+          nodeDataVersion: '1.0.0',
+          label: 'Plugin Node',
+          description: 'from a plugin',
+          preview: 'stored',
+          portsSnapshot: [
+            { id: 'in', direction: 'input', valueType: 'text', label: 'In' },
+          ],
+        },
+      },
+    ]);
+
+    const { nodes } = hydrateLoadedWorkflow({
+      workflow,
+      defaultConnectionId: 'default',
+      connectionIds: new Set(['default']),
+    });
+
+    const node = nodes[0];
+    expect(node.data.kind).toBe('missing-plugin-node');
+    expect(node.width).toBeUndefined();
+    expect(node.height).toBeUndefined();
+    expect(node.measured).toBeUndefined();
+    const style = (node.style ?? {}) as Record<string, unknown>;
+    expect(style.width).toBeUndefined();
+    expect(style.height).toBeUndefined();
+  });
+
   it('heals a drifted auto-node save by stripping every size carrier', () => {
     const workflow = workflowWith([
       {

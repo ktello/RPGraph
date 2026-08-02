@@ -4859,7 +4859,7 @@ export function verifyWorkflowValidationFixtures() {
       position: { x: 0, y: 0 },
       data: {
         nodeType: 'text-replace',
-        nodeDataVersion: '1.0.0',
+        nodeDataVersion: currentCoreNodeVersions['text-replace'],
         label: 'Text Replace',
         description: 'Swap source text for replacements',
         preview: 'No replacements configured',
@@ -4883,6 +4883,24 @@ export function verifyWorkflowValidationFixtures() {
   assertFixture(
     !isWorkflowFile(textReplaceWorkflow([{ id: 1, source: 'a', replacement: 'b' }])),
     'a text replace row with a non-string field must be rejected',
+  );
+  assertFixture(
+    hydrateNodeData(
+      {
+        nodeType: 'text-replace',
+        nodeDataVersion: '1.0.1',
+        label: 'Text Replace',
+        description: 'Swap source text for replacements',
+        preview: 'No replacements configured',
+        textReplaceEntries: [],
+      },
+      {
+        defaultConnectionId: 'active-default',
+        connectionIds: new Set(['active-default']),
+        disabledNodeTypes: new Set<string>(),
+      },
+    ).kind === 'incompatible-core-node',
+    'a 1.0.x text-replace save must quarantine as incompatible under 1.1.0 instead of loading live',
   );
 
   const missingPluginData: Record<string, unknown> & {
