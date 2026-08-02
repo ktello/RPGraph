@@ -26,10 +26,10 @@
     "storybook:redact": "node scripts/workflow-redact.mjs redact-storybook",
     "storybook:merge": "node scripts/workflow-redact.mjs merge-storybook",
     "preview": "vite preview",
-    "desktop:dev": "concurrently -k \"vite\" \"wait-on tcp:5173 && electron . --dev --no-sandbox\"",
-    "desktop": "electron . --no-sandbox",
-    "desktop:windows:dev": "concurrently -k \"vite\" \"wait-on tcp:5173 && electron . --dev\"",
-    "desktop:windows": "electron ."
+    "desktop:dev": "concurrently -k \"vite\" \"wait-on tcp:5173 && node scripts/run-electron.mjs --dev --no-sandbox\"",
+    "desktop": "node scripts/run-electron.mjs --no-sandbox",
+    "desktop:windows:dev": "concurrently -k \"vite\" \"wait-on tcp:5173 && node scripts/run-electron.mjs --dev\"",
+    "desktop:windows": "node scripts/run-electron.mjs"
   },
   "dependencies": {
     "@toon-format/toon": "^2.3.0",
