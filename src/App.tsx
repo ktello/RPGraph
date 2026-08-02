@@ -2884,7 +2884,7 @@ function App() {
       );
       return;
     }
-    const upgraded = buildUpgradedNode(node, {
+    const result = buildUpgradedNode(node, {
       createContext: {
         defaultConnectionId,
         position: node.position,
@@ -2901,9 +2901,18 @@ function App() {
         disabledNodeTypes: new Set<string>(),
       },
     });
-    if (!upgraded) {
+    if (result.status === 'not-upgradable') {
       return;
     }
+    if (result.status === 'invalid-stored-data') {
+      // Keep the placeholder: it still holds the saved data, and node edits have no undo.
+      notifySystem(
+        'error',
+        `Cannot upgrade ${node.data.nodeType}: its saved data could not be read (${result.message}). The node was left unchanged, so nothing was lost.`,
+      );
+      return;
+    }
+    const upgraded = result.node;
     commitNodes(
       nodesRef.current.map((candidate) => (candidate.id === nodeId ? upgraded : candidate)),
     );
