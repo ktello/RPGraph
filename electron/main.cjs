@@ -40,6 +40,11 @@ const {
   currentEncryptedCharacterCardEnvelopeFormatVersion,
   encryptedCharacterCardMetadata,
 } = require('./characterCardFormat.cjs');
+const {
+  LmStudioSseParser,
+  lmStudioChatBody,
+  lmStudioResponseText,
+} = require('./lmStudioChat.cjs');
 
 const developmentUrl = 'http://localhost:5173';
 const projectRootPath = path.join(__dirname, '..');
@@ -1916,6 +1921,7 @@ function usageReasoningTokens(usage) {
     usage.reasoning_tokens,
     usage.internal_reasoning_tokens,
     usage.internal_reasoning,
+    usage.reasoning_output_tokens,
     usage.thoughtsTokenCount,
   );
 }
@@ -1925,6 +1931,7 @@ function llmStatsFromUsage(usage, durationMs) {
   const rawOutputTokens = firstFiniteNumber(
     usage?.completion_tokens,
     usage?.output_tokens,
+    usage?.total_output_tokens,
     usage?.candidatesTokenCount,
   );
   const totalTokens = firstFiniteNumber(usage?.total_tokens, usage?.totalTokenCount);
@@ -2141,6 +2148,123 @@ async function requestLmStudioJson(connection, route, init, abort) {
   }
   const body = await response.text();
   return body ? JSON.parse(body) : {};
+}
+
+function isLmStudioProviderConnection(connection) {
+  return connection?.providerKind === 'lm-studio';
+}
+
+const lmStudioReasoningProfileCache = new Map();
+const lmStudioReasoningProfileCacheMs = 60_000;
+
+async function lmStudioReasoningProfile(connection, abort) {
+  const cacheKey = `${lmStudioBaseUrl(connection)}\n${connection?.model ?? ''}`;
+  const cached = lmStudioReasoningProfileCache.get(cacheKey);
+  if (cached && Date.now() - cached.checkedAt < lmStudioReasoningProfileCacheMs) {
+    return cached.profile;
+  }
+  const result = await requestLmStudioJson(connection, 'models', {}, abort);
+  const model = lmStudioModelEntries(result).find((entry) =>
+    lmStudioEntryMatchesModel(entry, connection?.model));
+  const capabilities = model?.capabilities && typeof model.capabilities === 'object'
+    ? model.capabilities
+    : {};
+  const reasoning = capabilities.reasoning && typeof capabilities.reasoning === 'object'
+    ? capabilities.reasoning
+    : {};
+  const allowedOptions = Array.isArray(reasoning.allowed_options)
+    ? reasoning.allowed_options.filter((option) => typeof option === 'string')
+    : [];
+  const profile = {
+    allowedOptions,
+    defaultOption: typeof reasoning.default === 'string' ? reasoning.default : undefined,
+  };
+  lmStudioReasoningProfileCache.set(cacheKey, { checkedAt: Date.now(), profile });
+  return profile;
+}
+
+async function requestLmStudioChat(request, abort) {
+  const reasoningProfile = await lmStudioReasoningProfile(request.connection, abort);
+  const response = await requestLlmResponse(lmStudioEndpoint(request.connection, 'chat'), {
+    method: 'POST',
+    headers: requestHeaders(request.connection),
+    body: JSON.stringify(lmStudioChatBody(request, false, reasoningProfile)),
+  }, abort);
+  if (!response.ok) {
+    throw new Error(await readError(response));
+  }
+  const result = await response.json();
+  const text = lmStudioResponseText(result);
+  if (!text) {
+    throw new Error('The LM Studio response does not contain any message text.');
+  }
+  return { text, usage: result.stats };
+}
+
+async function streamLmStudioChat(request, abort, onText) {
+  const reasoningProfile = await lmStudioReasoningProfile(request.connection, abort);
+  const response = await requestLlmResponse(lmStudioEndpoint(request.connection, 'chat'), {
+    method: 'POST',
+    headers: requestHeaders(request.connection),
+    body: JSON.stringify(lmStudioChatBody(request, true, reasoningProfile)),
+  }, abort);
+  if (!response.ok) {
+    throw new Error(await readError(response));
+  }
+  if (!response.body) {
+    throw new Error('The LM Studio streaming response does not contain a body.');
+  }
+
+  const parser = new LmStudioSseParser();
+  let text = '';
+  let usage;
+  let sawEnd = false;
+
+  function consumeEvent(streamEvent) {
+    const { type, payload } = streamEvent;
+    if (type === 'message.delta') {
+      const delta = typeof payload?.content === 'string' ? payload.content : '';
+      if (delta) {
+        text += delta;
+        onText?.(delta);
+      }
+      return;
+    }
+    if (type === 'error') {
+      const detail = payload?.error;
+      throw new Error(
+        typeof detail === 'string'
+          ? detail
+          : typeof detail?.message === 'string'
+            ? detail.message
+            : 'LM Studio returned a streaming error.',
+      );
+    }
+    if (type === 'chat.end') {
+      sawEnd = true;
+      const result = payload?.result && typeof payload.result === 'object' ? payload.result : {};
+      usage = result.stats;
+      if (!text) {
+        text = lmStudioResponseText(result);
+      }
+    }
+  }
+
+  for await (const bytes of limitedResponseChunks(response.body)) {
+    if (abort.signal.aborted) {
+      throw cancelledLlmError();
+    }
+    parser.push(bytes).forEach(consumeEvent);
+  }
+  parser.finish().forEach(consumeEvent);
+
+  if (!sawEnd) {
+    throw new Error('The LM Studio stream ended before chat.end.');
+  }
+  if (!text) {
+    throw new Error('The LM Studio stream finished without message text.');
+  }
+  return { text, usage };
 }
 
 async function requestLmStudioV0Json(connection, route, init, abort) {
@@ -2611,27 +2735,35 @@ async function repairComfyWorkflowWithLlm(workflowPath, connection, abort, role 
 
   await freeComfyMemoryForLocalLlm(connection);
   await ensureLlamaCppModelLoaded(connection, abort);
-  const response = await requestLlmResponse(endpoint(connection.baseUrl, 'chat/completions'), {
-    method: 'POST',
-    headers: requestHeaders(connection),
-    body: JSON.stringify({
-      model,
-      messages: [{
-        role: 'user',
-        content: comfyWorkflowRepairPrompt(contents, inspection),
-      }],
-      ...chatCompletionReasoningOptions(connection),
+  const repairPrompt = comfyWorkflowRepairPrompt(contents, inspection);
+  let responseText;
+  if (isLmStudioProviderConnection(connection)) {
+    const result = await requestLmStudioChat({
+      connection,
+      prompt: repairPrompt,
       temperature: 0.1,
-    }),
-  }, abort);
+    }, abort);
+    responseText = result.text;
+  } else {
+    const response = await requestLlmResponse(endpoint(connection.baseUrl, 'chat/completions'), {
+      method: 'POST',
+      headers: requestHeaders(connection),
+      body: JSON.stringify({
+        model,
+        messages: [{ role: 'user', content: repairPrompt }],
+        ...chatCompletionReasoningOptions(connection),
+        temperature: 0.1,
+      }),
+    }, abort);
 
-  if (!response.ok) {
-    throw new Error(await readError(response));
+    if (!response.ok) {
+      throw new Error(await readError(response));
+    }
+    const result = await response.json();
+    responseText = textFromChatChoice(result.choices?.[0]);
   }
 
-  const result = await response.json();
-  const choice = result.choices?.[0];
-  const patchResult = extractJsonValueFromText(textFromChatChoice(choice));
+  const patchResult = extractJsonValueFromText(responseText);
   const patch = Array.isArray(patchResult)
     ? patchResult
     : Array.isArray(patchResult?.patch)
@@ -3866,6 +3998,14 @@ ipcMain.handle('llm:chat-completion', async (_event, request) => {
       };
     }
 
+    if (isLmStudioProviderConnection(request.connection)) {
+      const result = await requestLmStudioChat(request, abort);
+      return {
+        text: result.text,
+        stats: llmStatsFromUsage(result.usage, Math.round(performance.now() - startedAt)),
+      };
+    }
+
     const response = await requestLlmResponse(endpoint(request.connection.baseUrl, 'chat/completions'), {
       method: 'POST',
       headers: requestHeaders(request.connection),
@@ -3985,6 +4125,18 @@ ipcMain.handle('llm:chat-completion-stream', async (event, request) => {
       return {
         text: content,
         stats: llmStatsFromUsage(usage, Math.round(performance.now() - startedAt)),
+      };
+    }
+
+    if (isLmStudioProviderConnection(request.connection)) {
+      const result = await streamLmStudioChat(
+        request,
+        abort,
+        (text) => event.sender.send(`llm:chat-stream-chunk:${request.requestId}`, text),
+      );
+      return {
+        text: result.text,
+        stats: llmStatsFromUsage(result.usage, Math.round(performance.now() - startedAt)),
       };
     }
 
