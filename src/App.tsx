@@ -1518,7 +1518,6 @@ function App() {
       label: 'Storybook Image Description',
       prompt,
       images: [image],
-      maxTokens: 120,
       temperature: 0.2,
     });
     return completion.text.trim().replace(/^["']|["']$/g, '');
@@ -5695,7 +5694,6 @@ function App() {
                     dataUrl: currentImage.dataUrl,
                     description: currentImage.description,
                   }] : undefined,
-                  maxTokens: 1200,
                   temperature: 0.2,
                 });
                 return parseImageGenerationAssistantResult(completion.text, describeImage);

@@ -441,7 +441,6 @@ export async function executeEventManagerNode(node: WorkflowNode, context: Execu
       label: 'Events',
       prompt,
       contributesToTokenCalibration: true,
-      maxTokens: 1024,
       // A retry at the same near-zero temperature tends to reproduce the
       // identical malformed response; add variation on the second try.
       temperature: attempt > 1 ? 0.5 : 0.1,
