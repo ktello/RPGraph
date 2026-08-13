@@ -13,6 +13,9 @@ function lmStudioReasoningSetting(effort, profile) {
   if (!supportedReasoningEfforts.has(effort) || effort === 'auto') {
     return undefined;
   }
+  if (profile?.exposesReasoning === false) {
+    return undefined;
+  }
   const allowedOptions = Array.isArray(profile?.allowedOptions)
     ? profile.allowedOptions.filter((option) => ['off', 'on', 'low', 'medium', 'high'].includes(option))
     : [];
@@ -38,6 +41,19 @@ function lmStudioReasoningSetting(effort, profile) {
     throw new Error('The selected LM Studio model cannot enable reasoning.');
   }
   return fallback;
+}
+
+function lmStudioReasoningStrength(effort, profile) {
+  if (!profile?.supportsReasoningStrength || !supportedReasoningEfforts.has(effort) || effort === 'auto') {
+    return undefined;
+  }
+  if (effort === 'none' || effort === 'minimal' || effort === 'low') {
+    return 'low';
+  }
+  if (effort === 'xhigh' || effort === 'max') {
+    return 'xhigh';
+  }
+  return effort;
 }
 
 function lmStudioChatInput(prompt, images) {
@@ -66,6 +82,13 @@ function lmStudioChatBody(request, stream = false, reasoningProfile) {
   };
   if (reasoning !== undefined) {
     body.reasoning = reasoning;
+  }
+  const reasoningStrength = lmStudioReasoningStrength(
+    request?.connection?.reasoningEffort,
+    reasoningProfile,
+  );
+  if (reasoningStrength !== undefined) {
+    body.system_prompt = `Reasoning strength: ${reasoningStrength}.`;
   }
   if (typeof request?.temperature === 'number' && Number.isFinite(request.temperature)) {
     body.temperature = Math.min(1, Math.max(0, request.temperature));
@@ -161,5 +184,6 @@ module.exports = {
   LmStudioSseParser,
   lmStudioChatBody,
   lmStudioReasoningSetting,
+  lmStudioReasoningStrength,
   lmStudioResponseText,
 };

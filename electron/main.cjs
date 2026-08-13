@@ -1351,10 +1351,12 @@ function lmStudioNormalizedModel(model) {
     ? model.capabilities
     : {};
   const type = typeof model?.type === 'string' ? model.type : undefined;
+  const architecture = typeof model?.architecture === 'string' ? model.architecture : undefined;
   return {
     id: id.trim(),
     name: lmStudioModelDisplayName(model, id).trim(),
     type,
+    architecture,
     vision: capabilities.vision === true || type === 'vlm',
     trainedForToolUse: capabilities.trained_for_tool_use === true,
   };
@@ -2171,13 +2173,19 @@ async function lmStudioReasoningProfile(connection, abort) {
     : {};
   const reasoning = capabilities.reasoning && typeof capabilities.reasoning === 'object'
     ? capabilities.reasoning
-    : {};
-  const allowedOptions = Array.isArray(reasoning.allowed_options)
+    : undefined;
+  const allowedOptions = Array.isArray(reasoning?.allowed_options)
     ? reasoning.allowed_options.filter((option) => typeof option === 'string')
     : [];
   const profile = {
     allowedOptions,
-    defaultOption: typeof reasoning.default === 'string' ? reasoning.default : undefined,
+    defaultOption: typeof reasoning?.default === 'string' ? reasoning.default : undefined,
+    exposesReasoning: reasoning !== undefined,
+    supportsReasoningStrength: model?.architecture === 'muse_glimmer' || [
+      model?.key,
+      model?.display_name,
+      connection?.model,
+    ].some((value) => typeof value === 'string' && /muse[-_ ]glimmer/i.test(value)),
   };
   lmStudioReasoningProfileCache.set(cacheKey, { checkedAt: Date.now(), profile });
   return profile;

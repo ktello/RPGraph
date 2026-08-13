@@ -100,6 +100,7 @@ export type LmStudioModelInfo = {
   id: string;
   name: string;
   type?: string;
+  architecture?: string;
   vision: boolean;
   trainedForToolUse: boolean;
 };

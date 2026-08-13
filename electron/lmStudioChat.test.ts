@@ -3,6 +3,7 @@ import {
   LmStudioSseParser,
   lmStudioChatBody,
   lmStudioReasoningSetting,
+  lmStudioReasoningStrength,
   lmStudioResponseText,
 } from './lmStudioChat.cjs';
 
@@ -32,6 +33,33 @@ describe('LM Studio native chat adapter', () => {
       allowedOptions: ['low', 'medium', 'high'],
       defaultOption: 'medium',
     })).toThrow('cannot disable reasoning');
+  });
+
+  it('uses Muse Glimmer reasoning strength without native LM Studio reasoning', () => {
+    const profile = {
+      allowedOptions: [],
+      exposesReasoning: false,
+      supportsReasoningStrength: true,
+    };
+    expect(lmStudioReasoningSetting('low', profile)).toBeUndefined();
+    expect(lmStudioReasoningStrength('none', profile)).toBe('low');
+    expect(lmStudioReasoningStrength('minimal', profile)).toBe('low');
+    expect(lmStudioReasoningStrength('low', profile)).toBe('low');
+    expect(lmStudioReasoningStrength('medium', profile)).toBe('medium');
+    expect(lmStudioReasoningStrength('high', profile)).toBe('high');
+    expect(lmStudioReasoningStrength('xhigh', profile)).toBe('xhigh');
+    expect(lmStudioReasoningStrength('max', profile)).toBe('xhigh');
+    expect(lmStudioReasoningStrength('auto', profile)).toBeUndefined();
+    expect(lmStudioChatBody({
+      connection: { model: 'muse-glimmer-30b', reasoningEffort: 'low' },
+      prompt: 'Hello',
+    }, false, profile)).toEqual({
+      model: 'muse-glimmer-30b',
+      input: 'Hello',
+      stream: false,
+      store: false,
+      system_prompt: 'Reasoning strength: low.',
+    });
   });
 
   it('builds native text and image requests with Thinking disabled', () => {
