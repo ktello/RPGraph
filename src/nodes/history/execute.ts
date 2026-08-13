@@ -201,6 +201,7 @@ async function executeHistoryOutputs(node: WorkflowNode, context: ExecuteContext
           nodeId: node.id,
           label: 'RP Time',
           prompt,
+          fastTask: true,
           contributesToTokenCalibration: true,
           // A retry at the same near-zero temperature tends to reproduce the
           // identical malformed response; add variation on the second try.

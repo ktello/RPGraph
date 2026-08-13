@@ -180,6 +180,7 @@ Provider management includes:
 - Health checks.
 - Vision capability detection.
 - Local model load/unload helpers for LM Studio, Ollama, and llama.cpp router mode. llama.cpp model discovery reads text/vision capabilities and explicit load states from `/models`; RPGraph waits for confirmed load/unload completion when sharing GPU memory with ComfyUI. LM Studio chat calls use its native `/api/v1/chat` endpoint and read the selected model's reasoning capabilities, so the Reasoning setting maps only to supported `off`, `on`, `low`, `medium`, or `high` values. Muse Glimmer models without native LM Studio reasoning configuration instead receive the model's supported `Reasoning strength` system directive. llama.cpp translates the same setting to chat-template controls, so short structured helper calls can disable hidden thinking tokens reliably.
+- Built-in deterministic helper calls such as translation, speaker attribution, RP-time tracking, event extraction, decisions, character stats, and context compression request reasoning off per call without changing the saved provider preset. Muse Glimmer maps that request to its minimum `low` strength. The prompts also carry a low-reasoning direct-output instruction as a fallback for engines that do not expose technical reasoning controls. Story prompts and user-authored LLM prompts keep the selected provider reasoning setting.
 - ComfyUI workflow inspection and repair (role-aware placeholders for image and voice workflows).
 - ComfyUI model memory management around image and voice generation.
 

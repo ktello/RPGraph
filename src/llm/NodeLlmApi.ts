@@ -87,6 +87,9 @@ export class NodeLlmApi {
         request.purpose ?? request.label,
         signal,
       );
+      const requestConnection = request.fastTask
+        ? { ...connection, reasoningEffort: 'none' as const }
+        : connection;
       const images = connection.vision ? request.images : undefined;
       if (request.nodeId) {
         this.options.onCallStart?.(request.nodeId, {
@@ -110,7 +113,7 @@ export class NodeLlmApi {
       const completion = request.onChunk
         ? await window.rpgraph.streamChatCompletion(
             {
-              connection,
+              connection: requestConnection,
               prompt: request.prompt,
               images,
               maxTokens: request.maxTokens,
@@ -123,7 +126,7 @@ export class NodeLlmApi {
           )
         : await window.rpgraph.chatCompletion(
             {
-              connection,
+              connection: requestConnection,
               prompt: request.prompt,
               images,
               maxTokens: request.maxTokens,
