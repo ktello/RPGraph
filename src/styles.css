@@ -19432,6 +19432,18 @@ button.message-timeline-row.phone:focus-visible {
   font-weight: 700;
 }
 
+.connection-field-label-row {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.connection-reasoning-help {
+  width: 16px;
+  height: 16px;
+  font-size: 10px;
+}
+
 .connection-field input:not([type="checkbox"]):not([type="radio"]),
 .connection-field select {
   width: 100%;

@@ -54,7 +54,6 @@ export async function withGeneratedImageDescriptions({
           'Return only the description as plain text, without a label, quotation marks, JSON, or Markdown.',
         ].join('\n'),
         images: [image],
-        maxTokens: 160,
         temperature: 0.2,
         signal,
       });

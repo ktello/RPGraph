@@ -1,4 +1,5 @@
 import type { Edge } from '@xyflow/react';
+import { fastTaskPrompt } from '../../llm/fastTaskPrompt';
 import { NodeLlmApi } from '../../llm/NodeLlmApi';
 import { TextMetricsApi } from '../../llm/tokenMetrics';
 import type { SettingsValueDefinition, WorkflowNode, WorkflowNodeData } from '../../types';
@@ -229,7 +230,7 @@ export async function executeContextCompressionNode({
     .filter(Boolean)
     .join('\n\n');
   updateRuntimeNode(node.id, { preview: 'Compressing context ...', llmCallStats: [] });
-  const prompt = [
+  const prompt = fastTaskPrompt([
     compressedPrefixChanged
       ? 'Rebuild the roleplay context summary because previously summarized source text changed. Use only the corrected earlier text below and do not invent facts.'
       : cacheMatches
@@ -241,12 +242,13 @@ export async function executeContextCompressionNode({
     '',
     'CONTEXT TO SUMMARIZE:',
     textToCompress,
-  ].join('\n');
+  ].join('\n'));
   const completion = await llm.complete({
     connectionId: node.data.connectionId,
     nodeId: node.id,
     label: 'Compress',
     prompt,
+    fastTask: true,
   });
   const compressed = [
     '[Compressed earlier context]',

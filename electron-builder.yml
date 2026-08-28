@@ -1,0 +1,32 @@
+appId: io.github.unrefined803.rpgraph
+productName: RPgraph Studio
+copyright: Copyright © 2026 unrefined803
+
+asar: true
+
+directories:
+  output: release
+
+files:
+  - dist/**/*
+  - electron/**/*
+  - workflow.default*.json
+  - comfy-workflows/api-workflows-with-variables/**/*
+  - src/assets/app-icons/rpgraph.png
+  - src/session/formatVersions.json
+  - src/storybook/formatVersions.json
+  - src/workflow/formatVersions.json
+  - package.json
+  - LICENSE
+
+artifactName: RPGraph-Studio-${version}-${arch}.${ext}
+
+linux:
+  target:
+    - target: AppImage
+      arch:
+        - x64
+  category: Utility
+  executableName: rpgraph-studio
+  icon: src/assets/app-icons/rpgraph-512.png
+  syncDesktopName: true

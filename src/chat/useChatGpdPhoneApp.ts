@@ -173,7 +173,6 @@ export function useChatGpdPhoneApp({
         label: 'ChatGPD Title',
         purpose: 'ChatGPD chat title',
         prompt: chatGpdTitlePrompt(question, answer),
-        maxTokens: 40,
         temperature: 0.3,
       });
       const generated = completion.text.trim().split('\n')[0]?.replace(/^["']|["'.]$/g, '').trim();
@@ -237,7 +236,6 @@ export function useChatGpdPhoneApp({
         purpose: 'ChatGPD phone app',
         prompt: chatGpdPrompt(model, history, trimmed),
         onChunk: (text) => setStreaming({ chatId: streamedChatId, text }),
-        maxTokens: 1200,
         temperature: 0.7,
       });
       const answer = completion.text.trim() || '...';

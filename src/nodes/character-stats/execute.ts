@@ -1,5 +1,6 @@
 import { decode, encode } from '@toon-format/toon';
 
+import { fastTaskPrompt } from '../../llm/fastTaskPrompt';
 import type { NodeLlmApi } from '../../llm/NodeLlmApi';
 import type {
   MessageRecord,
@@ -348,7 +349,7 @@ export async function executeCharacterStatsNode({
       'character-reference': Object.fromEntries(characterStats.map((stat) => [stat.name, `-${maxChange} to +${maxChange}`])),
     },
   });
-  const prompt = [
+  const prompt = fastTaskPrompt([
     'You maintain compact roleplay character stats.',
     'Return TOON only.',
     'Character stats belong to one character.',
@@ -379,12 +380,13 @@ export async function executeCharacterStatsNode({
     '',
     hasState ? 'LAST MESSAGE:' : 'INITIAL CONTEXT:',
     hasState ? lastMessage : initialContext,
-  ].join('\n');
+  ].join('\n'));
   const completion = await llm.complete({
     connectionId: node.data.connectionId,
     nodeId: node.id,
     label: hasState ? 'Patch Stats' : 'Init Stats',
     prompt,
+    fastTask: true,
   });
   updateRuntimeNode(node.id, {
     characterStatsLastPrompt: prompt,

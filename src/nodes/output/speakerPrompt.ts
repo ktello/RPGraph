@@ -2,6 +2,7 @@ import { encode } from '@toon-format/toon';
 import type { OutputSpeakerPromptSettings, OutputSpeakerResponseFormat } from '../../types';
 import { parseToonObject, stripStructuredResponse } from '../../utils/toon';
 import { isRecord } from '../../utils/records';
+import { fastTaskPrompt } from '../../llm/fastTaskPrompt';
 
 export const defaultOutputSpeakerResponseFormat: OutputSpeakerResponseFormat = 'toon';
 
@@ -98,12 +99,12 @@ export function buildOutputSpeakerPrompt(
   const template = normalized.mode === 'custom'
     ? normalized.customText ?? ''
     : defaultOutputSpeakerPromptText;
-  return Object.entries(variables)
+  return fastTaskPrompt(Object.entries(variables)
     .reduce((text, [key, value]) => text.split(`<${key}>`).join(value), template)
     .split('\n')
     .filter((line) => line.trim() || line === '')
     .join('\n')
-    .trim();
+    .trim());
 }
 
 function parseJsonObject(text: string) {

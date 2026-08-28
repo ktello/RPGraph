@@ -18,6 +18,7 @@ export type NodeLlmRequest = {
   contributesToTokenCalibration?: boolean;
   maxTokens?: number;
   temperature?: number;
+  fastTask?: boolean;
   useConnectionSampling?: boolean;
   signal?: AbortSignal;
 };
