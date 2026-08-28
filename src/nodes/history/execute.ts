@@ -201,8 +201,8 @@ async function executeHistoryOutputs(node: WorkflowNode, context: ExecuteContext
           nodeId: node.id,
           label: 'RP Time',
           prompt,
+          fastTask: true,
           contributesToTokenCalibration: true,
-          maxTokens: Math.min(768, Math.max(256, 96 + pendingMessages.length * 28)),
           // A retry at the same near-zero temperature tends to reproduce the
           // identical malformed response; add variation on the second try.
           temperature: attempt > 1 ? 0.5 : 0.1,

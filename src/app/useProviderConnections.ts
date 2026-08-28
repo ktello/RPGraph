@@ -2427,6 +2427,11 @@ export function useProviderConnections({
         : isGeminiConnection(editingConnection)
           ? geminiCapabilitiesForConnection(editingConnection, geminiModelsByConnectionId[editingConnection.id] ?? [])
         : providerHealthById[editingConnection.id]?.capabilities;
+  const editingConnectionArchitecture = isLmStudioConnection(editingConnection)
+    ? lmStudioModelsByConnectionId[editingConnection.id]
+        ?.find((model) => model.id === editingConnection.model)
+        ?.architecture
+    : undefined;
   const editingConnectionVoiceModels = isOpenRouterConnection(editingConnection)
     ? openRouterModelsByConnectionId[editingConnection.id]
     : isGeminiConnection(editingConnection)
@@ -2480,6 +2485,7 @@ export function useProviderConnections({
     lmStudioModelActionActive,
     ollamaModelActionActive,
     editingConnectionCapabilities,
+    editingConnectionArchitecture,
     editingConnectionSupportedVoices,
     editingConnectionSupportedParameters,
     comfyWorkflowRepairStatus,

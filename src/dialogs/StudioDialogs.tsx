@@ -228,6 +228,7 @@ type StudioDialogsProps = {
   editingConnection: ConnectionPreset;
   connectionDraftPending: boolean;
   editingConnectionCapabilities?: ProviderConnectionCapabilities;
+  editingConnectionArchitecture?: string;
   editingConnectionSupportedVoices: string[];
   editingConnectionSupportedParameters: string[];
   providerHealthById: Record<string, ProviderConnectionHealth>;
@@ -882,6 +883,7 @@ export function StudioDialogs({
   editingConnection,
   connectionDraftPending,
   editingConnectionCapabilities,
+  editingConnectionArchitecture,
   editingConnectionSupportedVoices,
   editingConnectionSupportedParameters,
   providerHealthById,
@@ -1002,6 +1004,26 @@ export function StudioDialogs({
     comfyWorkflowOptions[0];
   const comfyOnboardingMemory = comfyOnboardingMemoryInfo(editingComfyRole);
   const editingProviderKind = llmProviderKind(editingConnection);
+  const isMuseGlimmerReasoning =
+    editingProviderKind === 'lm-studio' && (
+      editingConnectionArchitecture === 'muse_glimmer' ||
+      /muse[-_ ]glimmer/i.test(editingConnection.model)
+    );
+  const museGlimmerReasoningEfforts = ['low', 'medium', 'high', 'xhigh'] as const;
+  const reasoningEfforts = isMuseGlimmerReasoning
+    ? museGlimmerReasoningEfforts
+    : connectionReasoningEfforts;
+  const selectedReasoningEffort = isMuseGlimmerReasoning
+    ? editingConnection.reasoningEffort === 'medium' ||
+      editingConnection.reasoningEffort === 'high' ||
+      editingConnection.reasoningEffort === 'xhigh'
+      ? editingConnection.reasoningEffort
+      : editingConnection.reasoningEffort === 'max'
+        ? 'xhigh'
+        : editingConnection.reasoningEffort === 'auto' || editingConnection.reasoningEffort === undefined
+          ? 'high'
+          : 'low'
+    : editingConnection.reasoningEffort ?? 'none';
   const comfyLoraSlots = validComfyLoraSlots(editingConnection.comfyLoraSlots ?? defaultComfyLoraSlots);
   const [comfyRepairProviderId, setComfyRepairProviderId] = useState('');
   const llmConnections = connections.filter((connection) => connection.kind !== 'comfyui');
@@ -3408,12 +3430,26 @@ export function StudioDialogs({
                         />
                       </div>
                       {!isVoiceOnlyModel && <div className="connection-field">
-                        <label htmlFor="reasoning-effort">REASONING</label>
+                        <div className="connection-field-label-row">
+                          <label htmlFor="reasoning-effort">
+                            {isMuseGlimmerReasoning ? 'REASONING (MUSE GLIMMER)' : 'REASONING'}
+                          </label>
+                          {isMuseGlimmerReasoning ? (
+                            <button
+                              type="button"
+                              className="node-info-button connection-reasoning-help"
+                              data-tooltip="Muse Glimmer always uses reasoning and does not support Off. RPGraph sends the selected Low, Medium, High, or Very high strength through the model's chat template."
+                              aria-label="About Muse Glimmer reasoning"
+                            >
+                              ?
+                            </button>
+                          ) : null}
+                        </div>
                         <NodeCustomSelect
                           id="reasoning-effort"
-                          value={editingConnection.reasoningEffort ?? 'none'}
+                          value={selectedReasoningEffort}
                           onChange={(effort) => onEditConnection('reasoningEffort', String(effort))}
-                          options={connectionReasoningEfforts.map((effort) => ({
+                          options={reasoningEfforts.map((effort) => ({
                             value: effort,
                             label: connectionReasoningLabels[effort],
                           }))}

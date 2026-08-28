@@ -5,8 +5,6 @@ set -u
 SCRIPT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
 cd "$SCRIPT_DIR" || exit 1
 
-unset ELECTRON_RUN_AS_NODE
-
 install_desktop_launcher() {
   local desktop_target_dir="$HOME/.local/share/applications"
   local desktop_target="$desktop_target_dir/rpgraph-studio.desktop"
@@ -47,21 +45,17 @@ pause() {
   read -r _
 }
 
-# The lockfile snapshot lets us detect when package-lock.json changed since
-# the last install (e.g. after a git pull), not just whether node_modules exists.
-lockfile_snapshot="node_modules/.rpgraph-package-lock.json"
-
 run_clean_install() {
   if ! npm ci; then
     printf "\nnpm ci could not install from the lock file.\n"
     printf "package.json and package-lock.json may be out of sync. Recovering with npm install ...\n\n"
     npm install || return $?
   fi
-  cp package-lock.json "$lockfile_snapshot"
+  node scripts/dependency-state.mjs record
 }
 
 ensure_dependencies() {
-  if [[ -d node_modules ]] && cmp -s package-lock.json "$lockfile_snapshot"; then
+  if node scripts/dependency-state.mjs check >/dev/null 2>&1; then
     return 0
   fi
 

@@ -1,4 +1,5 @@
 import type { HistoryRpTimePromptSettings } from '../../types';
+import { fastTaskPrompt } from '../../llm/fastTaskPrompt';
 
 export const historyRpTimePromptVariables = [
   '<PreviousRpTimeOrNone>',
@@ -84,7 +85,7 @@ export function buildHistoryRpTimePrompt(
   const template = normalized.mode === 'custom'
     ? normalized.customText ?? ''
     : defaultHistoryRpTimePromptText;
-  return Object.entries(variables)
+  return fastTaskPrompt(Object.entries(variables)
     .reduce((text, [key, value]) => text.split(`<${key}>`).join(value), template)
-    .trim();
+    .trim());
 }

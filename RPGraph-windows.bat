@@ -3,8 +3,6 @@ setlocal EnableExtensions
 
 cd /d "%~dp0"
 
-set "ELECTRON_RUN_AS_NODE="
-
 where npm >nul 2>&1
 if errorlevel 1 (
   echo.
@@ -44,12 +42,8 @@ echo Invalid selection.
 goto pause_and_menu
 
 :ensure_dependencies
-rem The lockfile snapshot lets us detect when package-lock.json changed since
-rem the last install (e.g. after a git pull), not just whether node_modules exists.
-if exist "node_modules\" (
-  fc /b "package-lock.json" "node_modules\.rpgraph-package-lock.json" >nul 2>&1
-  if not errorlevel 1 exit /b 0
-)
+node scripts\dependency-state.mjs check >nul 2>&1
+if not errorlevel 1 exit /b 0
 
 echo.
 choice /C YN /N /M "Dependencies are missing or outdated. Install them now with npm ci? [Y/N] "
@@ -73,8 +67,8 @@ echo.
 call npm install
 if errorlevel 1 exit /b %errorlevel%
 :run_clean_install_ok
-copy /y "package-lock.json" "node_modules\.rpgraph-package-lock.json" >nul
-exit /b 0
+node scripts\dependency-state.mjs record
+exit /b %errorlevel%
 
 :start_normal
 call :ensure_dependencies
@@ -83,8 +77,7 @@ echo.
 echo Building the local app and starting RPgraph Studio ...
 call npm run build
 if errorlevel 1 goto pause_and_menu
-set "ELECTRON_RUN_AS_NODE="
-"%~dp0node_modules\electron\dist\electron.exe" .
+call npm run desktop:windows
 goto pause_and_menu
 
 :start_dev

@@ -1116,6 +1116,7 @@ function App() {
     lmStudioModelActionActive,
     ollamaModelActionActive,
     editingConnectionCapabilities,
+    editingConnectionArchitecture,
     editingConnectionSupportedVoices,
     editingConnectionSupportedParameters,
     comfyWorkflowRepairStatus,
@@ -1530,7 +1531,6 @@ function App() {
       label: 'Storybook Image Description',
       prompt,
       images: [image],
-      maxTokens: 120,
       temperature: 0.2,
     });
     return completion.text.trim().replace(/^["']|["']$/g, '');
@@ -3051,6 +3051,7 @@ function App() {
           nodeId: outputNode.id,
           label: 'Speakers',
           prompt,
+          fastTask: true,
         });
       } finally {
         updateLlmNodeActive(outputNode.id, false);
@@ -3221,6 +3222,7 @@ function App() {
         nodeId,
         label,
         prompt,
+        fastTask: true,
         onChunk: onChunk
           ? (streamed) => onChunk(restoreTranslationEmoji(streamed, tokens))
           : undefined,
@@ -3262,6 +3264,7 @@ function App() {
         nodeId,
         label: channel === 'phone' ? 'Act Phone' : 'Act RP',
         prompt,
+        fastTask: true,
       });
       const directed = completion.text.trim();
       if (!directed) {
@@ -5733,7 +5736,6 @@ function App() {
                     dataUrl: currentImage.dataUrl,
                     description: currentImage.description,
                   }] : undefined,
-                  maxTokens: 1200,
                   temperature: 0.2,
                 });
                 return parseImageGenerationAssistantResult(completion.text, describeImage);
@@ -6182,6 +6184,7 @@ function App() {
         editingConnection={editingConnection}
         connectionDraftPending={connectionDraftPending}
         editingConnectionCapabilities={editingConnectionCapabilities}
+        editingConnectionArchitecture={editingConnectionArchitecture}
         editingConnectionSupportedVoices={editingConnectionSupportedVoices}
         editingConnectionSupportedParameters={editingConnectionSupportedParameters}
         providerHealthById={providerHealthById}

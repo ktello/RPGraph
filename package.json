@@ -3,6 +3,11 @@
   "private": true,
   "version": "0.4.9",
   "description": "Local-first node graph studio for roleplay workflows.",
+  "author": {
+    "name": "unrefined803",
+    "url": "https://github.com/unrefined803"
+  },
+  "desktopName": "rpgraph-studio.desktop",
   "license": "AGPL-3.0-or-later",
   "main": "electron/main.cjs",
   "engines": {
@@ -11,6 +16,7 @@
   "scripts": {
     "dev": "vite",
     "build": "tsc -b && vite build",
+    "package:linux": "npm run build && electron-builder --linux AppImage --x64",
     "lint": "eslint .",
     "check:unused": "knip",
     "test": "vitest run",
@@ -26,10 +32,10 @@
     "storybook:redact": "node scripts/workflow-redact.mjs redact-storybook",
     "storybook:merge": "node scripts/workflow-redact.mjs merge-storybook",
     "preview": "vite preview",
-    "desktop:dev": "concurrently -k \"vite\" \"wait-on tcp:5173 && electron . --dev --no-sandbox\"",
-    "desktop": "electron . --no-sandbox",
-    "desktop:windows:dev": "concurrently -k \"vite\" \"wait-on tcp:5173 && electron . --dev\"",
-    "desktop:windows": "electron ."
+    "desktop:dev": "concurrently -k \"vite\" \"wait-on tcp:5173 && node scripts/run-electron.mjs --dev --no-sandbox\"",
+    "desktop": "node scripts/run-electron.mjs --no-sandbox",
+    "desktop:windows:dev": "concurrently -k \"vite\" \"wait-on tcp:5173 && node scripts/run-electron.mjs --dev\"",
+    "desktop:windows": "node scripts/run-electron.mjs"
   },
   "dependencies": {
     "@toon-format/toon": "^2.3.0",
@@ -47,6 +53,7 @@
     "@vitest/coverage-v8": "^3.2.7",
     "concurrently": "^9.1.2",
     "electron": "^41.8.0",
+    "electron-builder": "^26.15.3",
     "eslint": "^10.6.0",
     "eslint-plugin-react-hooks": "^7.1.1",
     "eslint-plugin-react-refresh": "^0.5.3",
@@ -60,5 +67,10 @@
   },
   "overrides": {
     "esbuild": "0.28.1"
+  },
+  "allowScripts": {
+    "electron@41.8.0": true,
+    "esbuild@0.28.1": true,
+    "electron-winstaller@5.4.0": true
   }
 }

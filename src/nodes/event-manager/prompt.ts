@@ -1,4 +1,5 @@
 import type { EventManagerPromptSettings } from '../../types';
+import { fastTaskPrompt } from '../../llm/fastTaskPrompt';
 
 export const eventManagerPromptVariables = [
   '<EventManagerContext>',
@@ -77,10 +78,10 @@ export function buildEventManagerPrompt(
   const template = eventManagerPromptSettings(settings).mode === 'custom'
     ? eventManagerPromptSettings(settings).customText ?? ''
     : defaultEventManagerPromptText;
-  return Object.entries(variables)
+  return fastTaskPrompt(Object.entries(variables)
     .reduce((text, [key, value]) => text.split(`<${key}>`).join(value), template)
     .split('\n')
     .filter((line) => line.trim() || line === '')
     .join('\n')
-    .trim();
+    .trim());
 }
